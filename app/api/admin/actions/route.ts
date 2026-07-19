@@ -15,13 +15,16 @@ export async function POST(request: Request) {
     const body = (await request.json()) as ActionBody;
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     if (body.action === "order.status") {
-      const user = await requireStaff(request, "change_order_status");
+      const target = body.status ?? "";
+      const user = await requireStaff(
+        request,
+        target === "cancelled" ? "cancel_orders" : "change_order_status",
+      );
       const order = await getD1()
         .prepare("SELECT id, status, fulfilment FROM orders WHERE id = ?")
         .bind(body.orderId ?? "")
         .first<{ id: string; status: string; fulfilment: Fulfilment }>();
       if (!order) return Response.json({ error: "Order not found." }, { status: 404 });
-      const target = body.status ?? "";
       if (!canTransitionOrderStatus(order.fulfilment, order.status, target, Boolean(body.override))) {
         return Response.json({ error: "That order status transition is not valid." }, { status: 409 });
       }
@@ -31,8 +34,16 @@ export async function POST(request: Request) {
       const now = Date.now();
       await getD1().batch([
         getD1()
-          .prepare("UPDATE orders SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
-          .bind(target, now, order.id, order.status),
+          .prepare(
+            `UPDATE orders SET status = ?,
+               payment_status = CASE
+                 WHEN ? = 'cancelled' AND payment_status = 'pending_at_store' THEN 'cancelled'
+                 ELSE payment_status
+               END,
+               updated_at = ?
+             WHERE id = ? AND status = ?`,
+          )
+          .bind(target, target, now, order.id, order.status),
         getD1()
           .prepare(
             `INSERT INTO order_events
