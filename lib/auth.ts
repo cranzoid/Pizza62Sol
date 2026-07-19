@@ -3,7 +3,8 @@ import { ensureDatabase, getD1, safeJson } from "@/db/runtime";
 import { generateOpaqueToken, hashOpaqueToken, hasPermission } from "@/lib/domain";
 
 const SESSION_COOKIE = "p62_staff_session";
-const PASSWORD_ITERATIONS = 210_000;
+// Cloudflare Workers supports PBKDF2 iteration counts up to 100,000.
+const PASSWORD_ITERATIONS = 100_000;
 const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 
 export type StaffIdentity = {
