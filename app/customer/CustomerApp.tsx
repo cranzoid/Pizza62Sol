@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { formatMoney, priceCart, pricePizza, type ToppingPlacement } from "@/lib/domain";
+import { formatMoney, priceCart, pricePizza } from "@/lib/domain";
 
 type Category = { id: string; name: string; slug: string; description?: string | null };
 type Product = {
@@ -10,7 +10,7 @@ type Product = {
   category_id: string;
   name: string;
   description: string;
-  product_type: "pizza" | "simple" | "bundle";
+  product_type: "pizza" | "simple" | "bundle" | "configurable";
   base_price_cents: number;
   taxable: number;
   pickup_eligible: number;
@@ -41,6 +41,24 @@ type Catalog = {
   variations: Variation[];
   toppings: Topping[];
   settings: Record<string, { value: Record<string, unknown>; version: number }>;
+  integrations: { stripe: boolean; email: boolean };
+};
+type ModifierSelection = {
+  id: string;
+  label: string;
+  values: Array<{ value: string; label: string }>;
+};
+type ModifierSection = {
+  id: string;
+  label: string;
+  source?: "toppings" | "wing_flavours" | "drinks" | "pizza_base";
+  options?: string[];
+  min: number;
+  max: number;
+  included?: number;
+  extraPriceCents?: number;
+  sharedGroup?: string;
+  sharedIncluded?: number;
 };
 type CartLine = {
   key: string;
@@ -52,7 +70,8 @@ type CartLine = {
   quantity: number;
   unitPriceCents: number;
   taxable: boolean;
-  toppings?: Array<{ toppingId: string; placement: ToppingPlacement; name: string }>;
+  toppings?: Array<{ toppingId: string; placement: "whole"; name: string }>;
+  modifiers?: ModifierSelection[];
   extraCheese?: boolean;
   halal?: boolean;
   specialInstructions?: string;
@@ -193,7 +212,7 @@ export default function CustomerApp() {
       setGateMessage("Enter a complete Canadian postal code, like L8K 4S2.");
       return;
     }
-    setGateMessage("This postal code may be serviceable. We'll verify your full address before payment.");
+    setGateMessage("Thanks. Enter your full Hamilton address at checkout; the restaurant confirms delivery coverage when your order is received.");
     analytics("delivery_eligibility_checked", { result: "potential" });
     window.setTimeout(() => {
       setDeliveryGate(false);
@@ -222,8 +241,10 @@ export default function CustomerApp() {
 
   const openProduct = (product: Product) => {
     analytics("product_viewed", { productId: product.id });
-    if (product.product_type === "pizza") setSelectedProduct(product);
-    else addSimple(product);
+    const sections = product.configuration.sections;
+    if (product.product_type === "pizza" || (Array.isArray(sections) && sections.length)) {
+      setSelectedProduct(product);
+    } else addSimple(product);
   };
 
   return (
@@ -257,10 +278,10 @@ export default function CustomerApp() {
             <p className="hero-lede">Hot pizza, honest prices, and the kind of local service that remembers your order.</p>
             <div className="hero-method" aria-label="Choose how to get your order">
               <button className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>
-                <span className="method-icon">D</span><span><b>Delivery</b><small>To your door</small></span><ArrowIcon />
+                <span className="method-icon">D</span><span><b>Delivery</b><small>About {String(ordering.deliveryEstimateMinutes ?? 30)} min</small></span><ArrowIcon />
               </button>
               <button className={fulfilment === "pickup" ? "active" : ""} onClick={() => chooseFulfilment("pickup")}>
-                <span className="method-icon">P</span><span><b>Pickup</b><small>Ready from 15 min</small></span><ArrowIcon />
+                <span className="method-icon">P</span><span><b>Pickup</b><small>About {String(ordering.pickupEstimateMinutes ?? 15)} min</small></span><ArrowIcon />
               </button>
             </div>
             <div className="hero-note"><span className="pulse-dot" /> Ordering status: {ordering.paused ? "temporarily paused" : "accepting orders"}</div>
@@ -284,7 +305,7 @@ export default function CustomerApp() {
         </section>
 
         <section className="promise-strip" aria-label="Pizza 62 ordering promises">
-          <div><b>01</b><span><strong>Built your way</strong><small>Whole, left, or right toppings</small></span></div>
+          <div><b>01</b><span><strong>Built your way</strong><small>Simple topping selection</small></span></div>
           <div><b>02</b><span><strong>Clear totals</strong><small>No surprise math at checkout</small></span></div>
           <div><b>03</b><span><strong>Local & direct</strong><small>Order straight from Pizza 62</small></span></div>
           <div><b>04</b><span><strong>Track every step</strong><small>Private, secure order updates</small></span></div>
@@ -325,7 +346,7 @@ export default function CustomerApp() {
                         <p>{product.description}</p>
                         <div className="product-footer"><span><small>{product.product_type === "pizza" ? "from" : ""}</small>{formatMoney(product.base_price_cents)}</span>
                           <button disabled={Boolean(product.setup_required || product.sold_out)} onClick={() => openProduct(product)}>
-                            {product.sold_out ? "Sold out" : product.setup_required ? "Owner setup" : product.product_type === "pizza" ? "Customize" : "Add"}<ArrowIcon />
+                            {product.sold_out ? "Sold out" : product.setup_required ? "Owner setup" : product.product_type === "simple" && !Array.isArray(product.configuration.sections) ? "Add" : "Customize"}<ArrowIcon />
                           </button>
                         </div>
                       </div>
@@ -340,11 +361,11 @@ export default function CustomerApp() {
         <section className="deal-feature" id="deals">
           <div className="deal-stamp">PICKUP<br /><b>ONLY</b></div>
           <div className="deal-copy"><p className="eyebrow"><span /> Pick it up & save</p><h2>Two large.<br /><em>Six toppings.</em></h2><p>Split all six included toppings across both pizzas any way you want.</p></div>
-          <div className="deal-price"><span>ONLY</span><strong><small>$</small>27<sup>99</sup></strong><button disabled>Complete owner setup <ArrowIcon /></button></div>
+          <div className="deal-price"><span>ONLY</span><strong><small>$</small>27<sup>99</sup></strong><a className="primary-button" href="#category-pickup-specials">Choose this deal <ArrowIcon /></a></div>
         </section>
 
         <section className="hours-section" id="hours">
-          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at Pizza 62 or choose delivery after your address is verified.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone} <ArrowIcon /></a></div>
+          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at 55 Parkdale Ave N or choose delivery and enter your Hamilton address at checkout.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone} <ArrowIcon /></a></div>
           <div className="hours-card"><div className="hours-card-title"><span>Weekly hours</span><i>Hamilton time</i></div>
             {["Mon — Wed|11 AM – 10 PM", "Thursday|11 AM – 11 PM", "Fri — Sat|11 AM – Midnight", "Sunday|12 PM – 10 PM"].map((entry) => { const [day, time] = entry.split("|"); return <div className="hours-row" key={day}><span>{day}</span><b>{time}</b></div>; })}
             <small>Online orders are accepted until the configured closing time.</small>
@@ -366,7 +387,7 @@ export default function CustomerApp() {
             <button className="modal-close" onClick={() => setDeliveryGate(false)} aria-label="Close">×</button>
             <div className="gate-number">01</div><p className="eyebrow dark"><span /> Quick delivery check</p>
             <h2 id="delivery-title">Are we in your<br /><em>neighbourhood?</em></h2>
-            <p>Enter your postal code for an initial screen. The delivery fee is shown later, and your full address is verified before payment.</p>
+            <p>Enter your postal code for an initial Hamilton-area screen. Your full address is collected at checkout; no third-party address provider is used.</p>
             <label>Postal code<input autoFocus value={postalCode} onChange={(event) => setPostalCode(event.target.value)} placeholder="L8K 4S2" autoComplete="postal-code" /></label>
             {gateMessage ? <div className={gateMessage.startsWith("This") ? "gate-success" : "gate-error"} role="status">{gateMessage}</div> : null}
             <button className="primary-button" onClick={screenPostalCode}>Check my area <ArrowIcon /></button>
@@ -376,11 +397,16 @@ export default function CustomerApp() {
       ) : null}
 
       {selectedProduct && catalog ? (
-        <PizzaCustomizer
+        selectedProduct.product_type === "pizza" ? <PizzaCustomizer
           product={selectedProduct}
           variations={catalog.variations.filter((variation) => variation.product_id === selectedProduct.id)}
           toppings={catalog.toppings}
-          halfWeight={Number(operations.halfToppingUnitsBps ?? 10_000)}
+          halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
+          onClose={() => setSelectedProduct(null)}
+          onAdd={(line) => { addLine(line); setSelectedProduct(null); }}
+        /> : <GenericCustomizer
+          product={selectedProduct}
+          toppings={catalog.toppings}
           onClose={() => setSelectedProduct(null)}
           onAdd={(line) => { addLine(line); setSelectedProduct(null); }}
         />
@@ -402,6 +428,7 @@ export default function CustomerApp() {
           cart={cart}
           fulfilment={fulfilment}
           settings={catalog?.settings ?? {}}
+          integrations={catalog?.integrations ?? { stripe: false, email: false }}
           onClose={() => setCheckoutOpen(false)}
           onConfirmed={(result) => { setCheckoutOpen(false); setCart([]); setConfirmation(result); analytics("purchase_completed", { orderNumber: result.orderNumber }); }}
         />
@@ -418,92 +445,131 @@ function PizzaCustomizer({
   product,
   variations,
   toppings,
-  halfWeight,
+  halalNotice,
   onClose,
   onAdd,
 }: {
   product: Product;
   variations: Variation[];
   toppings: Topping[];
-  halfWeight: number;
+  halalNotice: string;
   onClose: () => void;
   onAdd: (line: CartLine) => void;
 }) {
   const [variationId, setVariationId] = useState(variations[0]?.id ?? "");
-  const [placement, setPlacement] = useState<ToppingPlacement>("whole");
-  const [selected, setSelected] = useState<Array<{ toppingId: string; placement: ToppingPlacement; name: string }>>([]);
-  const [extraCheese, setExtraCheese] = useState(false);
+  const [selected, setSelected] = useState<Array<{ toppingId: string; placement: "whole"; name: string }>>([]);
+  const [cheese, setCheese] = useState<"none" | "light" | "regular" | "extra">("regular");
   const [halal, setHalal] = useState(false);
+  const [pizzaBase, setPizzaBase] = useState<string[]>([]);
   const [instructions, setInstructions] = useState("");
   const variation = variations.find((entry) => entry.id === variationId) ?? variations[0];
+  const extraCheese = cheese === "extra";
+  const pizzaBaseOptions = Array.isArray(product.configuration.pizzaBaseOptions)
+    ? product.configuration.pizzaBaseOptions.map(String)
+    : [];
   const price = variation
     ? pricePizza({
         basePriceCents: variation.base_price_cents,
         extraToppingPriceCents: variation.extra_topping_price_cents,
         includedToppingUnitsBps: variation.included_topping_units_bps,
-        halfToppingUnitsBps: halfWeight,
+        halfToppingUnitsBps: 10_000,
         toppings: selected,
         extraCheese,
       })
     : null;
   const toggleTopping = (topping: Topping) => {
     setSelected((current) => {
-      const existing = current.find((entry) => entry.toppingId === topping.id && entry.placement === placement);
-      if (existing) return current.filter((entry) => entry !== existing);
-      const withoutWholeConflict = current.filter((entry) =>
-        entry.toppingId !== topping.id || (placement !== "whole" && entry.placement !== "whole"),
-      );
-      return [...withoutWholeConflict, { toppingId: topping.id, placement, name: topping.name }];
+      const existing = current.some((entry) => entry.toppingId === topping.id);
+      if (existing) return current.filter((entry) => entry.toppingId !== topping.id);
+      return [...current, { toppingId: topping.id, placement: "whole", name: topping.name }];
     });
   };
   return (
     <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
       <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="customizer-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="customizer-head"><div><p className="eyebrow dark"><span /> Build it your way</p><h2 id="customizer-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
+        <div className="customizer-head"><div><p className="eyebrow dark"><span /> Customize your order</p><h2 id="customizer-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
           <fieldset><legend><span>1</span> Choose your size</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset>
-          <fieldset><legend><span>2</span> Cheese & halal</legend><div className="choice-list"><label><input type="checkbox" checked={extraCheese} onChange={(event) => setExtraCheese(event.target.checked)} /><span><b>Extra cheese</b><small>Counts as one topping</small></span><em>{variation ? `+${formatMoney(variation.extra_topping_price_cents)}` : ""}</em></label><label><input type="checkbox" checked={halal} onChange={(event) => setHalal(event.target.checked)} /><span><b>Halal selection</b><small>Uses configured halal meat versions where available</small></span><em>No surcharge</em></label></div></fieldset>
-          <fieldset><legend><span>3</span> Choose toppings</legend><div className="placement-tabs"><button className={placement === "whole" ? "active" : ""} onClick={() => setPlacement("whole")} type="button">Whole</button><button className={placement === "left" ? "active" : ""} onClick={() => setPlacement("left")} type="button">Left half</button><button className={placement === "right" ? "active" : ""} onClick={() => setPlacement("right")} type="button">Right half</button></div>
-            {toppings.length ? <div className="topping-grid">{toppings.map((topping) => { const active = selected.some((entry) => entry.toppingId === topping.id && entry.placement === placement); return <button className={active ? "active" : ""} type="button" key={topping.id} onClick={() => toggleTopping(topping)}><span>{active ? "✓" : "+"}</span>{topping.name}{halal && topping.is_meat && topping.has_halal_version && topping.halal_available ? <small>Halal</small> : null}</button>; })}</div> : <div className="setup-empty"><strong>Toppings await owner setup</strong><p>The pricing and placement engine is ready. No unconfirmed topping list has been published.</p></div>}
-            <div className="allowance-meter"><span>{price ? price.toppingUnitsBps / 10_000 : 0} topping units selected</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : "No extras"}</b></div>
+          <fieldset><legend><span>2</span> Cheese & halal</legend><div className="size-options cheese-options">{(["none", "light", "regular", "extra"] as const).map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => setCheese(option)} /><span><b>{option[0].toUpperCase() + option.slice(1)}</b><small>{option === "extra" ? "Counts as one topping" : "No extra charge"}</small></span></label>)}</div>{product.halal_capable ? <div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => { const next = event.target.checked; setHalal(next); if (next) setSelected((current) => current.filter((entry) => { const topping = toppings.find((candidate) => candidate.id === entry.toppingId); return !topping?.is_meat || Boolean(topping.has_halal_version && topping.halal_available); })); }} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div> : null}</fieldset>
+          {pizzaBaseOptions.length ? <fieldset><legend><span>3</span> Crust, bake & sauce</legend><div className="topping-grid">{pizzaBaseOptions.map((option) => { const active = pizzaBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setPizzaBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}
+          <fieldset><legend><span>{pizzaBaseOptions.length ? "4" : "3"}</span> Choose toppings</legend>
+            {Boolean(product.configuration.fixedRecipe) ? <div className="setup-alert"><strong>Specialty recipe</strong><p>The listed recipe is included. Choose only additional paid toppings here; write removals or substitutions in special instructions.</p></div> : null}
+            <div className="topping-grid">{toppings.map((topping) => { const active = selected.some((entry) => entry.toppingId === topping.id); const unavailableForHalal = Boolean(halal && topping.is_meat && !(topping.has_halal_version && topping.halal_available)); return <button className={active ? "active" : ""} type="button" key={topping.id} disabled={unavailableForHalal} onClick={() => toggleTopping(topping)}><span>{active ? "✓" : unavailableForHalal ? "×" : "+"}</span>{topping.name}{halal && topping.is_meat ? <small>{unavailableForHalal ? "Not halal" : "Halal"}</small> : null}</button>; })}</div>
+            <div className="allowance-meter"><span>{price ? price.toppingUnitsBps / 10_000 : 0} selected</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : "Included"}</b></div>
           </fieldset>
-          <label className="instructions-label">Special instructions <small>We&apos;ll do our best, but allergy and separation claims require restaurant confirmation.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Anything the kitchen should know?" /></label>
+          <label className="instructions-label">Special instructions <small>Use this for topping placement requests. Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: pepperoni on the left half" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!variation} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, extraCheese, halal, specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!variation} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, modifiers: pizzaBase.length ? [{ id: "pizza-base", label: "Crust, bake & sauce", values: pizzaBase.map((value) => ({ value, label: value })) }] : [], extraCheese, halal, specialInstructions: [cheese !== "regular" ? `Cheese: ${cheese}` : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
 }
 
+function GenericCustomizer({ product, toppings, onClose, onAdd }: { product: Product; toppings: Topping[]; onClose: () => void; onAdd: (line: CartLine) => void }) {
+  const sections = (Array.isArray(product.configuration.sections) ? product.configuration.sections : []) as ModifierSection[];
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [instructions, setInstructions] = useState("");
+  const optionsFor = (section: ModifierSection): Array<{ value: string; label: string }> => {
+    if (section.source === "toppings") return toppings.map((entry) => ({ value: entry.id, label: entry.name }));
+    const configured = section.options ?? (section.source === "wing_flavours" ? ["Mild", "Medium", "Hot", "Suicide", "Honey Garlic", "BBQ", "Cajun", "Lemon Pepper", "None"] : section.source === "drinks" ? ["Pepsi", "Diet Pepsi", "Coke", "Diet Coke", "Coke Zero", "Gingerale", "Crush Orange", "Brisk Ice Tea", "Sprite", "Dr. Peppers", "Fanta Grape"] : ["Thin Crust", "Thick Crust", "Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"]);
+    return configured.map((entry) => ({ value: entry, label: entry }));
+  };
+  const toggle = (section: ModifierSection, value: string) => setSelected((current) => {
+    const values = current[section.id] ?? [];
+    if (values.includes(value)) return { ...current, [section.id]: values.filter((entry) => entry !== value) };
+    if (section.max === 1) return { ...current, [section.id]: [value] };
+    if (values.length >= section.max) return current;
+    return { ...current, [section.id]: [...values, value] };
+  });
+  const valid = sections.every((section) => (selected[section.id]?.length ?? 0) >= section.min);
+  const sharedGroups = new Set(sections.flatMap((section) => section.sharedGroup ? [section.sharedGroup] : []));
+  let extras = sections.filter((section) => !section.sharedGroup).reduce((sum, section) => sum + Math.max(0, (selected[section.id]?.length ?? 0) - (section.included ?? section.max)) * (section.extraPriceCents ?? 0), 0);
+  for (const group of sharedGroups) {
+    const grouped = sections.filter((section) => section.sharedGroup === group);
+    const count = grouped.reduce((sum, section) => sum + (selected[section.id]?.length ?? 0), 0);
+    extras += Math.max(0, count - (grouped[0]?.sharedIncluded ?? 0)) * (grouped[0]?.extraPriceCents ?? 0);
+  }
+  const modifiers: ModifierSelection[] = sections.map((section) => {
+    const labels = new Map(optionsFor(section).map((option) => [option.value, option.label]));
+    return { id: section.id, label: section.label, values: (selected[section.id] ?? []).map((value) => ({ value, label: labels.get(value) ?? value })) };
+  }).filter((section) => section.values.length);
+  return <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}><section className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" onMouseDown={(event) => event.stopPropagation()}><div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div><div className="customizer-body">{sections.map((section, index) => <fieldset key={section.id}><legend><span>{index + 1}</span> {section.label}</legend><div className="topping-grid">{optionsFor(section).map((option) => { const active = (selected[section.id] ?? []).includes(option.value); return <button className={active ? "active" : ""} type="button" key={option.value} onClick={() => toggle(section, option.value)}><span>{active ? "✓" : "+"}</span>{option.label}</button>; })}</div><div className="allowance-meter"><span>{selected[section.id]?.length ?? 0} selected</span><b>{section.min ? `Choose at least ${section.min}` : `Up to ${section.max}`}</b></div></fieldset>)}<label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label></div><div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div></section></div>;
+}
+
 function CartDrawer({ cart, totals, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; totals: ReturnType<typeof priceCart>; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside className="cart-drawer" aria-label="Your order" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2>Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
-    <div className="cart-lines">{cart.length ? cart.map((line, index) => <article className="cart-line" key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal selection</small> : null}{line.toppings?.map((entry) => <small key={`${entry.toppingId}-${entry.placement}`}>{entry.name} · {entry.placement}</small>)}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
+    <div className="cart-lines">{cart.length ? cart.map((line, index) => <article className="cart-line" key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal meat toppings</small> : null}{line.toppings?.map((entry) => <small key={entry.toppingId}>{entry.name}</small>)}{line.modifiers?.map((modifier) => <small key={modifier.id}>{modifier.label}: {modifier.values.map((value) => value.label).join(", ")}</small>)}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
     <div className="cart-summary"><div><span>Menu subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div><div><span>Estimated HST</span><b>{formatMoney(totals.taxCents)}</b></div>{fulfilment === "delivery" ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}<div className="cart-total"><span>Estimated total<small>Revalidated at checkout</small></span><b>{formatMoney(totals.totalCents)}</b></div><button className="primary-button" disabled={!cart.length} onClick={onCheckout}>Go to checkout <ArrowIcon /></button><p className="secure-note">Prices, availability, taxes and eligibility are checked again by Pizza 62 before an order is accepted.</p></div>
   </aside></div>;
 }
 
-function Checkout({ cart, fulfilment, settings, onClose, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; onClose: () => void; onConfirmed: (result: Record<string, unknown>) => void }) {
+function Checkout({ cart, fulfilment, settings, integrations, onClose, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; onClose: () => void; onConfirmed: (result: Record<string, unknown>) => void }) {
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
+  const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
   const [tip, setTip] = useState(0); const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">("asap"); const [scheduledFor, setScheduledFor] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
   const tipPresets = (settings.taxAndTips?.value.tipPresetBps as number[] | undefined) ?? [1000, 1500, 1800];
+  const estimate = fulfilment === "delivery" ? settings.ordering?.value.deliveryEstimateMinutes ?? 30 : settings.ordering?.value.pickupEstimateMinutes ?? 15;
   const submit = async () => {
-    setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod: "pay_at_store" });
+    setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod });
     try {
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        idempotencyKey: crypto.randomUUID(), fulfilment, customer: { name, phone, email }, items: cart.map((line) => ({ productId: line.productId, variationId: line.variationId, quantity: line.quantity, toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })), extraCheese: line.extraCheese, halal: line.halal, specialInstructions: line.specialInstructions })), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? new Date(scheduledFor).getTime() : undefined }, paymentMethod: "pay_at_store", tip: tip ? { type: "percentage", valueBps: tip } : { type: "none" },
+        idempotencyKey: crypto.randomUUID(), fulfilment, customer: { name, phone, email }, items: cart.map((line) => ({ productId: line.productId, variationId: line.variationId, quantity: line.quantity, toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })), modifiers: line.modifiers?.map((modifier) => ({ id: modifier.id, values: modifier.values.map((value) => value.value) })), extraCheese: line.extraCheese, halal: line.halal, specialInstructions: line.specialInstructions })), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? new Date(scheduledFor).getTime() : undefined }, paymentMethod, tip: tip ? { type: "percentage", valueBps: tip } : { type: "none" }, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
       }) });
       const result = await response.json() as Record<string, unknown>;
       if (!response.ok || result.duplicate) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
+      if (typeof result.checkoutUrl === "string") { window.location.assign(result.checkoutUrl); return; }
       onConfirmed(result);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "The order was not accepted."); setSubmitting(false); }
   };
   return <div className="modal-backdrop"><section className="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><p className="eyebrow dark"><span /> Secure checkout</p><h2 id="checkout-title">Finish your <em>{fulfilment}</em> order</h2>
-    {fulfilment === "delivery" ? <div className="setup-alert"><strong>Delivery setup is not complete</strong><p>The owner must configure the restaurant origin, address validation, a delivery estimate, and online payments. No delivery order or payment can be falsely confirmed.</p></div> : null}
+    {fulfilment === "delivery" && !integrations.stripe ? <div className="setup-alert"><strong>Online delivery payment is ready for its Stripe key</strong><p>The ordering flow and 30-minute estimate are configured. Add the Stripe secrets in the hosting environment to accept delivery payment.</p></div> : null}
     <div className="checkout-grid"><div><fieldset><legend>Contact details</legend><label>Full name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /></label><label>Phone<input value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="tel" inputMode="tel" /></label><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" inputMode="email" /></label></fieldset>
-      <fieldset><legend>When?</legend><div className="checkout-options"><label className={scheduleType === "asap" ? "selected" : ""}><input type="radio" checked={scheduleType === "asap"} onChange={() => setScheduleType("asap")} />ASAP <small>About {String(settings.ordering?.value.pickupEstimateMinutes ?? 15)} min</small></label><label className={scheduleType === "scheduled" ? "selected" : ""}><input type="radio" checked={scheduleType === "scheduled"} onChange={() => setScheduleType("scheduled")} />Schedule later</label></div>{scheduleType === "scheduled" ? <label>Pickup time<input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} /></label> : null}</fieldset>
-      <fieldset><legend>Payment</legend><label className="payment-choice"><input type="radio" checked readOnly /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label><label className="payment-choice disabled"><input type="radio" disabled /><span><b>Pay online</b><small>Available after payment provider setup</small></span></label></fieldset></div>
-      <aside className="checkout-summary"><h3>Order summary</h3>{cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}<hr /><p>Tip</p><div className="tip-grid"><button className={tip === 0 ? "active" : ""} onClick={() => setTip(0)}>None</button>{tipPresets.map((preset) => <button className={tip === preset ? "active" : ""} key={preset} onClick={() => setTip(preset)}>{preset / 100}%</button>)}</div><p className="tip-note">Percentage tips use the discounted menu subtotal before HST and exclude delivery.</p>{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="primary-button" disabled={submitting || fulfilment === "delivery"} onClick={submit}>{submitting ? "Confirming…" : "Place pickup order"} <ArrowIcon /></button><small>By placing this order, you ask Pizza 62 to prepare it. A successful screen appears only after the server confirms acceptance.</small></aside></div>
+      {fulfilment === "delivery" ? <fieldset><legend>Delivery address</legend><label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} autoComplete="street-address" /></label><label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="address-line2" /></label><label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value)} autoComplete="postal-code" placeholder="L8H 5W7" /></label><label>Delivery instructions<textarea value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} maxLength={500} /></label></fieldset> : null}
+      <fieldset><legend>When?</legend><div className="checkout-options"><label className={scheduleType === "asap" ? "selected" : ""}><input type="radio" checked={scheduleType === "asap"} onChange={() => setScheduleType("asap")} />ASAP <small>About {String(estimate)} min</small></label><label className={scheduleType === "scheduled" ? "selected" : ""}><input type="radio" checked={scheduleType === "scheduled"} onChange={() => setScheduleType("scheduled")} />Schedule later</label></div>{scheduleType === "scheduled" ? <label>{fulfilment === "delivery" ? "Delivery" : "Pickup"} time<input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} /></label> : null}</fieldset>
+      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.stripe ? "" : "disabled"}`}><input type="radio" disabled={!integrations.stripe} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online with Stripe</b><small>{integrations.stripe ? "Secure hosted checkout" : "Add Stripe keys to enable"}</small></span></label></fieldset></div>
+      <aside className="checkout-summary"><h3>Order summary</h3>{cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}<hr /><p>Tip</p><div className="tip-grid"><button type="button" className={tip === 0 ? "active" : ""} onClick={() => setTip(0)}>None</button>{tipPresets.map((preset) => <button type="button" className={tip === preset ? "active" : ""} key={preset} onClick={() => setTip(preset)}>{preset / 100}%</button>)}</div><p className="tip-note">Percentage tips use the discounted menu subtotal before HST and exclude delivery.</p>{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="primary-button" disabled={submitting || (paymentMethod === "online" && !integrations.stripe)} onClick={submit}>{submitting ? "Confirming…" : paymentMethod === "online" ? "Continue to Stripe" : "Place pickup order"} <ArrowIcon /></button><small>Prices and choices are checked again by Pizza 62 before the order is accepted. Online card details stay with Stripe.</small></aside></div>
   </section></div>;
 }
 

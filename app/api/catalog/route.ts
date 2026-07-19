@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,10 @@ export async function GET() {
       variations: variationResult.results,
       toppings: toppingResult.results,
       settings,
+      integrations: {
+        stripe: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY),
+        email: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
+      },
     },
     {
       headers: {

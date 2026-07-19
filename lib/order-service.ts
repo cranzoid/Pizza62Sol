@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { ensureDatabase, getD1, getSetting, safeJson } from "@/db/runtime";
 import {
   generateOpaqueToken,
@@ -9,6 +10,7 @@ import {
   type PromotionRule,
   type ToppingSelection,
 } from "@/lib/domain";
+import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
 type OrderRequest = {
   idempotencyKey?: string;
@@ -21,6 +23,7 @@ type OrderRequest = {
     toppings?: ToppingSelection[];
     extraCheese?: boolean;
     halal?: boolean;
+    modifiers?: Array<{ id?: string; values?: string[] }>;
     specialInstructions?: string;
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
@@ -76,6 +79,7 @@ type ValidatedItem = {
   unitPriceCents: number;
   taxable: boolean;
   promotionEligible: boolean;
+  freeDelivery: boolean;
   snapshot: Record<string, unknown>;
   instructions: string | null;
 };
@@ -115,6 +119,13 @@ type OperationSetting = {
   feedbackDelayMinutes: number;
 };
 
+type ProductConfiguration = {
+  sections?: ModifierSectionSeed[];
+  pizzaBaseOptions?: string[];
+  freeDelivery?: boolean;
+  [key: string]: unknown;
+};
+
 function normalizeCustomer(customer: OrderRequest["customer"]) {
   const name = customer?.name?.trim() ?? "";
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
@@ -131,6 +142,85 @@ function cleanInstructions(value: string | undefined, max = 500): string | null 
   const clean = value?.trim() ?? "";
   if (clean.length > max) throw new OrderValidationError(`Instructions cannot exceed ${max} characters.`);
   return clean || null;
+}
+
+function normalizeDeliveryAddress(address: OrderRequest["address"]): Record<string, string> {
+  const line1 = address?.line1?.trim() ?? "";
+  const unit = address?.unit?.trim() ?? "";
+  const city = address?.city?.trim() ?? "";
+  const province = address?.province?.trim().toUpperCase() ?? "";
+  const postalCode = address?.postalCode?.trim().toUpperCase().replace(/\s/g, "") ?? "";
+  if (line1.length < 5 || line1.length > 160) {
+    throw new OrderValidationError("Enter a complete delivery street address.");
+  }
+  if (city.toLowerCase() !== "hamilton" || province !== "ON") {
+    throw new OrderValidationError("Online delivery is currently limited to Hamilton, Ontario.");
+  }
+  if (!/^[A-Z][0-9][A-Z][0-9][A-Z][0-9]$/.test(postalCode)) {
+    throw new OrderValidationError("Enter a valid Canadian postal code for delivery.");
+  }
+  if (unit.length > 40) throw new OrderValidationError("The unit field is too long.");
+  return {
+    line1,
+    unit,
+    city: "Hamilton",
+    province: "ON",
+    postalCode: `${postalCode.slice(0, 3)} ${postalCode.slice(3)}`,
+  };
+}
+
+function modifierOptions(
+  section: ModifierSectionSeed,
+  toppingNames: Map<string, string>,
+): Map<string, string> {
+  if (section.source === "toppings") return toppingNames;
+  const options = section.options ?? (
+    section.source === "wing_flavours" ? [...WING_FLAVOURS]
+      : section.source === "drinks" ? [...DRINK_OPTIONS]
+        : section.source === "pizza_base" ? [...PIZZA_BASE_OPTIONS]
+          : []
+  );
+  return new Map(options.map((value) => [value, value]));
+}
+
+function validateModifiers(
+  input: Array<{ id?: string; values?: string[] }> | undefined,
+  sections: ModifierSectionSeed[],
+  toppingNames: Map<string, string>,
+): { snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }>; extraCents: number } {
+  const provided = new Map((input ?? []).map((entry) => [entry.id ?? "", entry.values ?? []]));
+  if ([...provided.keys()].some((id) => !sections.some((section) => section.id === id))) {
+    throw new OrderValidationError("An unsupported item option was submitted.");
+  }
+  const snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }> = [];
+  for (const section of sections) {
+    const values = provided.get(section.id) ?? [];
+    const unique = [...new Set(values)];
+    const allowed = modifierOptions(section, toppingNames);
+    if (unique.length !== values.length || unique.length < section.min || unique.length > section.max || unique.some((value) => !allowed.has(value))) {
+      throw new OrderValidationError(`Choose valid options for ${section.label}.`);
+    }
+    if (unique.length) {
+      snapshot.push({
+        id: section.id,
+        label: section.label,
+        values: unique.map((value) => ({ value, label: allowed.get(value) ?? value })),
+      });
+    }
+  }
+  let extraCents = sections
+    .filter((section) => !section.sharedGroup)
+    .reduce(
+      (sum, section) => sum + Math.max(0, (provided.get(section.id)?.length ?? 0) - (section.included ?? section.max)) * (section.extraPriceCents ?? 0),
+      0,
+    );
+  const sharedGroups = new Set(sections.flatMap((section) => section.sharedGroup ? [section.sharedGroup] : []));
+  for (const group of sharedGroups) {
+    const grouped = sections.filter((section) => section.sharedGroup === group);
+    const selected = grouped.reduce((sum, section) => sum + (provided.get(section.id)?.length ?? 0), 0);
+    extraCents += Math.max(0, selected - (grouped[0]?.sharedIncluded ?? 0)) * (grouped[0]?.extraPriceCents ?? 0);
+  }
+  return { snapshot, extraCents };
 }
 
 function torontoParts(timestamp: number): { weekday: number; minute: number } {
@@ -190,9 +280,12 @@ async function validateItems(
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
   const toppingRows = await database
-    .prepare("SELECT id FROM toppings WHERE active = 1")
-    .all<{ id: string }>();
+    .prepare("SELECT id, name, is_meat, has_halal_version, halal_available FROM toppings WHERE active = 1")
+    .all<{ id: string; name: string; is_meat: number; has_halal_version: number; halal_available: number }>();
   const allowedToppings = new Set(toppingRows.results.map((row) => row.id));
+  const toppingNames = new Map(toppingRows.results.map((row) => [row.id, row.name]));
+  const meatToppings = new Set(toppingRows.results.filter((row) => row.is_meat).map((row) => row.id));
+  const halalMeatToppings = new Set(toppingRows.results.filter((row) => row.is_meat && row.has_halal_version && row.halal_available).map((row) => row.id));
   const validated: ValidatedItem[] = [];
   for (const input of items) {
     const product = await database
@@ -218,11 +311,12 @@ async function validateItems(
       throw new OrderValidationError("Item quantity must be between 1 and 20.");
     }
     const instructions = cleanInstructions(input.specialInstructions);
+    const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
     let variation: DbVariation | null = null;
     let unitPriceCents = product.base_price_cents;
     let snapshot: Record<string, unknown> = {
       productType: product.product_type,
-      productConfiguration: safeJson(product.configuration_json, {}),
+      productConfiguration,
     };
     if (product.product_type === "pizza") {
       variation = await database
@@ -241,6 +335,9 @@ async function validateItems(
       if (input.halal && !product.halal_capable) {
         throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
       }
+      if (input.halal && toppings.some((entry) => meatToppings.has(entry.toppingId) && !halalMeatToppings.has(entry.toppingId))) {
+        throw new OrderValidationError("One or more selected meat toppings do not currently have a halal alternative.");
+      }
       const halalSurchargeCents =
         input.halal && operations.halalSurchargeType === "fixed_product"
           ? operations.halalSurchargeAmount
@@ -255,6 +352,10 @@ async function validateItems(
         halalSurchargeCents,
       });
       unitPriceCents = pizza.totalCents;
+      const pizzaBaseSections: ModifierSectionSeed[] = productConfiguration.pizzaBaseOptions?.length
+        ? [{ id: "pizza-base", label: "Crust, bake & sauce", options: productConfiguration.pizzaBaseOptions, min: 0, max: 2 }]
+        : [];
+      const validatedModifiers = validateModifiers(input.modifiers, pizzaBaseSections, toppingNames);
       snapshot = {
         ...snapshot,
         variationId: variation.id,
@@ -265,9 +366,14 @@ async function validateItems(
         paidUnitsBps: pizza.paidUnitsBps,
         extraCheese: Boolean(input.extraCheese),
         halal: Boolean(input.halal),
+        modifiers: validatedModifiers.snapshot,
       };
     } else if (input.toppings?.length || input.extraCheese || input.halal) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
+    } else {
+      const validatedModifiers = validateModifiers(input.modifiers, productConfiguration.sections ?? [], toppingNames);
+      unitPriceCents += validatedModifiers.extraCents;
+      snapshot = { ...snapshot, modifiers: validatedModifiers.snapshot, modifierExtraCents: validatedModifiers.extraCents };
     }
     validated.push({
       id: crypto.randomUUID(),
@@ -279,6 +385,7 @@ async function validateItems(
       unitPriceCents,
       taxable: Boolean(product.taxable),
       promotionEligible: Boolean(product.promotion_eligible),
+      freeDelivery: Boolean(productConfiguration.freeDelivery),
       snapshot,
       instructions,
     });
@@ -315,6 +422,56 @@ async function activePromotions(fulfilment: Fulfilment): Promise<PromotionRule[]
   });
 }
 
+async function createStripeCheckout(input: {
+  origin: string;
+  orderId: string;
+  orderNumber: string;
+  trackingToken: string;
+  customerEmail: string;
+  totalCents: number;
+}): Promise<{ id: string; url: string }> {
+  const secret = (env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY;
+  if (!secret) {
+    throw new OrderValidationError(
+      "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
+      503,
+      "PAYMENT_SETUP_REQUIRED",
+    );
+  }
+  const successUrl = new URL("/track", input.origin);
+  successUrl.searchParams.set("order", input.orderNumber);
+  successUrl.searchParams.set("token", input.trackingToken);
+  successUrl.searchParams.set("payment", "success");
+  const cancelUrl = new URL("/", input.origin);
+  cancelUrl.searchParams.set("checkout", "cancelled");
+  const form = new URLSearchParams({
+    mode: "payment",
+    success_url: successUrl.toString(),
+    cancel_url: cancelUrl.toString(),
+    customer_email: input.customerEmail,
+    client_reference_id: input.orderId,
+    "metadata[order_id]": input.orderId,
+    "metadata[order_number]": input.orderNumber,
+    "line_items[0][price_data][currency]": "cad",
+    "line_items[0][price_data][unit_amount]": String(input.totalCents),
+    "line_items[0][price_data][product_data][name]": `Pizza 62 order ${input.orderNumber}`,
+    "line_items[0][quantity]": "1",
+  });
+  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: form,
+  });
+  const result = await response.json() as { id?: string; url?: string; error?: { message?: string } };
+  if (!response.ok || !result.id || !result.url) {
+    throw new Error(result.error?.message ?? "Stripe checkout session could not be created");
+  }
+  return { id: result.id, url: result.url };
+}
+
 export class OrderValidationError extends Error {
   constructor(
     message: string,
@@ -325,7 +482,7 @@ export class OrderValidationError extends Error {
   }
 }
 
-export async function createOrder(body: OrderRequest) {
+export async function createOrder(body: OrderRequest, origin: string) {
   await ensureDatabase();
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
@@ -370,23 +527,21 @@ export async function createOrder(body: OrderRequest) {
     if ((fulfilment === "pickup" && !ordering.pickupEnabled) || (fulfilment === "delivery" && !ordering.deliveryEnabled)) {
       throw new OrderValidationError(`${fulfilment} ordering is currently unavailable.`, 409);
     }
-    if (fulfilment === "delivery") {
-      throw new OrderValidationError(
-        "Delivery checkout will open after the owner configures the restaurant origin and address-validation provider.",
-        503,
-        "DELIVERY_SETUP_REQUIRED",
-      );
+    const paymentMethod = body.paymentMethod;
+    if (paymentMethod !== "pay_at_store" && paymentMethod !== "online") {
+      throw new OrderValidationError("Choose an available payment method.");
     }
-    if (body.paymentMethod === "online") {
+    if (paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+      throw new OrderValidationError("Pay at store is available for pickup orders only.");
+    }
+    if (paymentMethod === "online" && !(env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY) {
       throw new OrderValidationError(
-        "Online payment is not configured yet. No payment was taken.",
+        "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
         503,
         "PAYMENT_SETUP_REQUIRED",
       );
     }
-    if (body.paymentMethod !== "pay_at_store" || !ordering.payAtStorePickupEnabled) {
-      throw new OrderValidationError("Choose an available payment method.");
-    }
+    const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
     const items = await validateItems(body.items, fulfilment, operations);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
@@ -397,9 +552,21 @@ export async function createOrder(body: OrderRequest) {
       taxable: item.taxable,
       promotionEligible: item.promotionEligible,
     }));
+    const promotions = await activePromotions(fulfilment);
+    if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
+      promotions.push({
+        id: "included-free-delivery",
+        name: "Included free delivery",
+        type: "free_delivery",
+        amount: 0,
+        priority: 10_000,
+        combinable: true,
+        exclusive: false,
+      });
+    }
     const price = priceCart({
       lines: cartLines,
-      promotions: await activePromotions(fulfilment),
+      promotions,
       fulfilment,
       deliveryFeeCents: delivery.feeCents,
       taxRateBps: taxTips.taxRateBps,
@@ -408,7 +575,10 @@ export async function createOrder(body: OrderRequest) {
       customTipMaxCents: taxTips.customTipMaxCents,
       customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
     });
-    const schedule = validateSchedule(body.schedule, ordering.pickupEstimateMinutes, hours);
+    const estimateMinutes = fulfilment === "delivery"
+      ? ordering.deliveryEstimateMinutes ?? 30
+      : ordering.pickupEstimateMinutes;
+    const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
     const sequence = await getD1()
       .prepare(
         "UPDATE order_sequences SET current_number = current_number + 1 WHERE key = 'public_order' RETURNING current_number",
@@ -421,6 +591,14 @@ export async function createOrder(body: OrderRequest) {
     const feedbackToken = generateOpaqueToken();
     const trackingTokenHash = await hashOpaqueToken(trackingToken);
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
+    const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
+    const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
+    const paymentProvider = paymentMethod === "online" ? "stripe" : "store";
+    const outboxStatus = paymentMethod === "online"
+      ? "waiting_payment"
+      : (env as unknown as Record<string, string | undefined>).EMAIL_API_KEY
+        ? "pending"
+        : "pending_provider_setup";
     const operationsBatch: D1PreparedStatement[] = [
       getD1()
         .prepare(
@@ -429,7 +607,7 @@ export async function createOrder(body: OrderRequest) {
             customer_email, fulfilment, status, payment_status, payment_method, schedule_type,
             scheduled_for, estimated_for, address_json, instructions, pricing_json, subtotal_cents,
             discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'received', 'pending_at_store', 'pay_at_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -440,10 +618,13 @@ export async function createOrder(body: OrderRequest) {
           customer.phone,
           customer.email,
           fulfilment,
+          orderStatus,
+          paymentStatus,
+          paymentMethod,
           schedule.type,
           schedule.scheduledFor,
           schedule.estimatedFor,
-          null,
+          deliveryAddress ? JSON.stringify(deliveryAddress) : null,
           cleanInstructions(body.address?.instructions),
           JSON.stringify(price),
           price.menuSubtotalCents,
@@ -459,26 +640,45 @@ export async function createOrder(body: OrderRequest) {
         .prepare(
           `INSERT INTO payments
            (id, order_id, provider, method, status, amount_cents, currency, idempotency_key, created_at, updated_at)
-           VALUES (?, ?, 'store', 'pay_at_store', 'pending', ?, 'CAD', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, 'CAD', ?, ?, ?)`,
         )
-        .bind(crypto.randomUUID(), orderId, price.totalCents, idempotencyKey, now, now),
+        .bind(
+          crypto.randomUUID(),
+          orderId,
+          paymentProvider,
+          paymentMethod,
+          paymentMethod === "online" ? "pending" : "pending",
+          price.totalCents,
+          idempotencyKey,
+          now,
+          now,
+        ),
       getD1()
         .prepare(
           `INSERT INTO order_events
            (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
-           VALUES (?, ?, NULL, 'received', 'system', NULL, 'Order accepted after server validation', ?)`,
+           VALUES (?, ?, NULL, ?, 'system', NULL, ?, ?)`,
         )
-        .bind(crypto.randomUUID(), orderId, now),
+        .bind(
+          crypto.randomUUID(),
+          orderId,
+          orderStatus,
+          paymentMethod === "online"
+            ? "Order validated; waiting for Stripe payment"
+            : "Order accepted after server validation",
+          now,
+        ),
       getD1()
         .prepare(
           `INSERT INTO notification_outbox
            (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-           VALUES (?, 'customer_order_confirmation', ?, ?, 'pending_provider_setup', 0, ?, ?, ?)`,
+           VALUES (?, 'customer_order_confirmation', ?, ?, ?, 0, ?, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
           customer.email,
           JSON.stringify({ orderId, orderNumber }),
+          outboxStatus,
           now,
           now,
           now,
@@ -515,14 +715,56 @@ export async function createOrder(body: OrderRequest) {
       );
     }
     await getD1().batch(operationsBatch);
+    if (paymentMethod === "online") {
+      try {
+        const checkout = await createStripeCheckout({
+          origin,
+          orderId,
+          orderNumber,
+          trackingToken,
+          customerEmail: customer.email,
+          totalCents: price.totalCents,
+        });
+        await getD1()
+          .prepare("UPDATE payments SET provider_reference = ?, updated_at = ? WHERE order_id = ? AND provider = 'stripe'")
+          .bind(checkout.id, Date.now(), orderId)
+          .run();
+        return {
+          duplicate: false,
+          orderId,
+          orderNumber,
+          trackingToken,
+          feedbackToken,
+          status: orderStatus,
+          paymentStatus,
+          estimateAt: schedule.estimatedFor,
+          price,
+          checkoutUrl: checkout.url,
+        };
+      } catch (error) {
+        await getD1().batch([
+          getD1()
+            .prepare("UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE order_id = ?")
+            .bind(error instanceof Error ? error.message.slice(0, 500) : "Stripe checkout failed", Date.now(), orderId),
+          getD1()
+            .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
+            .bind(Date.now(), orderId),
+        ]);
+        throw new OrderValidationError(
+          "Stripe checkout could not start. No payment was taken; please try again.",
+          502,
+          "PAYMENT_PROVIDER_ERROR",
+        );
+      }
+    }
     return {
       duplicate: false,
       orderId,
       orderNumber,
       trackingToken,
       feedbackToken,
-      status: "received",
-      paymentStatus: "pending_at_store",
+      status: orderStatus,
+      paymentStatus,
       estimateAt: schedule.estimatedFor,
       price,
     };

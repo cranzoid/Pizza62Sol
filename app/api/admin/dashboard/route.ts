@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, listSettings } from "@/db/runtime";
 
@@ -6,12 +7,13 @@ export async function GET(request: Request) {
     const user = await requireStaff(request, "view_orders");
     await ensureDatabase();
     const dayStart = Date.now() - 24 * 60 * 60 * 1000;
-    const [orders, today, availability, clocked, feedback, settings] = await Promise.all([
+    const [orders, today, availability, clocked, feedback, settings, products, toppings] = await Promise.all([
       getD1()
         .prepare(
           `SELECT id, order_number, customer_name, customer_phone, fulfilment, status, payment_status,
                   schedule_type, scheduled_for, estimated_for, total_cents, created_at, acknowledged_at
-           FROM orders WHERE status NOT IN ('completed', 'cancelled') ORDER BY created_at DESC LIMIT 60`,
+           FROM orders WHERE status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
+           ORDER BY created_at DESC LIMIT 60`,
         )
         .all<Record<string, unknown>>(),
       getD1()
@@ -41,6 +43,19 @@ export async function GET(request: Request) {
         )
         .all(),
       listSettings(),
+      getD1()
+        .prepare(
+          `SELECT id, category_id, name, description, base_price_cents, active, sold_out,
+                  pickup_eligible, delivery_eligible, taxable
+           FROM products WHERE active = 1 ORDER BY display_order, name`,
+        )
+        .all(),
+      getD1()
+        .prepare(
+          `SELECT id, name, kitchen_label, is_meat, has_halal_version, halal_available, active
+           FROM toppings ORDER BY display_order, name`,
+        )
+        .all(),
     ]);
     return Response.json({
       user,
@@ -50,6 +65,14 @@ export async function GET(request: Request) {
       clockedIn: clocked.results,
       lowRatings: feedback.results,
       settings,
+      products: products.results,
+      toppings: toppings.results,
+      integrations: {
+        stripeSecret: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY),
+        stripeWebhook: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET),
+        emailApiKey: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
+        emailProvider: (env as unknown as Record<string, string | undefined>).EMAIL_PROVIDER ?? null,
+      },
     });
   } catch (error) {
     return authErrorResponse(error);

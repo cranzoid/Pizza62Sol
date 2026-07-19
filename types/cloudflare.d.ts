@@ -23,6 +23,12 @@ interface Fetcher {
 declare module "cloudflare:workers" {
   export const env: {
     DB: D1Database;
+    OWNER_SETUP_SECRET?: string;
+    STRIPE_SECRET_KEY?: string;
+    STRIPE_WEBHOOK_SECRET?: string;
+    EMAIL_PROVIDER?: string;
+    EMAIL_API_KEY?: string;
+    EMAIL_FROM?: string;
     [key: string]: unknown;
   };
 }

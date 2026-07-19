@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
+import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
-  CONFIRMED_OFFERS,
-  LAUNCH_SETTINGS,
-  PIZZA_SIZES,
-  REGULAR_HOURS,
-} from "@/lib/launch-config";
+  MENU_CATEGORIES,
+  MENU_PRODUCTS,
+  MENU_SEED_VERSION,
+  TOPPING_SEEDS,
+} from "@/lib/menu";
 
 let initialization: Promise<void> | null = null;
 
@@ -183,6 +184,10 @@ export async function ensureDatabase(): Promise<void> {
 async function seedLaunchData(database: D1Database): Promise<void> {
   const now = Date.now();
   const operations: D1PreparedStatement[] = [];
+  const currentMenuSeed = await database
+    .prepare("SELECT value_json FROM settings WHERE key = 'menuSeedVersion'")
+    .first<{ value_json: string }>();
+  const menuNeedsSeed = currentMenuSeed?.value_json !== JSON.stringify(MENU_SEED_VERSION);
   const settingsEntries = {
     business: LAUNCH_SETTINGS.business,
     ordering: LAUNCH_SETTINGS.ordering,
@@ -201,104 +206,142 @@ async function seedLaunchData(database: D1Database): Promise<void> {
         .bind(key, JSON.stringify(value), now),
     );
   }
-  const categoryRows = [
-    ["regular-pizzas", "Regular Pizzas", "regular-pizzas", 10],
-    ["pickup-specials", "Pickup Specials", "pickup-specials", 20],
-    ["pizza-wing-combos", "Pizza & Wing Combos", "pizza-wing-combos", 30],
-    ["sides", "Side Orders", "side-orders", 40],
-  ] as const;
-  for (const [id, name, slug, order] of categoryRows) {
+  if (menuNeedsSeed) {
     operations.push(
       database
-        .prepare(
-          "INSERT OR IGNORE INTO categories (id, name, slug, active, display_order, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
-        )
-        .bind(id, name, slug, order, now, now),
+        .prepare("UPDATE settings SET value_json = ?, version = version + 1, updated_at = ? WHERE key = 'business'")
+        .bind(JSON.stringify(LAUNCH_SETTINGS.business), now),
+      database
+        .prepare("UPDATE settings SET value_json = ?, version = version + 1, updated_at = ? WHERE key = 'ordering'")
+        .bind(JSON.stringify(LAUNCH_SETTINGS.ordering), now),
+      database
+        .prepare("UPDATE settings SET value_json = ?, version = version + 1, updated_at = ? WHERE key = 'operations'")
+        .bind(JSON.stringify(LAUNCH_SETTINGS.operations), now),
+      database
+        .prepare("UPDATE settings SET value_json = ?, version = version + 1, updated_at = ? WHERE key = 'featureFlags'")
+        .bind(JSON.stringify(LAUNCH_SETTINGS.featureFlags), now),
+      database
+        .prepare("UPDATE categories SET active = 0, updated_at = ? WHERE id IN ('regular-pizzas', 'pizza-wing-combos')")
+        .bind(now),
+      database
+        .prepare("UPDATE products SET active = 0, updated_at = ? WHERE id IN ('build-your-own-pizza', 'pickup-two-large', 'combo-two-medium', 'combo-two-large', 'combo-two-xl')")
+        .bind(now),
     );
-  }
-  operations.push(
-    database
-      .prepare(
-        `INSERT OR IGNORE INTO products
-          (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
-           pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
-           setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 1, 1, 0, 0, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "build-your-own-pizza",
-        "regular-pizzas",
-        "Build Your Own Pizza",
-        "build-your-own-pizza",
-        "Choose a size, cheese level and toppings. Half toppings stay clearly labelled for the kitchen.",
-        "pizza",
-        840,
-        "CUSTOM PIZZA",
-        JSON.stringify({
-          includedToppingUnitsBps: 0,
-          gourmet: false,
-          specialInstructionsEnabled: true,
-        }),
-        10,
-        now,
-        now,
-      ),
-  );
-  for (const [index, size] of PIZZA_SIZES.entries()) {
+    for (const [id, name, categorySlug, displayOrder] of MENU_CATEGORIES) {
+      operations.push(
+        database
+          .prepare(
+            `INSERT INTO categories
+             (id, name, slug, active, display_order, created_at, updated_at)
+             VALUES (?, ?, ?, 1, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, slug = excluded.slug,
+               active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+          )
+          .bind(id, name, categorySlug, displayOrder, now, now),
+      );
+    }
+    for (const [index, topping] of TOPPING_SEEDS.entries()) {
+      const [id, name, isMeat, halalAvailable] = topping;
+      operations.push(
+        database
+          .prepare(
+            `INSERT INTO toppings
+             (id, name, kitchen_label, is_meat, has_halal_version, halal_display_name,
+              halal_available, halal_cost_cents, active, display_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name,
+               kitchen_label = excluded.kitchen_label, is_meat = excluded.is_meat,
+               has_halal_version = excluded.has_halal_version,
+               halal_display_name = excluded.halal_display_name,
+               halal_available = excluded.halal_available, active = 1,
+               display_order = excluded.display_order, updated_at = excluded.updated_at`,
+          )
+          .bind(
+            id,
+            name,
+            name.toUpperCase(),
+            isMeat ? 1 : 0,
+            halalAvailable ? 1 : 0,
+            halalAvailable ? `Halal ${name}` : null,
+            halalAvailable ? 1 : 0,
+            index,
+            now,
+            now,
+          ),
+      );
+    }
+    for (const [index, product] of MENU_PRODUCTS.entries()) {
+      operations.push(
+        database
+          .prepare(
+            `INSERT INTO products
+             (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
+              pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
+              setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET category_id = excluded.category_id, name = excluded.name,
+               slug = excluded.slug, description = excluded.description, product_type = excluded.product_type,
+               base_price_cents = excluded.base_price_cents, pickup_eligible = excluded.pickup_eligible,
+               delivery_eligible = excluded.delivery_eligible, halal_capable = excluded.halal_capable,
+               active = 1, setup_required = 0, kitchen_label = excluded.kitchen_label,
+               configuration_json = excluded.configuration_json, display_order = excluded.display_order,
+               updated_at = excluded.updated_at`,
+          )
+          .bind(
+            product.id,
+            product.categoryId,
+            product.name,
+            product.id,
+            product.description,
+            product.productType,
+            product.basePriceCents,
+            product.pickupEligible === false ? 0 : 1,
+            product.deliveryEligible === false ? 0 : 1,
+            product.halalCapable ? 1 : 0,
+            product.name.toUpperCase().slice(0, 40),
+            JSON.stringify(product.configuration ?? {}),
+            index,
+            now,
+            now,
+          ),
+      );
+      for (const [variationIndex, variation] of (product.variations ?? []).entries()) {
+        operations.push(
+          database
+            .prepare(
+              `INSERT INTO product_variations
+               (id, product_id, name, base_price_cents, extra_topping_price_cents,
+                included_topping_units_bps, active, display_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id, name = excluded.name,
+                 base_price_cents = excluded.base_price_cents,
+                 extra_topping_price_cents = excluded.extra_topping_price_cents,
+                 included_topping_units_bps = excluded.included_topping_units_bps,
+                 active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+            )
+            .bind(
+              variation.id,
+              product.id,
+              variation.name,
+              variation.basePriceCents,
+              variation.extraToppingPriceCents,
+              variation.includedToppingUnitsBps ?? 0,
+              variationIndex,
+              now,
+              now,
+            ),
+        );
+      }
+    }
     operations.push(
       database
         .prepare(
-          `INSERT OR IGNORE INTO product_variations
-           (id, product_id, name, base_price_cents, extra_topping_price_cents,
-            included_topping_units_bps, active, display_order, created_at, updated_at)
-           VALUES (?, 'build-your-own-pizza', ?, ?, ?, 0, 1, ?, ?, ?)`,
+          `INSERT INTO settings (key, value_json, version, updated_at)
+           VALUES ('menuSeedVersion', ?, 1, ?)
+           ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
+             version = version + 1, updated_at = excluded.updated_at`,
         )
-        .bind(size.id, size.name, size.basePriceCents, size.extraToppingPriceCents, index, now, now),
-    );
-  }
-  operations.push(
-    database
-      .prepare(
-        `INSERT OR IGNORE INTO products
-         (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
-          pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
-          setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-         VALUES ('standard-dip', 'sides', 'Standard Dipping Sauce', 'standard-dipping-sauce',
-          'Pizza 62 standard dipping sauce.', 'simple', 120, 1, 1, 1, 0, 1, 1, 0, 0,
-          'DIP', '{}', 10, ?, ?)`,
-      )
-      .bind(now, now),
-  );
-  for (const [index, offer] of CONFIRMED_OFFERS.entries()) {
-    const categoryId = offer.fulfilments.length === 1 ? "pickup-specials" : "pizza-wing-combos";
-    operations.push(
-      database
-        .prepare(
-          `INSERT OR IGNORE INTO products
-           (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
-            pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
-            setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'bundle', ?, 1, ?, ?, 1, 0, 1, 0, 1, ?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          offer.id,
-          categoryId,
-          offer.name,
-          offer.id,
-          offer.description,
-          offer.priceCents,
-          (offer.fulfilments as readonly string[]).includes("pickup") ? 1 : 0,
-          (offer.fulfilments as readonly string[]).includes("delivery") ? 1 : 0,
-          offer.name.toUpperCase(),
-          JSON.stringify({
-            confirmedOffer: true,
-            requiresOwnerItemSetup: true,
-            fulfilments: offer.fulfilments,
-          }),
-          index + 20,
-          now,
-          now,
-        ),
+        .bind(JSON.stringify(MENU_SEED_VERSION), now),
     );
   }
   operations.push(
