@@ -1,0 +1,4 @@
+/* eslint-disable @next/next/no-html-link-for-pages */
+export default function PolicyPage({ eyebrow, title, intro, children }: { eyebrow: string; title: string; intro: string; children: React.ReactNode }) {
+  return <div className="utility-page"><header className="utility-header"><a className="brand" href="/"><span className="pizza-mark"><span>62</span><i className="pizza-dot pizza-dot--one" /></span><span className="brand-copy"><strong>Pizza 62</strong><small>Hamilton, Ontario</small></span></a><a href="/">Back to menu ↗</a></header><main className="utility-content"><div className="utility-title"><p className="eyebrow dark" style={{ justifyContent: "center" }}><span /> {eyebrow}</p><h1>{title}</h1><p>{intro}</p></div><article className="feedback-card" style={{ fontFamily: "Georgia, serif", lineHeight: 1.7 }}>{children}</article></main></div>;
+}
