@@ -61,6 +61,16 @@ export const LAUNCH_SETTINGS = {
     wingBreadedLabel: false,
     dryRubLabel: true,
   },
+  content: {
+    heroEyebrow: "Hamilton-made since the first slice",
+    heroHeadline: "Big flavour.",
+    heroAccent: "Zero fuss.",
+    heroDescription: "Hot pizza, honest prices, and the kind of local service that remembers your order.",
+    dealEyebrow: "Pick it up & save",
+    dealHeadline: "Two large. Six toppings.",
+    dealDescription: "Split all six included toppings across both pizzas any way you want.",
+    footerTagline: "Hamilton pizza made for real life.",
+  },
 } as const;
 
 export const REGULAR_HOURS = [
@@ -74,11 +84,11 @@ export const REGULAR_HOURS = [
 ] as const;
 
 export const PIZZA_SIZES = [
-  { id: "medium", name: "Medium", basePriceCents: 840, extraToppingPriceCents: 210 },
-  { id: "large", name: "Large", basePriceCents: 1149, extraToppingPriceCents: 230 },
-  { id: "x-large", name: "X-Large", basePriceCents: 1249, extraToppingPriceCents: 260 },
-  { id: "jumbo", name: "Jumbo", basePriceCents: 1999, extraToppingPriceCents: 290 },
-  { id: "slab", name: "Slab", basePriceCents: 2149, extraToppingPriceCents: 290 },
+  { id: "medium", name: "Medium", basePriceCents: 899, threeToppingPriceCents: 1249, extraToppingPriceCents: 160 },
+  { id: "large", name: "Large", basePriceCents: 1199, threeToppingPriceCents: 1499, extraToppingPriceCents: 210 },
+  { id: "x-large", name: "X-Large", basePriceCents: 1299, threeToppingPriceCents: 1599, extraToppingPriceCents: 260 },
+  { id: "jumbo", name: "Jumbo", basePriceCents: 2049, threeToppingPriceCents: 2399, extraToppingPriceCents: 290 },
+  { id: "slab", name: "Slab", basePriceCents: 2199, threeToppingPriceCents: 2599, extraToppingPriceCents: 290 },
 ] as const;
 
 export const INITIAL_WING_FLAVOURS = [

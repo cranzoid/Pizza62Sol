@@ -3,12 +3,14 @@ import { ensureDatabase, getD1, getSetting, safeJson } from "@/db/runtime";
 import {
   generateOpaqueToken,
   hashOpaqueToken,
+  isWithinWeeklyAvailability,
   priceCart,
   pricePizza,
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
   type ToppingSelection,
+  type WeeklyAvailability,
 } from "@/lib/domain";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
@@ -123,6 +125,7 @@ type ProductConfiguration = {
   sections?: ModifierSectionSeed[];
   pizzaBaseOptions?: string[];
   freeDelivery?: boolean;
+  availability?: WeeklyAvailability;
   [key: string]: unknown;
 };
 
@@ -312,6 +315,13 @@ async function validateItems(
     }
     const instructions = cleanInstructions(input.specialInstructions);
     const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
+    if (!isWithinWeeklyAvailability(productConfiguration.availability)) {
+      throw new OrderValidationError(
+        `${product.name} is only available ${productConfiguration.availability?.label ?? "during its advertised offer hours"}.`,
+        409,
+        "PRODUCT_OUTSIDE_OFFER_HOURS",
+      );
+    }
     let variation: DbVariation | null = null;
     let unitPriceCents = product.base_price_cents;
     let snapshot: Record<string, unknown> = {

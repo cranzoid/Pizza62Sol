@@ -1,13 +1,14 @@
 import { env } from "cloudflare:workers";
 import { authErrorResponse, requireStaff } from "@/lib/auth";
-import { ensureDatabase, getD1, listSettings } from "@/db/runtime";
+import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 
 export async function GET(request: Request) {
   try {
     const user = await requireStaff(request, "view_orders");
     await ensureDatabase();
     const dayStart = Date.now() - 24 * 60 * 60 * 1000;
-    const [orders, today, availability, clocked, feedback, settings, products, toppings] = await Promise.all([
+    const canManageEmployees = user.role === "owner" || user.permissions.includes("manage_employees");
+    const [orders, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
       getD1()
         .prepare(
           `SELECT id, order_number, customer_name, customer_phone, fulfilment, status, payment_status,
@@ -45,9 +46,10 @@ export async function GET(request: Request) {
       listSettings(),
       getD1()
         .prepare(
-          `SELECT id, category_id, name, description, base_price_cents, active, sold_out,
-                  pickup_eligible, delivery_eligible, taxable
-           FROM products WHERE active = 1 ORDER BY display_order, name`,
+          `SELECT id, category_id, name, description, product_type, image_url, base_price_cents,
+                  active, sold_out, pickup_eligible, delivery_eligible, taxable, halal_capable,
+                  setup_required, kitchen_label, configuration_json, display_order
+           FROM products ORDER BY display_order, name`,
         )
         .all(),
       getD1()
@@ -55,6 +57,18 @@ export async function GET(request: Request) {
           `SELECT id, name, kitchen_label, is_meat, has_halal_version, halal_available, active
            FROM toppings ORDER BY display_order, name`,
         )
+        .all(),
+      getD1()
+        .prepare("SELECT id, name, slug, description, active, display_order FROM categories ORDER BY display_order, name")
+        .all(),
+      getD1()
+        .prepare("SELECT id, product_id, name, base_price_cents, extra_topping_price_cents, included_topping_units_bps, active, display_order FROM product_variations ORDER BY product_id, display_order, name")
+        .all(),
+      canManageEmployees
+        ? getD1().prepare("SELECT id, email, name, role, permissions_json, active, last_login_at, created_at FROM staff_users ORDER BY active DESC, name").all<Record<string, unknown>>()
+        : Promise.resolve({ results: [], success: true, meta: { changes: 0 } }),
+      getD1()
+        .prepare("SELECT id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, display_order FROM promotions ORDER BY display_order, name")
         .all(),
     ]);
     return Response.json({
@@ -65,8 +79,24 @@ export async function GET(request: Request) {
       clockedIn: clocked.results,
       lowRatings: feedback.results,
       settings,
-      products: products.results,
+      products: products.results.map((product) => ({
+        ...product,
+        configuration: safeJson(String((product as Record<string, unknown>).configuration_json ?? "{}"), {}),
+        configuration_json: undefined,
+      })),
       toppings: toppings.results,
+      categories: categories.results,
+      variations: variations.results,
+      staff: staff.results.map((member) => ({
+        ...member,
+        permissions: safeJson(String(member.permissions_json ?? "[]"), []),
+        permissions_json: undefined,
+      })),
+      promotions: promotions.results.map((promotion) => ({
+        ...promotion,
+        rule: safeJson(String((promotion as Record<string, unknown>).rule_json ?? "{}"), {}),
+        rule_json: undefined,
+      })),
       integrations: {
         stripeSecret: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY),
         stripeWebhook: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET),

@@ -195,6 +195,7 @@ async function seedLaunchData(database: D1Database): Promise<void> {
     taxAndTips: LAUNCH_SETTINGS.taxAndTips,
     operations: LAUNCH_SETTINGS.operations,
     featureFlags: LAUNCH_SETTINGS.featureFlags,
+    content: LAUNCH_SETTINGS.content,
     hours: REGULAR_HOURS,
   };
   for (const [key, value] of Object.entries(settingsEntries)) {
@@ -225,6 +226,12 @@ async function seedLaunchData(database: D1Database): Promise<void> {
         .bind(now),
       database
         .prepare("UPDATE products SET active = 0, updated_at = ? WHERE id IN ('build-your-own-pizza', 'pickup-two-large', 'combo-two-medium', 'combo-two-large', 'combo-two-xl')")
+        .bind(now),
+      database
+        .prepare("UPDATE products SET active = 0, updated_at = ? WHERE id IN ('pickup-jumbo-one', 'pickup-jumbo-three', 'pickup-large-one', 'pickup-large-three', 'pickup-medium-one', 'pickup-medium-three', 'pickup-slab-one', 'pickup-slab-three', 'pickup-xl-one', 'pickup-xl-three', 'fifa-game-day')")
+        .bind(now),
+      database
+        .prepare("UPDATE products SET active = 0, updated_at = ? WHERE id IN ('12-wings', 'buffalo-chicken-wrap', 'chicken-burger', 'chicken-fingers-fries', 'fried-chicken-dumplings', 'shawarma-wrap')")
         .bind(now),
     );
     for (const [id, name, categorySlug, displayOrder] of MENU_CATEGORIES) {
@@ -271,6 +278,11 @@ async function seedLaunchData(database: D1Database): Promise<void> {
       );
     }
     for (const [index, product] of MENU_PRODUCTS.entries()) {
+      operations.push(
+        database
+          .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")
+          .bind(now, product.id),
+      );
       operations.push(
         database
           .prepare(

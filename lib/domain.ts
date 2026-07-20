@@ -122,6 +122,48 @@ export type DeliveryEligibility = {
     | "below_minimum";
 };
 
+export type WeeklyAvailability = {
+  weekdays: number[];
+  startMinute: number;
+  endMinute: number;
+  timeZone: string;
+  label?: string;
+};
+
+export function isWithinWeeklyAvailability(
+  availability: WeeklyAvailability | null | undefined,
+  date = new Date(),
+): boolean {
+  if (!availability) return true;
+  if (
+    !Array.isArray(availability.weekdays) ||
+    !availability.weekdays.length ||
+    !availability.weekdays.every((day) => Number.isInteger(day) && day >= 0 && day <= 6) ||
+    !Number.isInteger(availability.startMinute) ||
+    !Number.isInteger(availability.endMinute) ||
+    availability.startMinute < 0 ||
+    availability.endMinute > 1440 ||
+    availability.startMinute >= availability.endMinute
+  ) return false;
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: availability.timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+    const weekdayName = parts.find((part) => part.type === "weekday")?.value;
+    const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(weekdayName ?? "");
+    const hour = Number(parts.find((part) => part.type === "hour")?.value);
+    const minute = Number(parts.find((part) => part.type === "minute")?.value);
+    const minuteOfDay = hour * 60 + minute;
+    return availability.weekdays.includes(weekday) && minuteOfDay >= availability.startMinute && minuteOfDay <= availability.endMinute;
+  } catch {
+    return false;
+  }
+}
+
 const STATUS_PATHS = {
   pickup: ["received", "preparing", "ready_for_pickup", "completed"],
   delivery: ["received", "preparing", "out_for_delivery", "completed"],

@@ -42,14 +42,50 @@ type Body =
   | {
       action: "product.update";
       productId?: string;
+      categoryId?: string;
       name?: string;
       description?: string;
+      productType?: "pizza" | "simple" | "bundle" | "configurable";
       basePriceCents?: number;
+      imageUrl?: string | null;
       active?: boolean;
       soldOut?: boolean;
       pickupEligible?: boolean;
       deliveryEligible?: boolean;
       taxable?: boolean;
+      halalCapable?: boolean;
+      setupRequired?: boolean;
+      kitchenLabel?: string;
+      displayOrder?: number;
+      configuration?: Record<string, unknown>;
+    }
+  | {
+      action: "product.create";
+      categoryId?: string;
+      name?: string;
+      description?: string;
+      productType?: "pizza" | "simple" | "bundle" | "configurable";
+      basePriceCents?: number;
+    }
+  | {
+      action: "variation.upsert";
+      id?: string;
+      productId?: string;
+      name?: string;
+      basePriceCents?: number;
+      extraToppingPriceCents?: number;
+      includedToppingUnitsBps?: number;
+      active?: boolean;
+      displayOrder?: number;
+    }
+  | {
+      action: "category.upsert";
+      id?: string;
+      name?: string;
+      slug?: string;
+      description?: string;
+      active?: boolean;
+      displayOrder?: number;
     }
   | {
       action: "staff.create";
@@ -58,6 +94,15 @@ type Body =
       password?: string;
       role?: "manager" | "employee";
       permissions?: string[];
+    }
+  | {
+      action: "staff.update";
+      staffId?: string;
+      name?: string;
+      email?: string;
+      role?: "manager" | "employee";
+      permissions?: string[];
+      active?: boolean;
     }
   | {
       action: "promotion.upsert";
@@ -102,8 +147,21 @@ function settingValidation(key: string, value: Record<string, unknown>) {
     if (!Number.isInteger(feedbackDelay) || feedbackDelay < 1 || feedbackDelay > 1440) {
       throw new Error("Feedback delay must be between 1 minute and 24 hours.");
     }
-  } else if (key === "featureFlags" || key === "hours") {
-    // These values are structurally constrained by the admin UI and version check below.
+  } else if (key === "hours") {
+    if (!Array.isArray(value) || value.length !== 7 || value.some((row) => {
+      if (!row || typeof row !== "object") return true;
+      const item = row as Record<string, unknown>;
+      return !Number.isInteger(item.weekday) || Number(item.weekday) < 0 || Number(item.weekday) > 6 ||
+        !Number.isInteger(item.openMinute) || !Number.isInteger(item.closeMinute) ||
+        Number(item.openMinute) < 0 || Number(item.closeMinute) > 1440 ||
+        Number(item.openMinute) >= Number(item.closeMinute);
+    })) throw new Error("Enter a valid opening and closing time for all seven days.");
+  } else if (key === "content") {
+    if (Object.values(value).some((entry) => typeof entry !== "string" || entry.length > 600)) {
+      throw new Error("Website wording must use text fields under 600 characters.");
+    }
+  } else if (key === "featureFlags") {
+    // Feature switches are constrained by the owner interface.
   } else {
     throw new Error("That settings group cannot be changed through this endpoint.");
   }
@@ -192,30 +250,127 @@ export async function POST(request: Request) {
       const basePrice = body.basePriceCents ?? Number(previous.base_price_cents);
       const name = body.name?.trim() || String(previous.name);
       const description = body.description?.trim() ?? String(previous.description);
-      if (!Number.isSafeInteger(basePrice) || basePrice < 0 || basePrice > 100_000 || name.length < 2 || name.length > 120 || description.length > 1000) {
-        return Response.json({ error: "Product name, description, or price is invalid." }, { status: 400 });
+      const categoryId = body.categoryId ?? String(previous.category_id);
+      const productType = body.productType ?? String(previous.product_type);
+      const imageUrl = body.imageUrl === undefined ? previous.image_url : body.imageUrl?.trim() || null;
+      const configuration = body.configuration ?? JSON.parse(String(previous.configuration_json ?? "{}"));
+      const displayOrder = body.displayOrder ?? Number(previous.display_order);
+      const category = await getD1().prepare("SELECT id FROM categories WHERE id = ?").bind(categoryId).first();
+      if (
+        !category ||
+        !["pizza", "simple", "bundle", "configurable"].includes(productType) ||
+        !Number.isSafeInteger(basePrice) || basePrice < 0 || basePrice > 100_000 ||
+        !Number.isSafeInteger(displayOrder) || displayOrder < 0 || displayOrder > 100_000 ||
+        name.length < 2 || name.length > 120 || description.length > 1000 ||
+        (imageUrl !== null && !String(imageUrl).startsWith("/api/uploads/") && !/^https:\/\//.test(String(imageUrl))) ||
+        JSON.stringify(configuration).length > 30_000
+      ) {
+        return Response.json({ error: "Product details, category, image, or pricing are invalid." }, { status: 400 });
       }
       await getD1()
         .prepare(
-          `UPDATE products SET name = ?, description = ?, base_price_cents = ?,
-             active = ?, sold_out = ?, pickup_eligible = ?, delivery_eligible = ?, taxable = ?, updated_at = ?
+          `UPDATE products SET category_id = ?, name = ?, description = ?, product_type = ?,
+             image_url = ?, base_price_cents = ?, active = ?, sold_out = ?, pickup_eligible = ?,
+             delivery_eligible = ?, taxable = ?, halal_capable = ?, setup_required = ?,
+             kitchen_label = ?, configuration_json = ?, display_order = ?, updated_at = ?
            WHERE id = ?`,
         )
         .bind(
+          categoryId,
           name,
           description,
+          productType,
+          imageUrl,
           basePrice,
           body.active ?? Boolean(previous.active) ? 1 : 0,
           body.soldOut ?? Boolean(previous.sold_out) ? 1 : 0,
           body.pickupEligible ?? Boolean(previous.pickup_eligible) ? 1 : 0,
           body.deliveryEligible ?? Boolean(previous.delivery_eligible) ? 1 : 0,
           body.taxable ?? Boolean(previous.taxable) ? 1 : 0,
+          body.halalCapable ?? Boolean(previous.halal_capable) ? 1 : 0,
+          body.setupRequired ?? Boolean(previous.setup_required) ? 1 : 0,
+          body.kitchenLabel?.trim() || String(previous.kitchen_label ?? name.toUpperCase()).slice(0, 40),
+          JSON.stringify(configuration),
+          displayOrder,
           Date.now(),
           id,
         )
         .run();
       await writeAudit({ actorId: user.id, action: "product.update", targetType: "product", targetId: id, previous, next: body });
       return Response.json({ ok: true });
+    }
+    if (body.action === "product.create") {
+      const user = await requireStaff(request, "manage_menu");
+      const name = body.name?.trim() ?? "";
+      const description = body.description?.trim() ?? "";
+      const categoryId = body.categoryId ?? "";
+      const productType = body.productType ?? "simple";
+      const basePrice = body.basePriceCents ?? 0;
+      const category = await getD1().prepare("SELECT id FROM categories WHERE id = ? AND active = 1").bind(categoryId).first();
+      if (!category || name.length < 2 || name.length > 120 || description.length > 1000 || !["pizza", "simple", "bundle", "configurable"].includes(productType) || !Number.isSafeInteger(basePrice) || basePrice < 0 || basePrice > 100_000) {
+        return Response.json({ error: "Enter a valid product name, category, type, and price." }, { status: 400 });
+      }
+      const id = crypto.randomUUID();
+      const now = Date.now();
+      await getD1().prepare(
+        `INSERT INTO products
+         (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
+          pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
+          setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, 1, 1, 0, ?, ?, '{}', 10000, ?, ?)`,
+      ).bind(id, categoryId, name, id, description, productType, basePrice, productType === "pizza" ? 1 : 0, name.toUpperCase().slice(0, 40), now, now).run();
+      await writeAudit({ actorId: user.id, action: "product.create", targetType: "product", targetId: id, next: body });
+      return Response.json({ ok: true, id }, { status: 201 });
+    }
+    if (body.action === "variation.upsert") {
+      const user = await requireStaff(request, "manage_menu");
+      const productId = body.productId ?? "";
+      const product = await getD1().prepare("SELECT id FROM products WHERE id = ? AND product_type = 'pizza'").bind(productId).first();
+      const name = body.name?.trim() ?? "";
+      const basePrice = body.basePriceCents ?? 0;
+      const extraPrice = body.extraToppingPriceCents ?? 0;
+      const includedUnits = body.includedToppingUnitsBps ?? 0;
+      const displayOrder = body.displayOrder ?? 0;
+      if (!product || name.length < 1 || name.length > 80 || ![basePrice, extraPrice, includedUnits, displayOrder].every(Number.isSafeInteger) || basePrice < 0 || basePrice > 100_000 || extraPrice < 0 || extraPrice > 20_000 || includedUnits < 0 || includedUnits > 200_000 || displayOrder < 0) {
+        return Response.json({ error: "Variation name, prices, or included topping count are invalid." }, { status: 400 });
+      }
+      const id = body.id?.trim() || crypto.randomUUID();
+      const previous = await getD1().prepare("SELECT * FROM product_variations WHERE id = ?").bind(id).first();
+      const now = Date.now();
+      await getD1().prepare(
+        `INSERT INTO product_variations
+         (id, product_id, name, base_price_cents, extra_topping_price_cents, included_topping_units_bps, active, display_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_price_cents = excluded.base_price_cents,
+           extra_topping_price_cents = excluded.extra_topping_price_cents,
+           included_topping_units_bps = excluded.included_topping_units_bps,
+           active = excluded.active, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+      ).bind(id, productId, name, basePrice, extraPrice, includedUnits, body.active === false ? 0 : 1, displayOrder, now, now).run();
+      await getD1().prepare("UPDATE products SET setup_required = 0, updated_at = ? WHERE id = ?").bind(now, productId).run();
+      await writeAudit({ actorId: user.id, action: previous ? "variation.update" : "variation.create", targetType: "product_variation", targetId: id, previous, next: body });
+      return Response.json({ ok: true, id });
+    }
+    if (body.action === "category.upsert") {
+      const user = await requireStaff(request, "manage_menu");
+      const name = body.name?.trim() ?? "";
+      const slug = (body.slug?.trim() || name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const description = body.description?.trim() ?? "";
+      const displayOrder = body.displayOrder ?? 0;
+      if (name.length < 2 || name.length > 80 || slug.length < 2 || slug.length > 100 || description.length > 500 || !Number.isSafeInteger(displayOrder) || displayOrder < 0) {
+        return Response.json({ error: "Category name, description, or order is invalid." }, { status: 400 });
+      }
+      const id = body.id?.trim() || crypto.randomUUID();
+      const previous = await getD1().prepare("SELECT * FROM categories WHERE id = ?").bind(id).first();
+      const now = Date.now();
+      await getD1().prepare(
+        `INSERT INTO categories (id, name, slug, description, active, display_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, slug = excluded.slug,
+           description = excluded.description, active = excluded.active,
+           display_order = excluded.display_order, updated_at = excluded.updated_at`,
+      ).bind(id, name, slug, description || null, body.active === false ? 0 : 1, displayOrder, now, now).run();
+      await writeAudit({ actorId: user.id, action: previous ? "category.update" : "category.create", targetType: "category", targetId: id, previous, next: body });
+      return Response.json({ ok: true, id });
     }
     if (body.action === "staff.create") {
       const user = await requireStaff(request, "manage_employees");
@@ -239,6 +394,31 @@ export async function POST(request: Request) {
         .run();
       await writeAudit({ actorId: user.id, action: "staff.create", targetType: "staff_user", targetId: id, next: { email, name, role: body.role, permissions } });
       return Response.json({ ok: true, id }, { status: 201 });
+    }
+    if (body.action === "staff.update") {
+      const user = await requireStaff(request, "manage_employees");
+      const id = body.staffId ?? "";
+      const previous = await getD1().prepare("SELECT id, email, name, role, permissions_json, active FROM staff_users WHERE id = ?").bind(id).first<Record<string, unknown>>();
+      if (!previous) return Response.json({ error: "Team member not found." }, { status: 404 });
+      const email = body.email?.trim().toLowerCase() ?? String(previous.email);
+      const name = body.name?.trim() ?? String(previous.name);
+      const role = body.role ?? String(previous.role);
+      const permissions = [...new Set(body.permissions ?? JSON.parse(String(previous.permissions_json ?? "[]")) as string[])];
+      const active = body.active ?? Boolean(previous.active);
+      if (!/^\S+@\S+\.\S+$/.test(email) || name.length < 2 || name.length > 80 || !["manager", "employee"].includes(role) || permissions.some((permission) => !PERMISSIONS.has(permission))) {
+        return Response.json({ error: "Team member details or permissions are invalid." }, { status: 400 });
+      }
+      if (id === user.id && !active) {
+        return Response.json({ error: "You cannot disable your own active account." }, { status: 400 });
+      }
+      await getD1().prepare(
+        "UPDATE staff_users SET email = ?, name = ?, role = ?, permissions_json = ?, active = ?, updated_at = ? WHERE id = ?",
+      ).bind(email, name, role, JSON.stringify(permissions), active ? 1 : 0, Date.now(), id).run();
+      if (!active) {
+        await getD1().prepare("UPDATE staff_sessions SET revoked_at = ? WHERE staff_user_id = ? AND revoked_at IS NULL").bind(Date.now(), id).run();
+      }
+      await writeAudit({ actorId: user.id, action: "staff.update", targetType: "staff_user", targetId: id, previous, next: { email, name, role, permissions, active } });
+      return Response.json({ ok: true });
     }
     if (body.action === "promotion.upsert") {
       const user = await requireStaff(request, "manage_promotions");

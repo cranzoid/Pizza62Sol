@@ -7,6 +7,7 @@ import {
   generateOpaqueToken,
   hashOpaqueToken,
   hasPermission,
+  isWithinWeeklyAvailability,
   isTimeWithinConfiguredHours,
   normalizeToppings,
   priceCart,
@@ -17,29 +18,49 @@ import {
 } from "../lib/domain.ts";
 import { PIZZA_SIZES, REGULAR_HOURS } from "../lib/launch-config.ts";
 
-test("uses every confirmed pizza size and extra-topping price", () => {
+test("uses flyer prices and only charges toppings beyond each included offer", () => {
   const expected = [
-    ["Medium", 840, 210],
-    ["Large", 1149, 230],
-    ["X-Large", 1249, 260],
-    ["Jumbo", 1999, 290],
-    ["Slab", 2149, 290],
+    ["Medium", 899, 1249, 160],
+    ["Large", 1199, 1499, 210],
+    ["X-Large", 1299, 1599, 260],
+    ["Jumbo", 2049, 2399, 290],
+    ["Slab", 2199, 2599, 290],
   ];
   assert.deepEqual(
-    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.extraToppingPriceCents]),
+    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.threeToppingPriceCents, size.extraToppingPriceCents]),
     expected,
   );
   for (const size of PIZZA_SIZES) {
-    const price = pricePizza({
+    const included = pricePizza({
       basePriceCents: size.basePriceCents,
       extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 0,
+      includedToppingUnitsBps: 10_000,
       halfToppingUnitsBps: 10_000,
       toppings: [{ toppingId: "approved-topping", placement: "whole" }],
       extraCheese: false,
     });
-    assert.equal(price.totalCents, size.basePriceCents + size.extraToppingPriceCents);
+    assert.equal(included.totalCents, size.basePriceCents);
+    const extra = pricePizza({
+      basePriceCents: size.basePriceCents,
+      extraToppingPriceCents: size.extraToppingPriceCents,
+      includedToppingUnitsBps: 10_000,
+      halfToppingUnitsBps: 10_000,
+      toppings: [
+        { toppingId: "approved-topping", placement: "whole" },
+        { toppingId: "extra-topping", placement: "whole" },
+      ],
+      extraCheese: false,
+    });
+    assert.equal(extra.totalCents, size.basePriceCents + size.extraToppingPriceCents);
   }
+});
+
+test("limits Hamilton Heroes to the flyer window in Toronto", () => {
+  const offer = { weekdays: [1, 2, 3, 4, 5], startMinute: 17 * 60, endMinute: 21 * 60, timeZone: "America/Toronto" };
+  assert.equal(isWithinWeeklyAvailability(offer, new Date("2026-07-20T21:00:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability(offer, new Date("2026-07-21T01:00:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability(offer, new Date("2026-07-21T01:01:00Z")), false);
+  assert.equal(isWithinWeeklyAvailability(offer, new Date("2026-07-19T22:00:00Z")), false);
 });
 
 test("normalizes the same topping on both halves and prevents triple charging", () => {

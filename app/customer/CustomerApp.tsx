@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { formatMoney, priceCart, pricePizza } from "@/lib/domain";
+import { formatMoney, isWithinWeeklyAvailability, priceCart, pricePizza, type WeeklyAvailability } from "@/lib/domain";
 
 type Category = { id: string; name: string; slug: string; description?: string | null };
 type Product = {
@@ -11,6 +11,7 @@ type Product = {
   name: string;
   description: string;
   product_type: "pizza" | "simple" | "bundle" | "configurable";
+  image_url?: string | null;
   base_price_cents: number;
   taxable: number;
   pickup_eligible: number;
@@ -75,9 +76,18 @@ type CartLine = {
   extraCheese?: boolean;
   halal?: boolean;
   specialInstructions?: string;
+  freeDelivery?: boolean;
 };
 
 const FALLBACK_PHONE = "(905) 547-5777";
+
+function formatMinuteTime(value: number) {
+  if (value === 1440) return "Midnight";
+  const hour = Math.floor(value / 60);
+  const minute = value % 60;
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}${minute ? `:${String(minute).padStart(2, "0")}` : ""} ${hour < 12 ? "AM" : "PM"}`;
+}
 
 function rememberedFulfilment(): "pickup" | "delivery" {
   if (typeof window === "undefined") return "pickup";
@@ -164,10 +174,16 @@ export default function CustomerApp() {
     window.localStorage.setItem("p62_cart_draft", JSON.stringify(cart));
   }, [fulfilment, cart]);
 
-  const phone =
-    (catalog?.settings.business?.value.phone as string | undefined) ?? FALLBACK_PHONE;
+  const business = catalog?.settings.business?.value ?? {};
+  const phone = (business.phone as string | undefined) ?? FALLBACK_PHONE;
+  const businessName = String(business.name ?? "Pizza 62");
+  const businessAddress = String(business.address ?? "55 Parkdale Ave N, Hamilton, ON L8H 5W7");
   const ordering = catalog?.settings.ordering?.value ?? {};
   const operations = catalog?.settings.operations?.value ?? {};
+  const content = catalog?.settings.content?.value ?? {};
+  const hours = Array.isArray(catalog?.settings.hours?.value)
+    ? catalog.settings.hours.value as unknown as Array<{ weekday: number; label: string; openMinute: number; closeMinute: number }>
+    : [];
   const categories = catalog?.categories ?? [];
   const eligibleProducts = (catalog?.products ?? []).filter((product) =>
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
@@ -187,7 +203,7 @@ export default function CustomerApp() {
           promotionEligible: true,
         })),
         fulfilment,
-        deliveryFeeCents: Number(catalog?.settings.delivery?.value.feeCents ?? 350),
+        deliveryFeeCents: cart.some((line) => line.freeDelivery) ? 0 : Number(catalog?.settings.delivery?.value.feeCents ?? 350),
         taxRateBps: Number(taxTips.taxRateBps ?? 1300),
         deliveryFeeTaxable: Boolean(catalog?.settings.delivery?.value.feeTaxable),
         tip: { type: "none" },
@@ -236,6 +252,7 @@ export default function CustomerApp() {
       quantity: 1,
       unitPriceCents: product.base_price_cents,
       taxable: Boolean(product.taxable),
+      freeDelivery: Boolean(product.configuration.freeDelivery),
     });
   };
 
@@ -253,7 +270,7 @@ export default function CustomerApp() {
       <header className="public-header">
         <a className="brand" href="#top" aria-label="Pizza 62 home">
           <PizzaMark />
-          <span className="brand-copy"><strong>Pizza 62</strong><small>Hamilton, Ontario</small></span>
+          <span className="brand-copy"><strong>{businessName}</strong><small>Hamilton, Ontario</small></span>
         </a>
         <nav aria-label="Primary navigation">
           <a href="#menu">Menu</a>
@@ -273,9 +290,9 @@ export default function CustomerApp() {
         <section className="hero-section">
           <div className="hero-grain" aria-hidden="true" />
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Hamilton-made since the first slice</p>
-            <h1>Big flavour.<br /><em>Zero fuss.</em></h1>
-            <p className="hero-lede">Hot pizza, honest prices, and the kind of local service that remembers your order.</p>
+            <p className="eyebrow"><span /> {String(content.heroEyebrow ?? "Hamilton-made since the first slice")}</p>
+            <h1>{String(content.heroHeadline ?? "Big flavour.")}<br /><em>{String(content.heroAccent ?? "Zero fuss.")}</em></h1>
+            <p className="hero-lede">{String(content.heroDescription ?? "Hot pizza, honest prices, and the kind of local service that remembers your order.")}</p>
             <div className="hero-method" aria-label="Choose how to get your order">
               <button className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>
                 <span className="method-icon">D</span><span><b>Delivery</b><small>About {String(ordering.deliveryEstimateMinutes ?? 30)} min</small></span><ArrowIcon />
@@ -296,7 +313,7 @@ export default function CustomerApp() {
                 <span className="pizza-slice-line l1" /><span className="pizza-slice-line l2" /><span className="pizza-slice-line l3" />
                 <PizzaMark large />
               </div>
-              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.40</strong><span>medium</span></div>
+              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.99</strong><span>medium · 1 topping</span></div>
               <div className="floating-tag floating-tag--bottom"><strong>13%</strong><span>HST, calculated right</span></div>
               <div className="scribble-note">made fresh<br />for Hamilton ↗</div>
             </div>
@@ -334,24 +351,28 @@ export default function CustomerApp() {
               <div className="menu-category" id={`category-${category.id}`} key={category.id}>
                 <div className="category-title"><span>0{categoryIndex + 1}</span><h3>{category.name}</h3><i /></div>
                 <div className="product-grid">
-                  {products.map((product, index) => (
+                  {products.map((product, index) => {
+                    const availability = product.configuration.availability as WeeklyAvailability | undefined;
+                    const availableNow = isWithinWeeklyAvailability(availability);
+                    return (
                     <article className={`product-card product-card--${(index % 4) + 1}`} key={product.id}>
-                      <div className="product-visual" aria-hidden="true">
-                        {product.product_type === "pizza" ? <div className="mini-pizza"><i /><i /><i /><i /></div> : product.product_type === "bundle" ? <div className="deal-type">DEAL<br />{String(index + 1).padStart(2, "0")}</div> : <div className="dip-cup">62</div>}
-                        {product.setup_required ? <span className="setup-ribbon">Setup required</span> : null}
+                      <div className={`product-visual ${product.image_url ? "product-visual--image" : ""}`} style={product.image_url ? { backgroundImage: `url(${product.image_url})` } : undefined} aria-hidden="true">
+                        {!product.image_url ? (product.product_type === "pizza" ? <div className="mini-pizza"><i /><i /><i /><i /></div> : product.product_type === "bundle" ? <div className="deal-type">DEAL<br />{String(index + 1).padStart(2, "0")}</div> : <div className="dip-cup">62</div>) : null}
+                        {product.setup_required ? <span className="setup-ribbon">Setup required</span> : !availableNow ? <span className="setup-ribbon">{availability?.label ?? "Limited hours"}</span> : null}
                       </div>
                       <div className="product-content">
                         <div className="product-kicker">{product.product_type === "bundle" ? "Family favourite" : product.product_type === "pizza" ? "Make it yours" : "The essentials"}</div>
                         <h4>{product.name}</h4>
                         <p>{product.description}</p>
                         <div className="product-footer"><span><small>{product.product_type === "pizza" ? "from" : ""}</small>{formatMoney(product.base_price_cents)}</span>
-                          <button disabled={Boolean(product.setup_required || product.sold_out)} onClick={() => openProduct(product)}>
-                            {product.sold_out ? "Sold out" : product.setup_required ? "Owner setup" : product.product_type === "simple" && !Array.isArray(product.configuration.sections) ? "Add" : "Customize"}<ArrowIcon />
+                          <button disabled={Boolean(product.setup_required || product.sold_out || !availableNow)} onClick={() => openProduct(product)}>
+                            {product.sold_out ? "Sold out" : product.setup_required ? "Owner setup" : !availableNow ? "Offer closed" : product.product_type === "simple" && !Array.isArray(product.configuration.sections) ? "Add" : "Customize"}<ArrowIcon />
                           </button>
                         </div>
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -360,21 +381,21 @@ export default function CustomerApp() {
 
         <section className="deal-feature" id="deals">
           <div className="deal-stamp">PICKUP<br /><b>ONLY</b></div>
-          <div className="deal-copy"><p className="eyebrow"><span /> Pick it up & save</p><h2>Two large.<br /><em>Six toppings.</em></h2><p>Split all six included toppings across both pizzas any way you want.</p></div>
+          <div className="deal-copy"><p className="eyebrow"><span /> {String(content.dealEyebrow ?? "Pick it up & save")}</p><h2>{String(content.dealHeadline ?? "Two large. Six toppings.")}</h2><p>{String(content.dealDescription ?? "Split all six included toppings across both pizzas any way you want.")}</p></div>
           <div className="deal-price"><span>ONLY</span><strong><small>$</small>27<sup>99</sup></strong><a className="primary-button" href="#category-pickup-specials">Choose this deal <ArrowIcon /></a></div>
         </section>
 
         <section className="hours-section" id="hours">
-          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at 55 Parkdale Ave N or choose delivery and enter your Hamilton address at checkout.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone} <ArrowIcon /></a></div>
+          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at {businessAddress} or choose delivery and enter your Hamilton address at checkout.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone} <ArrowIcon /></a></div>
           <div className="hours-card"><div className="hours-card-title"><span>Weekly hours</span><i>Hamilton time</i></div>
-            {["Mon — Wed|11 AM – 10 PM", "Thursday|11 AM – 11 PM", "Fri — Sat|11 AM – Midnight", "Sunday|12 PM – 10 PM"].map((entry) => { const [day, time] = entry.split("|"); return <div className="hours-row" key={day}><span>{day}</span><b>{time}</b></div>; })}
+            {hours.map((entry) => <div className="hours-row" key={entry.weekday}><span>{entry.label}</span><b>{formatMinuteTime(entry.openMinute)} – {formatMinuteTime(entry.closeMinute)}</b></div>)}
             <small>Online orders are accepted until the configured closing time.</small>
           </div>
         </section>
       </main>
 
       <footer className="public-footer">
-        <div className="footer-brand"><PizzaMark /><strong>Pizza 62</strong><p>Hamilton pizza made for real life.</p></div>
+        <div className="footer-brand"><PizzaMark /><strong>{businessName}</strong><p>{String(content.footerTagline ?? "Hamilton pizza made for real life.")}</p></div>
         <div><b>Order</b><a href="#menu">Menu</a><a href="#deals">Deals</a><Link href="/track">Track an order</Link></div>
         <div><b>Information</b><a href="#hours">Hours & delivery</a><Link href="/privacy">Privacy</Link><Link href="/accessibility">Accessibility</Link></div>
         <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a><Link href="/admin">Staff portal</Link></div>
@@ -456,9 +477,18 @@ function PizzaCustomizer({
   onClose: () => void;
   onAdd: (line: CartLine) => void;
 }) {
+  const recipeToppingIds = Array.isArray(product.configuration.recipeToppingIds)
+    ? product.configuration.recipeToppingIds.map(String)
+    : [];
   const [variationId, setVariationId] = useState(variations[0]?.id ?? "");
-  const [selected, setSelected] = useState<Array<{ toppingId: string; placement: "whole"; name: string }>>([]);
-  const [cheese, setCheese] = useState<"none" | "light" | "regular" | "extra">("regular");
+  const [selected, setSelected] = useState<Array<{ toppingId: string; placement: "whole"; name: string }>>(() =>
+    recipeToppingIds.map((toppingId) => ({
+      toppingId,
+      placement: "whole",
+      name: toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId,
+    })),
+  );
+  const [cheese, setCheese] = useState<"none" | "light" | "regular" | "extra">(product.configuration.presetExtraCheese ? "extra" : "regular");
   const [halal, setHalal] = useState(false);
   const [pizzaBase, setPizzaBase] = useState<string[]>([]);
   const [instructions, setInstructions] = useState("");
@@ -477,6 +507,9 @@ function PizzaCustomizer({
         extraCheese,
       })
     : null;
+  const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000;
+  const selectedCount = selected.length + (extraCheese ? 1 : 0);
+  const selectionValid = Boolean(variation && (product.configuration.fixedRecipe || includedCount === 0 || selectedCount >= 1));
   const toggleTopping = (topping: Topping) => {
     setSelected((current) => {
       const existing = current.some((entry) => entry.toppingId === topping.id);
@@ -489,17 +522,17 @@ function PizzaCustomizer({
       <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="customizer-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Customize your order</p><h2 id="customizer-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
-          <fieldset><legend><span>1</span> Choose your size</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset>
+          <fieldset><legend><span>1</span> {String(product.configuration.variationLabel ?? "Choose your size")}</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset>
           <fieldset><legend><span>2</span> Cheese & halal</legend><div className="size-options cheese-options">{(["none", "light", "regular", "extra"] as const).map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => setCheese(option)} /><span><b>{option[0].toUpperCase() + option.slice(1)}</b><small>{option === "extra" ? "Counts as one topping" : "No extra charge"}</small></span></label>)}</div>{product.halal_capable ? <div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => { const next = event.target.checked; setHalal(next); if (next) setSelected((current) => current.filter((entry) => { const topping = toppings.find((candidate) => candidate.id === entry.toppingId); return !topping?.is_meat || Boolean(topping.has_halal_version && topping.halal_available); })); }} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div> : null}</fieldset>
           {pizzaBaseOptions.length ? <fieldset><legend><span>3</span> Crust, bake & sauce</legend><div className="topping-grid">{pizzaBaseOptions.map((option) => { const active = pizzaBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setPizzaBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}
           <fieldset><legend><span>{pizzaBaseOptions.length ? "4" : "3"}</span> Choose toppings</legend>
-            {Boolean(product.configuration.fixedRecipe) ? <div className="setup-alert"><strong>Specialty recipe</strong><p>The listed recipe is included. Choose only additional paid toppings here; write removals or substitutions in special instructions.</p></div> : null}
+            {Boolean(product.configuration.fixedRecipe) ? <div className="setup-alert"><strong>Specialty recipe selected for you</strong><p>The highlighted recipe toppings are included. Any topping beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div> : <div className="setup-alert"><strong>{includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. The flyer price already includes the allowance shown above.</p></div>}
             <div className="topping-grid">{toppings.map((topping) => { const active = selected.some((entry) => entry.toppingId === topping.id); const unavailableForHalal = Boolean(halal && topping.is_meat && !(topping.has_halal_version && topping.halal_available)); return <button className={active ? "active" : ""} type="button" key={topping.id} disabled={unavailableForHalal} onClick={() => toggleTopping(topping)}><span>{active ? "✓" : unavailableForHalal ? "×" : "+"}</span>{topping.name}{halal && topping.is_meat ? <small>{unavailableForHalal ? "Not halal" : "Halal"}</small> : null}</button>; })}</div>
-            <div className="allowance-meter"><span>{price ? price.toppingUnitsBps / 10_000 : 0} selected</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : "Included"}</b></div>
+            <div className="allowance-meter"><span>{selectedCount} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedCount ? "Included in flyer price" : "Choose at least 1"}</b></div>
           </fieldset>
           <label className="instructions-label">Special instructions <small>Use this for topping placement requests. Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: pepperoni on the left half" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!variation} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, modifiers: pizzaBase.length ? [{ id: "pizza-base", label: "Crust, bake & sauce", values: pizzaBase.map((value) => ({ value, label: value })) }] : [], extraCheese, halal, specialInstructions: [cheese !== "regular" ? `Cheese: ${cheese}` : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, modifiers: pizzaBase.length ? [{ id: "pizza-base", label: "Crust, bake & sauce", values: pizzaBase.map((value) => ({ value, label: value })) }] : [], extraCheese, halal, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: [cheese !== "regular" ? `Cheese: ${cheese}` : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
@@ -533,7 +566,28 @@ function GenericCustomizer({ product, toppings, onClose, onAdd }: { product: Pro
     const labels = new Map(optionsFor(section).map((option) => [option.value, option.label]));
     return { id: section.id, label: section.label, values: (selected[section.id] ?? []).map((value) => ({ value, label: labels.get(value) ?? value })) };
   }).filter((section) => section.values.length);
-  return <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}><section className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" onMouseDown={(event) => event.stopPropagation()}><div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div><div className="customizer-body">{sections.map((section, index) => <fieldset key={section.id}><legend><span>{index + 1}</span> {section.label}</legend><div className="topping-grid">{optionsFor(section).map((option) => { const active = (selected[section.id] ?? []).includes(option.value); return <button className={active ? "active" : ""} type="button" key={option.value} onClick={() => toggle(section, option.value)}><span>{active ? "✓" : "+"}</span>{option.label}</button>; })}</div><div className="allowance-meter"><span>{selected[section.id]?.length ?? 0} selected</span><b>{section.min ? `Choose at least ${section.min}` : `Up to ${section.max}`}</b></div></fieldset>)}<label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label></div><div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div></section></div>;
+  return (
+    <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
+      <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
+        <div className="customizer-body">
+          {sections.map((section, index) => {
+            const count = selected[section.id]?.length ?? 0;
+            const included = section.sharedGroup ? section.sharedIncluded ?? 0 : section.included ?? 0;
+            const sectionExtras = section.sharedGroup ? 0 : Math.max(0, count - included) * (section.extraPriceCents ?? 0);
+            return <fieldset key={section.id}>
+              <legend><span>{index + 1}</span> {section.label}</legend>
+              {section.source === "toppings" ? <div className="setup-alert"><strong>{section.sharedGroup ? `${included} toppings shared across this deal` : `${included} toppings included in this price`}</strong><p>Choose your included toppings first. Each additional topping is {formatMoney(section.extraPriceCents ?? 0)}.</p></div> : section.extraPriceCents ? <div className="setup-alert"><strong>Optional add-on</strong><p>This choice adds {formatMoney(section.extraPriceCents)}.</p></div> : null}
+              <div className="topping-grid">{optionsFor(section).map((option) => { const active = (selected[section.id] ?? []).includes(option.value); return <button className={active ? "active" : ""} type="button" key={option.value} onClick={() => toggle(section, option.value)}><span>{active ? "✓" : "+"}</span>{option.label}</button>; })}</div>
+              <div className="allowance-meter"><span>{count} selected</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : section.min && count < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>
+            </fieldset>;
+          })}
+          <label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label>
+        </div>
+        <div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+      </section>
+    </div>
+  );
 }
 
 function CartDrawer({ cart, totals, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; totals: ReturnType<typeof priceCart>; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
