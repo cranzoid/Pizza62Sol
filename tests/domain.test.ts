@@ -16,15 +16,16 @@ import {
   validateDelivery,
   validateRefundAmount,
 } from "../lib/domain.ts";
-import { PIZZA_SIZES, REGULAR_HOURS } from "../lib/launch-config.ts";
+import { PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
+import { resolveDeliveryPoint } from "../lib/delivery-area.ts";
 
 test("uses flyer prices and only charges toppings beyond each included offer", () => {
   const expected = [
-    ["Medium", 899, 1249, 160],
-    ["Large", 1199, 1499, 210],
-    ["X-Large", 1299, 1599, 260],
-    ["Jumbo", 2049, 2399, 290],
-    ["Slab", 2199, 2599, 290],
+    ["Medium", 840, 1260, 210],
+    ["Large", 1149, 1609, 230],
+    ["X-Large", 1249, 1769, 260],
+    ["Jumbo", 1999, 2579, 290],
+    ["Slab", 2149, 2729, 290],
   ];
   assert.deepEqual(
     PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.threeToppingPriceCents, size.extraToppingPriceCents]),
@@ -199,6 +200,30 @@ test("validates delivery radius, fee, minimum, and free-delivery boundary", () =
   assert.equal(outside.feeCents, 0);
   const unverified = validateDelivery({ validated: false, latitude: 43.25, longitude: -79.87 }, config, 0);
   assert.equal(unverified.reason, "address_unverified");
+});
+
+test("resolves Hamilton delivery addresses and blocks out-of-area postal codes (C-01)", () => {
+  const origin = LAUNCH_SETTINGS.business;
+  const config = { originLatitude: origin.latitude, originLongitude: origin.longitude, radiusKm: LAUNCH_SETTINGS.delivery.radiusKm, feeCents: LAUNCH_SETTINGS.delivery.feeCents, minimumCents: LAUNCH_SETTINGS.delivery.minimumCents };
+
+  // A Hamilton postal code resolves and is inside the delivery radius.
+  const local = resolveDeliveryPoint("L8H 5W7");
+  assert.ok(local, "Hamilton FSA should resolve to a point");
+  const eligible = validateDelivery({ validated: local !== null, latitude: local?.latitude ?? null, longitude: local?.longitude ?? null }, config, 0);
+  assert.equal(eligible.eligible, true);
+  assert.equal(eligible.feeCents, LAUNCH_SETTINGS.delivery.feeCents);
+
+  // An Ottawa postal code (K1A 0B1) is not in the delivery-area table -> unverified -> blocked.
+  const ottawa = resolveDeliveryPoint("K1A 0B1");
+  assert.equal(ottawa, null);
+  const blocked = validateDelivery({ validated: false, latitude: null, longitude: null }, config, 0);
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.reason, "address_unverified");
+});
+
+test("keeps unconfirmed public product claims disabled until owner confirmation (H-21)", () => {
+  assert.equal(LAUNCH_SETTINGS.featureFlags.halalPreparationClaim, false);
+  assert.equal(LAUNCH_SETTINGS.featureFlags.dryRubLabel, false);
 });
 
 test("accepts orders through exact closing time and handles midnight", () => {

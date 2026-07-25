@@ -411,6 +411,30 @@ export async function POST(request: Request) {
       if (id === user.id && !active) {
         return Response.json({ error: "You cannot disable your own active account." }, { status: 400 });
       }
+      // C-04: a user with manage_employees must not be able to elevate themselves.
+      // Changing your own role or permission set is refused and audited.
+      if (id === user.id) {
+        const previousPermissions = [...new Set(JSON.parse(String(previous.permissions_json ?? "[]")) as string[])].sort();
+        const requestedPermissions = [...permissions].sort();
+        const roleChanged = role !== String(previous.role);
+        const permissionsChanged =
+          previousPermissions.length !== requestedPermissions.length ||
+          previousPermissions.some((value, index) => value !== requestedPermissions[index]);
+        if (roleChanged || permissionsChanged) {
+          await writeAudit({
+            actorId: user.id,
+            action: "staff.self_elevation_blocked",
+            targetType: "staff_user",
+            targetId: id,
+            previous: { role: previous.role, permissions: previousPermissions },
+            next: { role, permissions: requestedPermissions },
+          });
+          return Response.json(
+            { error: "You cannot change your own role or permissions. Ask another owner to make this change." },
+            { status: 403 },
+          );
+        }
+      }
       await getD1().prepare(
         "UPDATE staff_users SET email = ?, name = ?, role = ?, permissions_json = ?, active = ?, updated_at = ? WHERE id = ?",
       ).bind(email, name, role, JSON.stringify(permissions), active ? 1 : 0, Date.now(), id).run();

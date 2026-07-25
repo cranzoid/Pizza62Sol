@@ -56,18 +56,60 @@ export async function POST(request: Request) {
       const action = body.action as ClockAction;
       const data = await clockData(user.id);
       const next = nextClockState(data.state, action);
-      const last = data.events.at(-1);
-      const sessionId = action === "clock_in" ? crypto.randomUUID() : last?.session_id;
-      if (!sessionId) return Response.json({ error: "No open clock session was found." }, { status: 409 });
       const now = Date.now();
-      await getD1()
+      const database = getD1();
+      // C-06: initialise the compare-and-swap guard row from the event-derived state
+      // if it does not exist yet. ON CONFLICT DO NOTHING makes concurrent init safe.
+      await database
         .prepare(
-          `INSERT INTO time_clock_events
-           (id, staff_user_id, session_id, action, occurred_at, source, created_at)
-           VALUES (?, ?, ?, ?, ?, 'self_service', ?)`,
+          `INSERT INTO time_clock_state (staff_user_id, state, session_id, transition_id, updated_at)
+           VALUES (?, ?, ?, NULL, ?) ON CONFLICT(staff_user_id) DO NOTHING`,
         )
-        .bind(crypto.randomUUID(), user.id, sessionId, action, now, now)
+        .bind(user.id, data.state, data.events.at(-1)?.session_id ?? null, now)
         .run();
+      if (action !== "clock_in" && !data.events.at(-1)?.session_id) {
+        return Response.json({ error: "No open clock session was found." }, { status: 409 });
+      }
+      // C-06: the compare-and-swap and its clock event commit as one batch, which D1
+      // runs in a single transaction. `transitionId` is fresh per request, so the
+      // event insert only finds a row when *this* request won the CAS — a losing
+      // racer writes nothing, and a winner can never end up with a moved state row
+      // and no matching event (which would wedge the employee's clock permanently).
+      const transitionId = crypto.randomUUID();
+      const newSessionId = crypto.randomUUID();
+      const casStatement =
+        action === "clock_in"
+          ? database
+              .prepare(
+                `UPDATE time_clock_state
+                 SET state = 'working', session_id = ?, transition_id = ?, updated_at = ?
+                 WHERE staff_user_id = ? AND state = 'clocked_out'`,
+              )
+              .bind(newSessionId, transitionId, now, user.id)
+          : database
+              .prepare(
+                `UPDATE time_clock_state SET state = ?, transition_id = ?, updated_at = ?
+                 WHERE staff_user_id = ? AND state = ?`,
+              )
+              .bind(next, transitionId, now, user.id, data.state);
+      const [cas] = await database.batch([
+        casStatement,
+        database
+          .prepare(
+            `INSERT INTO time_clock_events
+             (id, staff_user_id, session_id, action, occurred_at, source, created_at)
+             SELECT ?, staff_user_id, session_id, ?, ?, 'self_service', ?
+             FROM time_clock_state WHERE staff_user_id = ? AND transition_id = ?`,
+          )
+          .bind(crypto.randomUUID(), action, now, now, user.id, transitionId),
+      ]);
+      if (!cas.meta.changes) {
+        return Response.json(
+          { error: "Your clock state changed on another device. Refresh and try again." },
+          { status: 409 },
+        );
+      }
+      const sessionId = action === "clock_in" ? newSessionId : data.events.at(-1)?.session_id ?? newSessionId;
       await writeAudit({ actorId: user.id, action: `timeclock.${action}`, targetType: "clock_session", targetId: sessionId, previous: { state: data.state }, next: { state: next } });
       return Response.json({ ok: true, state: next, occurredAt: now });
     }

@@ -6,12 +6,14 @@ import {
   isWithinWeeklyAvailability,
   priceCart,
   pricePizza,
+  validateDelivery,
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
   type ToppingSelection,
   type WeeklyAvailability,
 } from "@/lib/domain";
+import { resolveDeliveryPoint } from "@/lib/delivery-area";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
 type OrderRequest = {
@@ -29,6 +31,7 @@ type OrderRequest = {
     specialInstructions?: string;
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
+  couponCode?: string;
   paymentMethod?: "pay_at_store" | "online";
   tip?:
     | { type: "none" }
@@ -103,6 +106,12 @@ type DeliverySetting = {
   feeCents: number;
   minimumCents: number;
   feeTaxable: boolean;
+  outsideAreaMessage?: string;
+};
+
+type BusinessSetting = {
+  latitude: number | null;
+  longitude: number | null;
 };
 
 type TaxTipSetting = {
@@ -139,6 +148,10 @@ function normalizeCustomer(customer: OrderRequest["customer"]) {
     throw new OrderValidationError("Enter a valid email address.");
   }
   return { name, phone, email };
+}
+
+function formatDeliveryMinimum(cents: number): string {
+  return `$${(Math.max(0, cents) / 100).toFixed(2)}`;
 }
 
 function cleanInstructions(value: string | undefined, max = 500): string | null {
@@ -403,19 +416,42 @@ async function validateItems(
   return validated;
 }
 
-async function activePromotions(fulfilment: Fulfilment): Promise<PromotionRule[]> {
+function normalizeCouponCode(code: string | undefined): string | null {
+  const clean = code?.trim().toUpperCase() ?? "";
+  if (!clean) return null;
+  if (clean.length > 40 || !/^[A-Z0-9][A-Z0-9-]{0,39}$/.test(clean)) {
+    throw new OrderValidationError("That promo code isn't valid.", 400, "PROMO_CODE_INVALID");
+  }
+  return clean;
+}
+
+// C-02: coded promotions must never apply automatically. Promotions with a `code`
+// are only eligible when the customer supplies that exact code; promotions without
+// a code remain automatic. A supplied code that matches nothing is rejected so the
+// customer gets explicit feedback rather than a silently ignored coupon.
+async function activePromotions(
+  fulfilment: Fulfilment,
+  couponCode: string | null,
+): Promise<PromotionRule[]> {
   const now = Date.now();
   const result = await getD1()
     .prepare(
-      `SELECT id, name, type, amount, priority, combinable, exclusive, stack_group, rule_json
+      `SELECT id, name, code, type, amount, priority, combinable, exclusive, stack_group, rule_json
        FROM promotions WHERE active = 1 AND (starts_at IS NULL OR starts_at <= ?)
        AND (ends_at IS NULL OR ends_at >= ?) ORDER BY priority DESC, id`,
     )
     .bind(now, now)
     .all<Record<string, unknown>>();
-  return result.results.map((row) => {
+  let couponMatched = false;
+  const rules: PromotionRule[] = [];
+  for (const row of result.results) {
+    const code = row.code ? String(row.code).trim().toUpperCase() : "";
+    if (code) {
+      if (!couponCode || code !== couponCode) continue;
+      couponMatched = true;
+    }
     const rule = safeJson<Record<string, unknown>>(row.rule_json as string, {});
-    return {
+    rules.push({
       id: row.id as string,
       name: row.name as string,
       type: row.type as PromotionRule["type"],
@@ -428,8 +464,12 @@ async function activePromotions(fulfilment: Fulfilment): Promise<PromotionRule[]
       minimumCents: rule.minimumCents as number | undefined,
       productIds: rule.productIds as string[] | undefined,
       categoryIds: rule.categoryIds as string[] | undefined,
-    };
-  });
+    });
+  }
+  if (couponCode && !couponMatched) {
+    throw new OrderValidationError("That promo code isn't valid right now.", 400, "PROMO_CODE_INVALID");
+  }
+  return rules;
 }
 
 async function createStripeCheckout(input: {
@@ -512,10 +552,36 @@ export async function createOrder(body: OrderRequest, origin: string) {
       .prepare("SELECT resource_id, status FROM idempotency_keys WHERE key_hash = ?")
       .bind(keyHash)
       .first<{ resource_id: string | null; status: string }>();
+    // C-07: a reserved-but-unresolved key means a concurrent submission of the same
+    // checkout attempt is still running. That is transient, not terminal — the caller
+    // must keep its key and retry, so we throw before the try block (which would
+    // otherwise release the key the in-flight request still owns).
+    if (!existing?.resource_id) {
+      throw new OrderValidationError(
+        "This checkout is still being processed. Wait a moment and try again.",
+        409,
+        "CHECKOUT_IN_PROGRESS",
+      );
+    }
+    // Terminal duplicate: the order exists. Return enough of it for the customer to
+    // recognise their order and stop retrying. Tracking/feedback tokens are stored
+    // only as hashes and are deliberately not recoverable here.
+    const order = await getD1()
+      .prepare(
+        `SELECT order_number, status, payment_status, estimated_for, total_cents
+         FROM orders WHERE id = ?`,
+      )
+      .bind(existing.resource_id)
+      .first<Record<string, unknown>>();
     return {
       duplicate: true,
-      orderId: existing?.resource_id ?? null,
-      message: "This checkout was already submitted. Use the tracking link from the original confirmation.",
+      orderId: existing.resource_id,
+      orderNumber: order?.order_number ?? null,
+      status: order?.status ?? null,
+      paymentStatus: order?.payment_status ?? null,
+      estimateAt: order?.estimated_for ?? null,
+      totalCents: order?.total_cents ?? null,
+      message: "This checkout was already submitted, so we did not place a second order.",
     };
   }
   try {
@@ -524,12 +590,13 @@ export async function createOrder(body: OrderRequest, origin: string) {
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
       throw new OrderValidationError("Choose pickup or delivery.");
     }
-    const [ordering, delivery, taxTips, operations, hours] = await Promise.all([
+    const [ordering, delivery, taxTips, operations, hours, business] = await Promise.all([
       getSetting<OrderingSetting>("ordering"),
       getSetting<DeliverySetting>("delivery"),
       getSetting<TaxTipSetting>("taxAndTips"),
       getSetting<OperationSetting>("operations"),
       getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours"),
+      getSetting<BusinessSetting>("business"),
     ]);
     if (!ordering.enabled || ordering.paused) {
       throw new OrderValidationError(ordering.pauseMessage, 409, "ORDERING_PAUSED");
@@ -562,7 +629,8 @@ export async function createOrder(body: OrderRequest, origin: string) {
       taxable: item.taxable,
       promotionEligible: item.promotionEligible,
     }));
-    const promotions = await activePromotions(fulfilment);
+    const couponCode = normalizeCouponCode(body.couponCode);
+    const promotions = await activePromotions(fulfilment, couponCode);
     if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
       promotions.push({
         id: "included-free-delivery",
@@ -585,6 +653,37 @@ export async function createOrder(body: OrderRequest, origin: string) {
       customTipMaxCents: taxTips.customTipMaxCents,
       customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
     });
+    if (fulfilment === "delivery" && deliveryAddress) {
+      // C-01/H-06: enforce geographic eligibility from the immutable store origin
+      // before any order/payment is created. Free-delivery items never widen the
+      // radius — they only zero the fee for an already-eligible address.
+      const hasFreeDeliveryItem = items.some((item) => item.freeDelivery);
+      const point = resolveDeliveryPoint(deliveryAddress.postalCode);
+      const eligibility = validateDelivery(
+        {
+          validated: point !== null,
+          latitude: point?.latitude ?? null,
+          longitude: point?.longitude ?? null,
+        },
+        {
+          originLatitude: business.latitude,
+          originLongitude: business.longitude,
+          radiusKm: delivery.radiusKm,
+          feeCents: delivery.feeCents,
+          minimumCents: delivery.minimumCents,
+        },
+        price.menuSubtotalCents,
+        hasFreeDeliveryItem,
+      );
+      if (!eligibility.eligible) {
+        const message =
+          eligibility.reason === "below_minimum"
+            ? `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax.`
+            : delivery.outsideAreaMessage ??
+              "This address is outside our delivery area. Please call Pizza 62 to ask about an exception.";
+        throw new OrderValidationError(message, 422, "DELIVERY_ADDRESS_INELIGIBLE");
+      }
+    }
     const estimateMinutes = fulfilment === "delivery"
       ? ordering.deliveryEstimateMinutes ?? 30
       : ordering.pickupEstimateMinutes;
@@ -759,6 +858,12 @@ export async function createOrder(body: OrderRequest, origin: string) {
           getD1()
             .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
             .bind(Date.now(), orderId),
+          // H-17: releasing the idempotency key lets the customer retry the same
+          // checkout attempt and get a fresh order instead of resolving to this
+          // cancelled one. The failed order/payment rows remain for reconciliation.
+          getD1()
+            .prepare("DELETE FROM idempotency_keys WHERE key_hash = ?")
+            .bind(keyHash),
         ]);
         throw new OrderValidationError(
           "Stripe checkout could not start. No payment was taken; please try again.",

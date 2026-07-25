@@ -48,6 +48,18 @@ async function configRequest(body: Record<string, unknown>) {
 const moneyToCents = (value: string) => Math.round(Number(value || 0) * 100);
 const minuteToTime = (value: number) => `${String(Math.floor(value / 60) % 24).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
 const timeToMinute = (value: string) => { const [hour, minute] = value.split(":").map(Number); return hour * 60 + minute; };
+// H-12: a native <input type="time"> cannot represent midnight-as-close (minute 1440,
+// which would round-trip to 00:00 and be rejected as close <= open). The closing time
+// therefore uses a <select> whose 1440 option is an explicit "midnight (next day)".
+const CLOSE_MINUTE_OPTIONS = Array.from({ length: 48 }, (_, index) => (index + 1) * 30); // 30 … 1440
+const closeMinuteLabel = (value: number) => {
+  if (value >= 1440) return "12:00 AM (midnight)";
+  const hour24 = Math.floor(value / 60);
+  const minute = value % 60;
+  const period = hour24 < 12 ? "AM" : "PM";
+  const hour12 = ((hour24 + 11) % 12) + 1;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${period}`;
+};
 
 export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const settings = dashboard.settings;
@@ -124,7 +136,7 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
       <Field label="Footer tagline" wide value={content.footerTagline} onChange={(footerTagline) => setContent({ ...content, footerTagline })} />
     </SettingsCard>
     <SettingsCard title="Regular opening hours" onSave={() => save("hours", hours)}>
-      <div className="hours-admin">{hours.map((row, index) => <div key={row.weekday}><strong>{row.label}</strong><input aria-label={`${row.label} opening time`} type="time" value={minuteToTime(row.openMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, openMinute: timeToMinute(event.target.value) } : entry))} /><span>to</span><input aria-label={`${row.label} closing time`} type="time" value={minuteToTime(row.closeMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, closeMinute: timeToMinute(event.target.value) } : entry))} /></div>)}</div>
+      <div className="hours-admin">{hours.map((row, index) => <div key={row.weekday}><strong>{row.label}</strong><input aria-label={`${row.label} opening time`} type="time" value={minuteToTime(row.openMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, openMinute: timeToMinute(event.target.value) } : entry))} /><span>to</span><select aria-label={`${row.label} closing time`} value={String(row.closeMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, closeMinute: Number(event.target.value) } : entry))}>{[...new Set([row.closeMinute, ...CLOSE_MINUTE_OPTIONS])].sort((a, b) => a - b).map((minute) => <option key={minute} value={minute}>{closeMinuteLabel(minute)}</option>)}</select></div>)}</div>
     </SettingsCard>
     {message ? <p className="admin-message" role="status">{message}</p> : null}
   </div>;

@@ -132,7 +132,10 @@ const toppings = (
   id,
   label,
   source: "toppings",
-  min: included > 0 || sharedIncluded ? 1 : 0,
+  // H-02: shared-pool sections must allow an empty pizza (e.g. 6+0) because the
+  // allowance is counted across the whole group, not per pizza. Only non-shared
+  // sections with a built-in included allowance require at least one topping.
+  min: sharedGroup ? 0 : included > 0 ? 1 : 0,
   max: 12,
   included,
   extraPriceCents,
@@ -221,9 +224,10 @@ const specialtyRecipes = [
   ["shawarma", "Shawarma Pizza", "Shawarma sauce, chicken, onions and tomatoes.", ["real-chicken", "onions", "tomatoes"], false],
 ] as const;
 
+// Extra-topping rates aligned to the corrected per-size rates (Medium 210, Large 230, X-Large 260).
 const specialtyPrices = [
-  ["Medium", 1699, 160],
-  ["Large", 1999, 210],
+  ["Medium", 1699, 210],
+  ["Large", 1999, 230],
   ["X-Large", 2399, 260],
 ] as const;
 
@@ -247,12 +251,12 @@ const specialtyPizzas: MenuProductSeed[] = specialtyRecipes.map(([id, name, desc
 
 const deals: MenuProductSeed[] = [
   bundle("deal-two-large-wings", "deals", "2 Large Pizzas & 3 lb Wings", 5399, "Two large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 210),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 210), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
+    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 230),
+    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 230), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
   ]),
   bundle("deal-two-medium-wings", "deals", "2 Medium Pizzas & 2 lb Wings", 4399, "Two medium pizzas, 2 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 160),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 160), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
+    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 210),
+    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 210), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
   ]),
   bundle("deal-two-xl-wings", "deals", "2 X-Large Pizzas & 3 lb Wings", 5699, "Two X-large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
     toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 260),
@@ -262,8 +266,8 @@ const deals: MenuProductSeed[] = [
 
 const combos: MenuProductSeed[] = [
   ["jumbo", "1 Jumbo Pizza & 3 lb Wings", 4500, 290, "One jumbo pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
-  ["large", "1 Large Pizza & 3 lb Wings", 3800, 210, "One large pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
-  ["medium", "1 Medium Pizza & 12 Wings", 2800, 160, "One medium pizza with 3 toppings, 12 wings, veggie sticks, blue cheese and a free dipping sauce."],
+  ["large", "1 Large Pizza & 3 lb Wings", 3800, 230, "One large pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
+  ["medium", "1 Medium Pizza & 12 Wings", 2800, 210, "One medium pizza with 3 toppings, 12 wings, veggie sticks, blue cheese and a free dipping sauce."],
   ["slab", "1 Slab Pizza & 3 lb Wings", 5000, 290, "One slab pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
   ["xl", "1 X-Large Pizza & 3 lb Wings", 4100, 260, "One X-large pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
 ].map(([id, name, price, extra, description]) => bundle(`combo-${id}`, "combos", String(name), Number(price), String(description), [
@@ -272,8 +276,8 @@ const combos: MenuProductSeed[] = [
 
 const twoForOne: MenuProductSeed[] = [
   ["jumbo", "2 Jumbo Pizzas · 3 Toppings Each", 4099, 290],
-  ["large", "2 Large Pizzas · 3 Toppings Each", 2999, 210],
-  ["medium", "2 Medium Pizzas · 3 Toppings Each", 2699, 160],
+  ["large", "2 Large Pizzas · 3 Toppings Each", 2999, 230],
+  ["medium", "2 Medium Pizzas · 3 Toppings Each", 2699, 210],
   ["slab", "2 Slab Pizzas · 3 Toppings Each", 4999, 290],
   ["xl", "2 X-Large Pizzas · 3 Toppings Each", 3299, 260],
 ].map(([id, name, price, extra]) => bundle(`two-for-one-${id}`, "two-for-one", String(name), Number(price), "Two pizzas with up to three included toppings on each pizza.", [
@@ -343,27 +347,27 @@ const pickupPizza = (id: string, name: string, price: number, size: string, extr
 
 const pickupSpecials: MenuProductSeed[] = [
   bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings & 3 Pops", 2599, "Large pizza with 3 toppings, 1 lb wings and 3 canned pops.", [
-    toppings("pizza-toppings", "Pizza toppings", 3, 210), pizzaBase("pizza-base"), wingFlavours(1), ...drinks(3),
+    toppings("pizza-toppings", "Pizza toppings", 3, 230), pizzaBase("pizza-base"), wingFlavours(1), ...drinks(3),
   ], true),
   { ...wings.find((item) => item.id === "1-lb-wings")!, id: "pickup-one-lb-wings", categoryId: "pickup-specials", deliveryEligible: false },
   pickupPizza("pickup-medium-five", "Medium Pizza · 5 Toppings", 1299, "Medium", 210, 5),
   bundle("pickup-two-large-six", "pickup-specials", "2 Large Pizzas · 6 Toppings Shared", 2799, "Share six included toppings across both large pizzas any way you like.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 0, 210, "six-shared", 6),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 0, 210, "six-shared", 6), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"),
+    toppings("pizza-1-toppings", "Pizza 1 toppings", 0, 230, "six-shared", 6),
+    toppings("pizza-2-toppings", "Pizza 2 toppings", 0, 230, "six-shared", 6), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"),
   ], true),
 ];
 
 const heroes: MenuProductSeed[] = [
   {
     ...bundle("hamilton-hero-deal", "hamilton-heroes", "Hamilton Heroes Offer", 1698, "One large pizza with 3 toppings and free standard delivery. Available Monday to Friday, 5–9 PM.", [
-      toppings("pizza-toppings", "Choose up to 3 toppings", 3, 210),
+      toppings("pizza-toppings", "Choose up to 3 toppings", 3, 230),
       pizzaBase("pizza-base"),
       { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
     ]),
     description: "Large pizza with 3 toppings and free standard delivery.",
     configuration: {
       sections: [
-        toppings("pizza-toppings", "Choose up to 3 toppings", 3, 210),
+        toppings("pizza-toppings", "Choose up to 3 toppings", 3, 230),
         pizzaBase("pizza-base"),
         { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
       ],

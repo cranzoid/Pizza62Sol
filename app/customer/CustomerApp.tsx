@@ -313,7 +313,7 @@ export default function CustomerApp() {
                 <span className="pizza-slice-line l1" /><span className="pizza-slice-line l2" /><span className="pizza-slice-line l3" />
                 <PizzaMark large />
               </div>
-              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.99</strong><span>medium · 1 topping</span></div>
+              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.40</strong><span>medium · 1 topping</span></div>
               <div className="floating-tag floating-tag--bottom"><strong>13%</strong><span>HST, calculated right</span></div>
               <div className="scribble-note">made fresh<br />for Hamilton ↗</div>
             </div>
@@ -451,7 +451,7 @@ export default function CustomerApp() {
           settings={catalog?.settings ?? {}}
           integrations={catalog?.integrations ?? { stripe: false, email: false }}
           onClose={() => setCheckoutOpen(false)}
-          onConfirmed={(result) => { setCheckoutOpen(false); setCart([]); setConfirmation(result); analytics("purchase_completed", { orderNumber: result.orderNumber }); }}
+          onConfirmed={(result) => { setCheckoutOpen(false); setCart([]); setConfirmation(result); if (result.duplicate !== true) analytics("purchase_completed", { orderNumber: result.orderNumber }); }}
         />
       ) : null}
 
@@ -603,16 +603,36 @@ function Checkout({ cart, fulfilment, settings, integrations, onClose, onConfirm
   const [tip, setTip] = useState(0); const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">("asap"); const [scheduledFor, setScheduledFor] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
+  // C-07: one durable idempotency key per checkout attempt. It survives refreshes,
+  // back-navigation, and double-clicks (persisted in localStorage) and is only
+  // cleared after the order is accepted, so retries never create a second order.
+  const [idempotencyKey] = useState(() => {
+    if (typeof window === "undefined") return `${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const storageKey = "p62_checkout_idempotency";
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    window.localStorage.setItem(storageKey, generated);
+    return generated;
+  });
+  const clearIdempotencyKey = () => {
+    if (typeof window !== "undefined") window.localStorage.removeItem("p62_checkout_idempotency");
+  };
   const tipPresets = (settings.taxAndTips?.value.tipPresetBps as number[] | undefined) ?? [1000, 1500, 1800];
   const estimate = fulfilment === "delivery" ? settings.ordering?.value.deliveryEstimateMinutes ?? 30 : settings.ordering?.value.pickupEstimateMinutes ?? 15;
   const submit = async () => {
     setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod });
     try {
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        idempotencyKey: crypto.randomUUID(), fulfilment, customer: { name, phone, email }, items: cart.map((line) => ({ productId: line.productId, variationId: line.variationId, quantity: line.quantity, toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })), modifiers: line.modifiers?.map((modifier) => ({ id: modifier.id, values: modifier.values.map((value) => value.value) })), extraCheese: line.extraCheese, halal: line.halal, specialInstructions: line.specialInstructions })), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? new Date(scheduledFor).getTime() : undefined }, paymentMethod, tip: tip ? { type: "percentage", valueBps: tip } : { type: "none" }, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        idempotencyKey, fulfilment, customer: { name, phone, email }, items: cart.map((line) => ({ productId: line.productId, variationId: line.variationId, quantity: line.quantity, toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })), modifiers: line.modifiers?.map((modifier) => ({ id: modifier.id, values: modifier.values.map((value) => value.value) })), extraCheese: line.extraCheese, halal: line.halal, specialInstructions: line.specialInstructions })), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? new Date(scheduledFor).getTime() : undefined }, paymentMethod, tip: tip ? { type: "percentage", valueBps: tip } : { type: "none" }, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
       }) });
       const result = await response.json() as Record<string, unknown>;
-      if (!response.ok || result.duplicate) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
+      if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
+      // C-07: a terminal duplicate means the order already exists. Clear the key and
+      // show the confirmation, otherwise the stale key would resolve every future
+      // checkout from this browser to the same duplicate and block ordering for good.
+      clearIdempotencyKey();
+      if (result.duplicate) { onConfirmed(result); return; }
       if (typeof result.checkoutUrl === "string") { window.location.assign(result.checkoutUrl); return; }
       onConfirmed(result);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "The order was not accepted."); setSubmitting(false); }
@@ -628,7 +648,17 @@ function Checkout({ cart, fulfilment, settings, integrations, onClose, onConfirm
 }
 
 function Confirmation({ result, onClose }: { result: Record<string, unknown>; onClose: () => void }) {
-  const trackingUrl = `/track?order=${encodeURIComponent(String(result.orderNumber))}&token=${encodeURIComponent(String(result.trackingToken))}`;
-  const feedbackUrl = `/feedback?order=${encodeURIComponent(String(result.orderNumber))}&token=${encodeURIComponent(String(result.feedbackToken))}`;
-  return <div className="modal-backdrop"><section className="confirmation-card" role="dialog" aria-modal="true"><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2>You&apos;re all set.</h2><p>Order <strong>{String(result.orderNumber)}</strong> is received and marked for payment at the store.</p><div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(Number(result.estimateAt)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div><Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link><Link className="text-button" href={feedbackUrl}>Open secure feedback link</Link><button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
+  // C-07: a duplicate submission resolves to an order that already exists. Its
+  // tracking/feedback tokens are stored only as hashes, so they cannot be re-issued
+  // here — the links are omitted rather than rendered with an "undefined" token.
+  const duplicate = result.duplicate === true;
+  const orderNumber = String(result.orderNumber ?? "");
+  const trackingUrl = result.trackingToken
+    ? `/track?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.trackingToken))}`
+    : null;
+  const feedbackUrl = result.feedbackToken
+    ? `/feedback?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.feedbackToken))}`
+    : null;
+  const estimateAt = Number(result.estimateAt);
+  return <div className="modal-backdrop"><section className="confirmation-card" role="dialog" aria-modal="true"><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2>{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}{feedbackUrl ? <Link className="text-button" href={feedbackUrl}>Open secure feedback link</Link> : null}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
 }

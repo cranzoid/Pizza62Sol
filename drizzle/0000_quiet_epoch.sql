@@ -355,4 +355,11 @@ CREATE TABLE `toppings` (
 	`updated_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `toppings_active_idx` ON `toppings` (`active`);
+CREATE INDEX `toppings_active_idx` ON `toppings` (`active`);--> statement-breakpoint
+CREATE TABLE `time_clock_state` (
+	`staff_user_id` text PRIMARY KEY NOT NULL,
+	`state` text NOT NULL,
+	`session_id` text,
+	`transition_id` text,
+	`updated_at` integer NOT NULL
+);

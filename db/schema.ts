@@ -416,3 +416,15 @@ export const analyticsEvents = sqliteTable(
   },
   (table) => [index("analytics_event_time_idx").on(table.eventName, table.occurredAt)],
 );
+
+// C-06: single-row-per-employee clock state used as a compare-and-swap guard so
+// concurrent transitions (e.g. two simultaneous clock-ins) cannot both succeed.
+export const timeClockState = sqliteTable("time_clock_state", {
+  staffUserId: text("staff_user_id").primaryKey(),
+  state: text("state").notNull(),
+  sessionId: text("session_id"),
+  // C-06: identifies the transition that last won the compare-and-swap, so the
+  // matching clock event is inserted in the same batch only by the winning request.
+  transitionId: text("transition_id"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});

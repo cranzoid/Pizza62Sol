@@ -57,9 +57,10 @@ export const LAUNCH_SETTINGS = {
     extraWingSauce: false,
     blueCheeseAddon: false,
     bottledPopUpgrades: false,
-    halalPreparationClaim: true,
+    // H-21: keep unconfirmed public claims off until the owner confirms them.
+    halalPreparationClaim: false,
     wingBreadedLabel: false,
-    dryRubLabel: true,
+    dryRubLabel: false,
   },
   content: {
     heroEyebrow: "Hamilton-made since the first slice",
@@ -83,12 +84,16 @@ export const REGULAR_HOURS = [
   { weekday: 0, label: "Sunday", openMinute: 720, closeMinute: 1320 },
 ] as const;
 
+// H-01: base one-topping and extra-topping rates corrected to the source-of-truth
+// flyer values in the audit §5 table. The 3-topping price is derived as
+// base + 2×extra (one topping is included in the base) for internal consistency;
+// confirm against the physical flyer if it lists an independent 3-topping price.
 export const PIZZA_SIZES = [
-  { id: "medium", name: "Medium", basePriceCents: 899, threeToppingPriceCents: 1249, extraToppingPriceCents: 160 },
-  { id: "large", name: "Large", basePriceCents: 1199, threeToppingPriceCents: 1499, extraToppingPriceCents: 210 },
-  { id: "x-large", name: "X-Large", basePriceCents: 1299, threeToppingPriceCents: 1599, extraToppingPriceCents: 260 },
-  { id: "jumbo", name: "Jumbo", basePriceCents: 2049, threeToppingPriceCents: 2399, extraToppingPriceCents: 290 },
-  { id: "slab", name: "Slab", basePriceCents: 2199, threeToppingPriceCents: 2599, extraToppingPriceCents: 290 },
+  { id: "medium", name: "Medium", basePriceCents: 840, threeToppingPriceCents: 1260, extraToppingPriceCents: 210 },
+  { id: "large", name: "Large", basePriceCents: 1149, threeToppingPriceCents: 1609, extraToppingPriceCents: 230 },
+  { id: "x-large", name: "X-Large", basePriceCents: 1249, threeToppingPriceCents: 1769, extraToppingPriceCents: 260 },
+  { id: "jumbo", name: "Jumbo", basePriceCents: 1999, threeToppingPriceCents: 2579, extraToppingPriceCents: 290 },
+  { id: "slab", name: "Slab", basePriceCents: 2149, threeToppingPriceCents: 2729, extraToppingPriceCents: 290 },
 ] as const;
 
 export const INITIAL_WING_FLAVOURS = [
