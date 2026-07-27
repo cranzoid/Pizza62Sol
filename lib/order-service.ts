@@ -1,15 +1,24 @@
 import { env } from "cloudflare:workers";
 import { ensureDatabase, getD1, getSetting, safeJson } from "@/db/runtime";
 import {
+  BAKE_SAUCE_OPTIONS,
+  CHEESE_OPTIONS,
+  CRUST_OPTIONS,
+  HALAL_OPTION,
   generateOpaqueToken,
   hashOpaqueToken,
   isWithinWeeklyAvailability,
+  modifierUnitsBps,
+  normalizeModifierValues,
+  orderModifierSections,
   priceCart,
   pricePizza,
+  priceToppingUnits,
   validateDelivery,
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
+  type ToppingPlacement,
   type ToppingSelection,
   type WeeklyAvailability,
 } from "@/lib/domain";
@@ -27,7 +36,7 @@ type OrderRequest = {
     toppings?: ToppingSelection[];
     extraCheese?: boolean;
     halal?: boolean;
-    modifiers?: Array<{ id?: string; values?: string[] }>;
+    modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
     specialInstructions?: string;
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
@@ -133,10 +142,31 @@ type OperationSetting = {
 type ProductConfiguration = {
   sections?: ModifierSectionSeed[];
   pizzaBaseOptions?: string[];
+  crustOptions?: string[];
+  bakeSauceOptions?: string[];
+  cheeseEnabled?: boolean;
+  toppingsFirst?: boolean;
   freeDelivery?: boolean;
   availability?: WeeklyAvailability;
   [key: string]: unknown;
 };
+
+// Crust and bake/sauce are separate groups so a customer cannot pick both Thin and
+// Thick. Pizzas configured before the split still carry pizzaBaseOptions, which is
+// honoured as one combined group so existing products keep validating.
+function pizzaOptionSections(configuration: ProductConfiguration): ModifierSectionSeed[] {
+  const sections: ModifierSectionSeed[] = [];
+  if (configuration.crustOptions?.length) {
+    sections.push({ id: "pizza-crust", label: "Crust", source: "crust", options: configuration.crustOptions, min: 0, max: 1 });
+  }
+  if (configuration.bakeSauceOptions?.length) {
+    sections.push({ id: "pizza-bake-sauce", label: "Bake & sauce", source: "bake_sauce", options: configuration.bakeSauceOptions, min: 0, max: 2 });
+  }
+  if (!sections.length && configuration.pizzaBaseOptions?.length) {
+    sections.push({ id: "pizza-base", label: "Crust, bake & sauce", source: "pizza_base", options: configuration.pizzaBaseOptions, min: 0, max: 2 });
+  }
+  return sections;
+}
 
 function normalizeCustomer(customer: OrderRequest["customer"]) {
   const name = customer?.name?.trim() ?? "";
@@ -194,47 +224,91 @@ function modifierOptions(
     section.source === "wing_flavours" ? [...WING_FLAVOURS]
       : section.source === "drinks" ? [...DRINK_OPTIONS]
         : section.source === "pizza_base" ? [...PIZZA_BASE_OPTIONS]
-          : []
+          : section.source === "crust" ? [...CRUST_OPTIONS]
+            : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
+              : section.source === "cheese" ? [...CHEESE_OPTIONS]
+                : section.source === "halal" ? [HALAL_OPTION]
+                  : []
   );
   return new Map(options.map((value) => [value, value]));
 }
 
+type ModifierSnapshot = {
+  id: string;
+  label: string;
+  group?: string;
+  values: Array<{ value: string; label: string; placement?: ToppingPlacement }>;
+};
+
 function validateModifiers(
-  input: Array<{ id?: string; values?: string[] }> | undefined,
+  input: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }> | undefined,
   sections: ModifierSectionSeed[],
   toppingNames: Map<string, string>,
-): { snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }>; extraCents: number } {
+  halfToppingUnitsBps: number,
+): { snapshot: ModifierSnapshot[]; extraCents: number } {
   const provided = new Map((input ?? []).map((entry) => [entry.id ?? "", entry.values ?? []]));
   if ([...provided.keys()].some((id) => !sections.some((section) => section.id === id))) {
     throw new OrderValidationError("An unsupported item option was submitted.");
   }
-  const snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }> = [];
+  const snapshot: ModifierSnapshot[] = [];
+  const sharedUnits = new Map<string, number>();
+  let extraCents = 0;
   for (const section of sections) {
-    const values = provided.get(section.id) ?? [];
-    const unique = [...new Set(values)];
+    const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
+    const optionPrices = section.optionPrices ?? {};
+    if (section.source === "toppings") {
+      // Topping groups carry a placement per selection, so a half topping consumes
+      // only part of the included allowance and is charged proportionally.
+      let normalized;
+      try {
+        normalized = normalizeModifierValues(raw);
+      } catch {
+        throw new OrderValidationError(`Choose valid options for ${section.label}.`);
+      }
+      if (normalized.length < section.min || normalized.length > section.max || normalized.some((entry) => !allowed.has(entry.value))) {
+        throw new OrderValidationError(`Choose valid options for ${section.label}.`);
+      }
+      const unitsBps = modifierUnitsBps(normalized, halfToppingUnitsBps);
+      if (section.sharedGroup) {
+        sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + unitsBps);
+      } else {
+        extraCents += priceToppingUnits(unitsBps, (section.included ?? 0) * 10_000, section.extraPriceCents ?? 0);
+      }
+      extraCents += normalized.reduce((sum, entry) => sum + (optionPrices[entry.value] ?? 0), 0);
+      if (normalized.length) {
+        snapshot.push({
+          id: section.id,
+          label: section.label,
+          group: section.group,
+          values: normalized.map((entry) => ({
+            value: entry.value,
+            label: allowed.get(entry.value) ?? entry.value,
+            placement: entry.placement,
+          })),
+        });
+      }
+      continue;
+    }
+    const values = raw.map((entry) => (typeof entry === "string" ? entry : String(entry?.value ?? "")));
+    const unique = [...new Set(values)];
     if (unique.length !== values.length || unique.length < section.min || unique.length > section.max || unique.some((value) => !allowed.has(value))) {
       throw new OrderValidationError(`Choose valid options for ${section.label}.`);
     }
+    extraCents += Math.max(0, unique.length - (section.included ?? section.max)) * (section.extraPriceCents ?? 0);
+    extraCents += unique.reduce((sum, value) => sum + (optionPrices[value] ?? 0), 0);
     if (unique.length) {
       snapshot.push({
         id: section.id,
         label: section.label,
+        group: section.group,
         values: unique.map((value) => ({ value, label: allowed.get(value) ?? value })),
       });
     }
   }
-  let extraCents = sections
-    .filter((section) => !section.sharedGroup)
-    .reduce(
-      (sum, section) => sum + Math.max(0, (provided.get(section.id)?.length ?? 0) - (section.included ?? section.max)) * (section.extraPriceCents ?? 0),
-      0,
-    );
-  const sharedGroups = new Set(sections.flatMap((section) => section.sharedGroup ? [section.sharedGroup] : []));
-  for (const group of sharedGroups) {
+  for (const [group, unitsBps] of sharedUnits) {
     const grouped = sections.filter((section) => section.sharedGroup === group);
-    const selected = grouped.reduce((sum, section) => sum + (provided.get(section.id)?.length ?? 0), 0);
-    extraCents += Math.max(0, selected - (grouped[0]?.sharedIncluded ?? 0)) * (grouped[0]?.extraPriceCents ?? 0);
+    extraCents += priceToppingUnits(unitsBps, (grouped[0]?.sharedIncluded ?? 0) * 10_000, grouped[0]?.extraPriceCents ?? 0);
   }
   return { snapshot, extraCents };
 }
@@ -375,10 +449,12 @@ async function validateItems(
         halalSurchargeCents,
       });
       unitPriceCents = pizza.totalCents;
-      const pizzaBaseSections: ModifierSectionSeed[] = productConfiguration.pizzaBaseOptions?.length
-        ? [{ id: "pizza-base", label: "Crust, bake & sauce", options: productConfiguration.pizzaBaseOptions, min: 0, max: 2 }]
-        : [];
-      const validatedModifiers = validateModifiers(input.modifiers, pizzaBaseSections, toppingNames);
+      const validatedModifiers = validateModifiers(
+        input.modifiers,
+        pizzaOptionSections(productConfiguration),
+        toppingNames,
+        operations.halfToppingUnitsBps,
+      );
       snapshot = {
         ...snapshot,
         variationId: variation.id,
@@ -394,7 +470,12 @@ async function validateItems(
     } else if (input.toppings?.length || input.extraCheese || input.halal) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
     } else {
-      const validatedModifiers = validateModifiers(input.modifiers, productConfiguration.sections ?? [], toppingNames);
+      const validatedModifiers = validateModifiers(
+        input.modifiers,
+        orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
+        toppingNames,
+        operations.halfToppingUnitsBps,
+      );
       unitPriceCents += validatedModifiers.extraCents;
       snapshot = { ...snapshot, modifiers: validatedModifiers.snapshot, modifierExtraCents: validatedModifiers.extraCents };
     }

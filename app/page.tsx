@@ -1,12 +1,8 @@
-import type { Metadata } from "next";
 import CustomerApp from "./customer/CustomerApp";
 
-export const metadata: Metadata = {
-  title: "Pizza 62 | Hamilton Pizza, Pickup & Delivery",
-  description:
-    "Order Pizza 62 pizzas, wings, pickup specials, combos and family deals in Hamilton, Ontario.",
-};
-
+// The home page deliberately has no metadata of its own: the title and
+// description come from the owner's website editor through the root layout, and
+// a page-level title here would override whatever they wrote there.
 export default function Home() {
   return <CustomerApp />;
 }

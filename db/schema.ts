@@ -428,3 +428,66 @@ export const timeClockState = sqliteTable("time_clock_state", {
   transitionId: text("transition_id"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// Time clock: pay, kiosk PIN and the work-week rules that drive overtime. Kept
+// separate from staff_users so payroll data is not loaded on every auth check.
+export const staffProfiles = sqliteTable("staff_profiles", {
+  staffUserId: text("staff_user_id").primaryKey(),
+  jobTitle: text("job_title"),
+  employmentType: text("employment_type").notNull().default("hourly"),
+  wageCents: integer("wage_cents").notNull().default(0),
+  weeklyOvertimeMinutes: integer("weekly_overtime_minutes").notNull().default(2640),
+  overtimeMultiplierBps: integer("overtime_multiplier_bps").notNull().default(15000),
+  weekStartsOn: integer("week_starts_on").notNull().default(0),
+  pinHash: text("pin_hash"),
+  pinSalt: text("pin_salt"),
+  pinIterations: integer("pin_iterations"),
+  availabilityJson: text("availability_json").notNull().default("[]"),
+  hiredAt: integer("hired_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// A scheduled shift. `staff_user_id` is null for an open shift nobody is assigned
+// to yet; `published` keeps a draft schedule invisible to the team until released.
+export const shifts = sqliteTable(
+  "shifts",
+  {
+    id: text("id").primaryKey(),
+    staffUserId: text("staff_user_id"),
+    role: text("role"),
+    startsAt: integer("starts_at", { mode: "timestamp_ms" }).notNull(),
+    endsAt: integer("ends_at", { mode: "timestamp_ms" }).notNull(),
+    unpaidBreakMinutes: integer("unpaid_break_minutes").notNull().default(0),
+    notes: text("notes"),
+    published: integer("published", { mode: "boolean" }).notNull().default(false),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+    createdBy: text("created_by").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("shifts_starts_at_idx").on(table.startsAt),
+    index("shifts_staff_idx").on(table.staffUserId, table.startsAt),
+  ],
+);
+
+// One row per employee per pay period once a manager signs the timesheet off.
+export const timesheetApprovals = sqliteTable(
+  "timesheet_approvals",
+  {
+    id: text("id").primaryKey(),
+    staffUserId: text("staff_user_id").notNull(),
+    periodStart: integer("period_start", { mode: "timestamp_ms" }).notNull(),
+    periodEnd: integer("period_end", { mode: "timestamp_ms" }).notNull(),
+    status: text("status").notNull().default("approved"),
+    paidMs: integer("paid_ms").notNull().default(0),
+    regularMs: integer("regular_ms").notNull().default(0),
+    overtimeMs: integer("overtime_ms").notNull().default(0),
+    grossPayCents: integer("gross_pay_cents").notNull().default(0),
+    note: text("note"),
+    approvedBy: text("approved_by").notNull(),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("timesheet_approvals_period_idx").on(table.staffUserId, table.periodStart)],
+);

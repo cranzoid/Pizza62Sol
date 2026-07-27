@@ -147,6 +147,11 @@ function settingValidation(key: string, value: Record<string, unknown>) {
     if (!Number.isInteger(feedbackDelay) || feedbackDelay < 1 || feedbackDelay > 1440) {
       throw new Error("Feedback delay must be between 1 minute and 24 hours.");
     }
+    // A half topping can be charged as anything from free up to a whole topping.
+    const halfTopping = Number(value.halfToppingUnitsBps ?? 10_000);
+    if (!Number.isInteger(halfTopping) || halfTopping < 0 || halfTopping > 10_000) {
+      throw new Error("A half topping must count as between zero and one whole topping.");
+    }
   } else if (key === "hours") {
     if (!Array.isArray(value) || value.length !== 7 || value.some((row) => {
       if (!row || typeof row !== "object") return true;
@@ -157,9 +162,25 @@ function settingValidation(key: string, value: Record<string, unknown>) {
         Number(item.openMinute) >= Number(item.closeMinute);
     })) throw new Error("Enter a valid opening and closing time for all seven days.");
   } else if (key === "content") {
-    if (Object.values(value).some((entry) => typeof entry !== "string" || entry.length > 600)) {
-      throw new Error("Website wording must use text fields under 600 characters.");
+    // The website editor stores words, switches, colours, a section order and the
+    // promise rows, so the shape is checked rather than assumed to be flat text.
+    const scalar = (entry: unknown) =>
+      (typeof entry === "string" && entry.length <= 600) || typeof entry === "boolean" || (typeof entry === "number" && Number.isFinite(entry));
+    const shallow = (entry: unknown) =>
+      scalar(entry) ||
+      (Array.isArray(entry) && entry.length <= 24 && entry.every((item) => scalar(item) || (item && typeof item === "object" && Object.values(item).every(scalar))));
+    if (Object.values(value).some((entry) => !shallow(entry))) {
+      throw new Error("Website content must be text under 600 characters, switches, numbers or simple lists.");
     }
+    for (const [field, entry] of Object.entries(value)) {
+      if (field.startsWith("theme") && typeof entry === "string" && entry && !/^#[0-9a-fA-F]{6}$/.test(entry)) {
+        throw new Error("Colours must be six-digit hex values such as #d33b27.");
+      }
+      if ((field === "logoUrl" || field === "heroImageUrl") && typeof entry === "string" && entry && !entry.startsWith("/api/uploads/") && !/^https:\/\//.test(entry)) {
+        throw new Error("Images must be uploaded here or use an https address.");
+      }
+    }
+    if (JSON.stringify(value).length > 20_000) throw new Error("Website content is too large.");
   } else if (key === "featureFlags") {
     // Feature switches are constrained by the owner interface.
   } else {

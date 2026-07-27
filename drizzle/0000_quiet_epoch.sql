@@ -363,3 +363,54 @@ CREATE TABLE `time_clock_state` (
 	`transition_id` text,
 	`updated_at` integer NOT NULL
 );
+--> statement-breakpoint
+CREATE TABLE `staff_profiles` (
+	`staff_user_id` text PRIMARY KEY NOT NULL,
+	`job_title` text,
+	`employment_type` text DEFAULT 'hourly' NOT NULL,
+	`wage_cents` integer DEFAULT 0 NOT NULL,
+	`weekly_overtime_minutes` integer DEFAULT 2640 NOT NULL,
+	`overtime_multiplier_bps` integer DEFAULT 15000 NOT NULL,
+	`week_starts_on` integer DEFAULT 0 NOT NULL,
+	`pin_hash` text,
+	`pin_salt` text,
+	`pin_iterations` integer,
+	`availability_json` text DEFAULT '[]' NOT NULL,
+	`hired_at` integer,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `shifts` (
+	`id` text PRIMARY KEY NOT NULL,
+	`staff_user_id` text,
+	`role` text,
+	`starts_at` integer NOT NULL,
+	`ends_at` integer NOT NULL,
+	`unpaid_break_minutes` integer DEFAULT 0 NOT NULL,
+	`notes` text,
+	`published` integer DEFAULT false NOT NULL,
+	`published_at` integer,
+	`created_by` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `shifts_starts_at_idx` ON `shifts` (`starts_at`);--> statement-breakpoint
+CREATE INDEX `shifts_staff_idx` ON `shifts` (`staff_user_id`,`starts_at`);--> statement-breakpoint
+CREATE TABLE `timesheet_approvals` (
+	`id` text PRIMARY KEY NOT NULL,
+	`staff_user_id` text NOT NULL,
+	`period_start` integer NOT NULL,
+	`period_end` integer NOT NULL,
+	`status` text DEFAULT 'approved' NOT NULL,
+	`paid_ms` integer DEFAULT 0 NOT NULL,
+	`regular_ms` integer DEFAULT 0 NOT NULL,
+	`overtime_ms` integer DEFAULT 0 NOT NULL,
+	`gross_pay_cents` integer DEFAULT 0 NOT NULL,
+	`note` text,
+	`approved_by` text NOT NULL,
+	`approved_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `timesheet_approvals_period_idx` ON `timesheet_approvals` (`staff_user_id`,`period_start`);

@@ -223,6 +223,112 @@ export function toppingUnitsBps(
   );
 }
 
+export const CHEESE_OPTIONS = ["No Cheese", "Light Cheese", "Regular Cheese", "Extra Cheese"] as const;
+export const DEFAULT_CHEESE_OPTION = "Regular Cheese";
+export const EXTRA_CHEESE_OPTION = "Extra Cheese";
+export const CRUST_OPTIONS = ["Regular Crust", "Thin Crust", "Thick Crust"] as const;
+export const DEFAULT_CRUST_OPTION = "Regular Crust";
+export const BAKE_SAUCE_OPTIONS = ["Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"] as const;
+export const HALAL_OPTION = "Halal meat toppings";
+
+export type ModifierSource =
+  | "toppings"
+  | "wing_flavours"
+  | "drinks"
+  | "pizza_base"
+  | "crust"
+  | "bake_sauce"
+  | "cheese"
+  | "halal";
+
+export type ModifierSection = {
+  id: string;
+  label: string;
+  /** Groups sections belonging to the same pizza inside a deal, e.g. "Pizza 1". */
+  group?: string;
+  source?: ModifierSource;
+  options?: string[];
+  min: number;
+  max: number;
+  included?: number;
+  extraPriceCents?: number;
+  /** Per-option surcharges, e.g. extra cheese. Applied on top of the count allowance. */
+  optionPrices?: Record<string, number>;
+  sharedGroup?: string;
+  sharedIncluded?: number;
+};
+
+export type ModifierValue = { value: string; placement: ToppingPlacement };
+
+// The order a customer is asked to build a pizza in: what it is made of first
+// (cheese and halal), then how it is baked (crust, bake and sauce), then what goes
+// on it. Deals used to ask for toppings before the crust, which made the same
+// pizza feel like two different products depending on where it was ordered from.
+const SECTION_RANK: Record<string, number> = {
+  cheese: 1,
+  halal: 2,
+  crust: 3,
+  bake_sauce: 4,
+  pizza_base: 4,
+  toppings: 5,
+  wing_flavours: 6,
+  drinks: 7,
+};
+const TOPPINGS_FIRST_RANK: Record<string, number> = { ...SECTION_RANK, toppings: 3, crust: 4, bake_sauce: 5, pizza_base: 5 };
+
+export function orderModifierSections<T extends ModifierSection>(
+  sections: T[],
+  toppingsFirst = false,
+): T[] {
+  const ranks = toppingsFirst ? TOPPINGS_FIRST_RANK : SECTION_RANK;
+  const groupOrder = new Map<string, number>();
+  for (const section of sections) {
+    const key = section.group ?? "";
+    if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
+  }
+  return sections
+    .map((section, index) => ({ section, index }))
+    .sort((a, b) => {
+      const group = (groupOrder.get(a.section.group ?? "") ?? 0) - (groupOrder.get(b.section.group ?? "") ?? 0);
+      if (group !== 0) return group;
+      const rank = (ranks[a.section.source ?? ""] ?? 8) - (ranks[b.section.source ?? ""] ?? 8);
+      return rank !== 0 ? rank : a.index - b.index;
+    })
+    .map((entry) => entry.section);
+}
+
+/** Collapses duplicates and merges a left+right pair of the same option into a whole. */
+export function normalizeModifierValues(
+  values: Array<string | { value?: string; placement?: string }>,
+): ModifierValue[] {
+  const selections = values.map((entry) =>
+    typeof entry === "string"
+      ? { toppingId: entry, placement: "whole" as ToppingPlacement }
+      : { toppingId: entry.value ?? "", placement: (entry.placement ?? "whole") as ToppingPlacement },
+  );
+  return normalizeToppings(selections).map((entry) => ({
+    value: entry.toppingId,
+    placement: entry.placement,
+  }));
+}
+
+export function modifierUnitsBps(values: ModifierValue[], halfToppingUnitsBps = 10_000): number {
+  return toppingUnitsBps(
+    values.map((entry) => ({ toppingId: entry.value, placement: entry.placement })),
+    halfToppingUnitsBps,
+  );
+}
+
+/** Cost of the topping units that exceed the allowance the flyer price already covers. */
+export function priceToppingUnits(
+  unitsBps: number,
+  includedUnitsBps: number,
+  extraPriceCents: number,
+): number {
+  assertIntegerCents(extraPriceCents, "Extra topping price");
+  return Math.round((Math.max(0, unitsBps - Math.max(0, includedUnitsBps)) * extraPriceCents) / 10_000);
+}
+
 export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
   assertIntegerCents(input.basePriceCents, "Base price");
   assertIntegerCents(input.extraToppingPriceCents, "Extra topping price");
@@ -491,6 +597,258 @@ export function isTimeWithinConfiguredHours(
       minuteOfDay >= schedule.openMinute &&
       minuteOfDay <= schedule.closeMinute,
   );
+}
+
+export type ClockEventRecord = { action: ClockAction; occurredAt: number };
+
+export type WorkSession = {
+  clockIn: number;
+  clockOut: number | null;
+  breakMs: number;
+  paidMs: number;
+  open: boolean;
+};
+
+/**
+ * Turns the raw clock event log into the shifts a person actually worked. Unpaid
+ * breaks are subtracted; a session still open (or one whose clock-out is missing)
+ * is returned with `open: true` and paid time measured up to `asOf`, so an
+ * in-progress shift shows a running total instead of vanishing from a timesheet.
+ */
+export function buildWorkSessions(events: ClockEventRecord[], asOf = Date.now()): WorkSession[] {
+  const ordered = [...events].sort((left, right) => left.occurredAt - right.occurredAt);
+  const sessions: WorkSession[] = [];
+  let current: WorkSession | null = null;
+  let breakStartedAt: number | null = null;
+  for (const event of ordered) {
+    if (event.action === "clock_in") {
+      if (current) sessions.push(current);
+      current = { clockIn: event.occurredAt, clockOut: null, breakMs: 0, paidMs: 0, open: true };
+      breakStartedAt = null;
+      continue;
+    }
+    if (!current) continue;
+    if (event.action === "break_start") breakStartedAt = event.occurredAt;
+    if (event.action === "break_end" && breakStartedAt !== null) {
+      current.breakMs += Math.max(0, event.occurredAt - breakStartedAt);
+      breakStartedAt = null;
+    }
+    if (event.action === "clock_out") {
+      if (breakStartedAt !== null) {
+        current.breakMs += Math.max(0, event.occurredAt - breakStartedAt);
+        breakStartedAt = null;
+      }
+      current.clockOut = event.occurredAt;
+      current.open = false;
+      sessions.push(current);
+      current = null;
+    }
+  }
+  if (current) {
+    if (breakStartedAt !== null) current.breakMs += Math.max(0, asOf - breakStartedAt);
+    sessions.push(current);
+  }
+  return sessions.map((session) => {
+    const end = session.clockOut ?? asOf;
+    return { ...session, paidMs: Math.max(0, end - session.clockIn - session.breakMs) };
+  });
+}
+
+export type TimesheetDay = {
+  date: string;
+  paidMs: number;
+  breakMs: number;
+  firstIn: number | null;
+  lastOut: number | null;
+  open: boolean;
+};
+
+const dayKey = (timestamp: number, timeZone: string) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(timestamp));
+
+/** A shift is counted on the day it started, so an overnight close stays on one day. */
+export function buildTimesheet(
+  events: ClockEventRecord[],
+  timeZone: string,
+  asOf = Date.now(),
+): { days: TimesheetDay[]; totalPaidMs: number; totalBreakMs: number; openSession: boolean } {
+  const sessions = buildWorkSessions(events, asOf);
+  const byDay = new Map<string, TimesheetDay>();
+  for (const session of sessions) {
+    const key = dayKey(session.clockIn, timeZone);
+    const day = byDay.get(key) ?? { date: key, paidMs: 0, breakMs: 0, firstIn: null, lastOut: null, open: false };
+    day.paidMs += session.paidMs;
+    day.breakMs += session.breakMs;
+    day.firstIn = day.firstIn === null ? session.clockIn : Math.min(day.firstIn, session.clockIn);
+    day.lastOut = session.clockOut === null ? day.lastOut : Math.max(day.lastOut ?? 0, session.clockOut);
+    day.open = day.open || session.open;
+    byDay.set(key, day);
+  }
+  const days = [...byDay.values()].sort((left, right) => left.date.localeCompare(right.date));
+  return {
+    days,
+    totalPaidMs: days.reduce((sum, day) => sum + day.paidMs, 0),
+    totalBreakMs: days.reduce((sum, day) => sum + day.breakMs, 0),
+    openSession: sessions.some((session) => session.open),
+  };
+}
+
+export type PayrollPeriod = "weekly" | "biweekly";
+
+/**
+ * The pay period containing `now`, counted forward from the employer's anchor
+ * date so periods never drift. Returned bounds are inclusive of the start and
+ * exclusive of the end.
+ */
+export function payPeriodFor(
+  now: number,
+  options: { period?: PayrollPeriod; anchor: number; offsetPeriods?: number },
+): { start: number; end: number; index: number } {
+  const length = (options.period === "weekly" ? 7 : 14) * 86_400_000;
+  const elapsed = now - options.anchor;
+  const index = Math.floor(elapsed / length) + (options.offsetPeriods ?? 0);
+  const start = options.anchor + index * length;
+  return { start, end: start + length, index };
+}
+
+export const ONTARIO_WEEKLY_OVERTIME_MINUTES = 44 * 60;
+
+/**
+ * Ontario pays overtime after 44 hours in a work week, not after 8 in a day, so
+ * hours are banked per week before the threshold is applied. `weekStartsOn` is a
+ * weekday index (0 = Sunday) matching the employer's declared work week.
+ */
+export function splitOvertime(
+  days: Array<{ date: string; paidMs: number }>,
+  options: { weeklyOvertimeMinutes?: number; weekStartsOn?: number; timeZone?: string } = {},
+): { regularMs: number; overtimeMs: number; weeks: Array<{ weekStart: string; paidMs: number; regularMs: number; overtimeMs: number }> } {
+  const threshold = Math.max(0, options.weeklyOvertimeMinutes ?? ONTARIO_WEEKLY_OVERTIME_MINUTES) * 60_000;
+  const weekStartsOn = options.weekStartsOn ?? 0;
+  const weeks = new Map<string, number>();
+  for (const day of days) {
+    const [year, month, date] = day.date.split("-").map(Number);
+    const utc = Date.UTC(year, month - 1, date);
+    const offset = (new Date(utc).getUTCDay() - weekStartsOn + 7) % 7;
+    const key = new Date(utc - offset * 86_400_000).toISOString().slice(0, 10);
+    weeks.set(key, (weeks.get(key) ?? 0) + day.paidMs);
+  }
+  const rows = [...weeks.entries()]
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([weekStart, paidMs]) => ({
+      weekStart,
+      paidMs,
+      regularMs: threshold ? Math.min(paidMs, threshold) : paidMs,
+      overtimeMs: threshold ? Math.max(0, paidMs - threshold) : 0,
+    }));
+  return {
+    regularMs: rows.reduce((sum, row) => sum + row.regularMs, 0),
+    overtimeMs: rows.reduce((sum, row) => sum + row.overtimeMs, 0),
+    weeks: rows,
+  };
+}
+
+/** Gross pay for a period at the standard time-and-a-half overtime rate. */
+export function grossPayCents(regularMs: number, overtimeMs: number, wageCents: number, overtimeMultiplierBps = 15_000): number {
+  if (!Number.isSafeInteger(wageCents) || wageCents < 0) throw new Error("Wage must be a non-negative whole number of cents");
+  const hourly = wageCents / 3_600_000;
+  return Math.round(regularMs * hourly + (overtimeMs * hourly * overtimeMultiplierBps) / 10_000);
+}
+
+export type WeeklyHours = Array<{ weekday: number; openMinute: number; closeMinute: number; label?: string }>;
+
+const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+/** The weekday and minute-of-day a timestamp falls on in the restaurant's zone. */
+export function zonedParts(timestamp: number, timeZone: string): { weekday: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(timestamp));
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    weekday: WEEKDAY_INDEX[value("weekday")] ?? 0,
+    minute: Number(value("hour")) * 60 + Number(value("minute")),
+  };
+}
+
+/**
+ * The instant `dayOffset` local days from now at `minuteOfDay` local time. Adding
+ * plain milliseconds would drift by an hour across a daylight-saving change, so
+ * the result is corrected once against the zone it actually lands in.
+ */
+function zonedTimestamp(now: number, dayOffset: number, minuteOfDay: number, timeZone: string): number {
+  const from = zonedParts(now, timeZone);
+  const naive = now + (dayOffset * 1440 + minuteOfDay - from.minute) * 60_000;
+  const landed = zonedParts(naive, timeZone);
+  const drift = ((minuteOfDay - landed.minute + 720) % 1440 + 1440) % 1440 - 720;
+  return naive + drift * 60_000;
+}
+
+export function isStoreOpenAt(timestamp: number, hours: WeeklyHours, timeZone: string): boolean {
+  const { weekday, minute } = zonedParts(timestamp, timeZone);
+  return isTimeWithinConfiguredHours(weekday, minute, hours);
+}
+
+export type StoreStatus = {
+  open: boolean;
+  /** When the restaurant next opens, or when it closes if it is open now. */
+  changesAt: number | null;
+  weekdayLabel: string;
+};
+
+export function storeStatus(now: number, hours: WeeklyHours, timeZone: string): StoreStatus {
+  if (!hours.length) return { open: true, changesAt: null, weekdayLabel: "" };
+  const { weekday, minute } = zonedParts(now, timeZone);
+  const today = hours.find((entry) => entry.weekday === weekday);
+  if (today && minute >= today.openMinute && minute <= today.closeMinute) {
+    return { open: true, changesAt: zonedTimestamp(now, 0, today.closeMinute, timeZone), weekdayLabel: today.label ?? "" };
+  }
+  for (let offset = 0; offset < 8; offset += 1) {
+    const day = hours.find((entry) => entry.weekday === (weekday + offset) % 7);
+    if (!day) continue;
+    if (offset === 0 && minute > day.openMinute) continue;
+    return { open: false, changesAt: zonedTimestamp(now, offset, day.openMinute, timeZone), weekdayLabel: day.label ?? "" };
+  }
+  return { open: false, changesAt: null, weekdayLabel: "" };
+}
+
+/**
+ * Order times the restaurant can actually accept: inside opening hours, far enough
+ * ahead to cover the current lead time, and on the interval the store schedules by.
+ * Offering only these keeps a customer from picking a time the kitchen must reject.
+ */
+export function nextOrderSlots(options: {
+  now: number;
+  hours: WeeklyHours;
+  timeZone: string;
+  leadMinutes: number;
+  intervalMinutes?: number;
+  limit?: number;
+  horizonDays?: number;
+}): number[] {
+  const { now, hours, timeZone, leadMinutes } = options;
+  const interval = Math.max(5, options.intervalMinutes ?? 15);
+  const limit = options.limit ?? 48;
+  const horizon = options.horizonDays ?? 7;
+  if (!hours.length) return [];
+  const earliest = now + leadMinutes * 60_000;
+  const { weekday, minute } = zonedParts(now, timeZone);
+  const slots: number[] = [];
+  for (let offset = 0; offset <= horizon && slots.length < limit; offset += 1) {
+    const day = hours.find((entry) => entry.weekday === (weekday + offset) % 7);
+    if (!day) continue;
+    const first = Math.ceil(day.openMinute / interval) * interval;
+    for (let slotMinute = first; slotMinute <= day.closeMinute && slots.length < limit; slotMinute += interval) {
+      // A slot on today's row that has already passed is skipped rather than moved.
+      if (offset === 0 && slotMinute < minute) continue;
+      const timestamp = zonedTimestamp(now, offset, slotMinute, timeZone);
+      if (timestamp >= earliest) slots.push(timestamp);
+    }
+  }
+  return slots;
 }
 
 export function validateRefundAmount(

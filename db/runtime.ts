@@ -5,6 +5,7 @@ import {
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
   TOPPING_SEEDS,
+  type ModifierSectionSeed,
 } from "@/lib/menu";
 
 let initialization: Promise<void> | null = null;
@@ -169,6 +170,29 @@ const schemaStatements = [
     key_hash TEXT PRIMARY KEY NOT NULL, window_started_at INTEGER NOT NULL,
     attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS staff_profiles (
+    staff_user_id TEXT PRIMARY KEY NOT NULL, job_title TEXT, employment_type TEXT NOT NULL DEFAULT 'hourly',
+    wage_cents INTEGER NOT NULL DEFAULT 0, weekly_overtime_minutes INTEGER NOT NULL DEFAULT 2640,
+    overtime_multiplier_bps INTEGER NOT NULL DEFAULT 15000, week_starts_on INTEGER NOT NULL DEFAULT 0,
+    pin_hash TEXT, pin_salt TEXT, pin_iterations INTEGER, availability_json TEXT NOT NULL DEFAULT '[]',
+    hired_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS shifts (
+    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT, role TEXT, starts_at INTEGER NOT NULL,
+    ends_at INTEGER NOT NULL, unpaid_break_minutes INTEGER NOT NULL DEFAULT 0, notes TEXT,
+    published INTEGER NOT NULL DEFAULT 0, published_at INTEGER, created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS shifts_starts_at_idx ON shifts (starts_at)`,
+  `CREATE INDEX IF NOT EXISTS shifts_staff_idx ON shifts (staff_user_id, starts_at)`,
+  `CREATE TABLE IF NOT EXISTS timesheet_approvals (
+    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'approved', paid_ms INTEGER NOT NULL DEFAULT 0,
+    regular_ms INTEGER NOT NULL DEFAULT 0, overtime_ms INTEGER NOT NULL DEFAULT 0,
+    gross_pay_cents INTEGER NOT NULL DEFAULT 0, note TEXT, approved_by TEXT NOT NULL,
+    approved_at INTEGER NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS timesheet_approvals_period_idx ON timesheet_approvals (staff_user_id, period_start)`,
   `CREATE TABLE IF NOT EXISTS analytics_events (
     id TEXT PRIMARY KEY NOT NULL, session_id TEXT, customer_id TEXT, order_id TEXT,
     event_name TEXT NOT NULL, context_json TEXT NOT NULL DEFAULT '{}', occurred_at INTEGER NOT NULL
@@ -372,7 +396,7 @@ async function seedLaunchData(database: D1Database): Promise<void> {
 // means appending an entry here — never widening the seed back into an upsert.
 const DATA_MIGRATIONS: Array<{
   id: string;
-  run: (database: D1Database, now: number) => D1PreparedStatement[];
+  run: (database: D1Database, now: number) => D1PreparedStatement[] | Promise<D1PreparedStatement[]>;
 }> = [
   {
     // H-01/H-02: bring pizza base prices and per-size extra-topping rates to the
@@ -456,6 +480,58 @@ const DATA_MIGRATIONS: Array<{
       ];
     },
   },
+  {
+    // Splits "Crust, bake & sauce" into a single-choice crust (Regular/Thin/Thick)
+    // and a separate bake & sauce group, and gives every pizza inside a deal the
+    // same cheese and halal choices a standalone pizza has, in the same order.
+    // Owner-tuned numbers on a section that still exists (min, max, included, extra
+    // price) are carried across; the group structure itself is what this replaces.
+    id: "2026-07-27-pizza-option-groups",
+    run: async (database, now) => {
+      const statements: D1PreparedStatement[] = [];
+      const stored = await database
+        .prepare("SELECT id, configuration_json FROM products")
+        .all<{ id: string; configuration_json: string | null }>();
+      const current = new Map(
+        stored.results.map((row) => [row.id, safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {})]),
+      );
+      for (const product of MENU_PRODUCTS) {
+        const existing = current.get(product.id);
+        const seed = (product.configuration ?? {}) as Record<string, unknown>;
+        if (!existing) continue;
+        const next: Record<string, unknown> = { ...existing };
+        if (Array.isArray(seed.crustOptions)) {
+          next.crustOptions = seed.crustOptions;
+          next.bakeSauceOptions = seed.bakeSauceOptions;
+          next.cheeseEnabled = existing.cheeseEnabled ?? true;
+          delete next.pizzaBaseOptions;
+        }
+        if (Array.isArray(seed.sections)) {
+          const previous = new Map(
+            (Array.isArray(existing.sections) ? (existing.sections as ModifierSectionSeed[]) : []).map((section) => [section.id, section]),
+          );
+          next.sections = (seed.sections as ModifierSectionSeed[]).map((section) => {
+            const owned = previous.get(section.id);
+            if (!owned) return section;
+            return {
+              ...section,
+              min: owned.min ?? section.min,
+              max: owned.max ?? section.max,
+              included: owned.included ?? section.included,
+              extraPriceCents: owned.extraPriceCents ?? section.extraPriceCents,
+            };
+          });
+        }
+        if (next.crustOptions === undefined && next.sections === undefined) continue;
+        statements.push(
+          database
+            .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
+            .bind(JSON.stringify(next), now, product.id),
+        );
+      }
+      return statements;
+    },
+  },
 ];
 
 async function runDataMigrations(database: D1Database): Promise<void> {
@@ -467,7 +543,7 @@ async function runDataMigrations(database: D1Database): Promise<void> {
       .bind(marker)
       .first<{ present: number }>();
     if (already) continue;
-    const statements = migration.run(database, now);
+    const statements = await migration.run(database, now);
     statements.push(
       database
         .prepare("INSERT OR IGNORE INTO settings (key, value_json, version, updated_at) VALUES (?, ?, 1, ?)")

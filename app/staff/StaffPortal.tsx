@@ -1,8 +1,13 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
-import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel } from "@/app/staff/AdminControls";
+import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
+import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
+import { EmployeeTimeClock } from "@/app/staff/TimeClock";
+import { ManagerTimeClock } from "@/app/staff/TimeClockManager";
+import { AdminRecordsPanel } from "@/app/staff/AdminRecords";
 
 type User = { id: string; email: string; name: string; role: string; permissions: string[] };
 export type Dashboard = {
@@ -21,14 +26,6 @@ export type Dashboard = {
   promotions: Array<Record<string, unknown>>;
   integrations: { stripeSecret: boolean; stripeWebhook: boolean; emailApiKey: boolean; emailProvider: string | null };
 };
-type ClockData = {
-  user: User;
-  state: "clocked_out" | "working" | "on_break";
-  paidMs: number;
-  events: Array<{ id: string; action: string; occurred_at: number; session_id: string }>;
-  corrections: Array<Record<string, unknown>>;
-  timeOff: Array<Record<string, unknown>>;
-};
 
 const permissionLabels = [
   ["view_orders", "View orders"], ["acknowledge_orders", "Acknowledge orders"],
@@ -42,8 +39,8 @@ const permissionLabels = [
   ["export_payroll", "Export payroll"], ["manage_settings", "Manage settings"],
 ] as const;
 
-function StaffBrand() {
-  return <div className="staff-brand"><span className="pizza-mark"><span>62</span><i className="pizza-dot pizza-dot--one" /><i className="pizza-dot pizza-dot--two" /></span><span><strong>Pizza 62</strong><small>Operations</small></span></div>;
+function StaffBrand({ label = "Operations" }: { label?: string }) {
+  return <div className="staff-brand"><BrandLogo name="Pizza 62" chip /><small>{label}</small></div>;
 }
 
 export default function StaffPortal({ mode }: { mode: "admin" | "kitchen" | "employee" }) {
@@ -57,7 +54,7 @@ export default function StaffPortal({ mode }: { mode: "admin" | "kitchen" | "emp
   }, []);
   if (checking) return <div className="login-shell"><div className="login-panel"><div className="login-card" role="status">Checking secure staff access…</div></div></div>;
   if (!user) return <StaffLogin mode={mode} onUser={setUser} />;
-  if (mode === "employee") return <EmployeePortal user={user} onLogout={() => setUser(null)} />;
+  if (mode === "employee") return <EmployeeTimeClock user={user} onLogout={() => setUser(null)} />;
   return <OperationsPortal mode={mode} user={user} onLogout={() => setUser(null)} />;
 }
 
@@ -105,8 +102,8 @@ function OperationsPortal({ mode, user, onLogout }: { mode: "admin" | "kitchen";
     setError(""); const response = await fetch("/api/admin/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) setError(result.error ?? "Action failed."); else void load();
   };
   const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
-  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><a href="/employee"><span>Time clock</span></a></> : <><button className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : section.replace("_", " ")}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}</div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
-    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
+  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}><span>Analytics</span></button><button className={section === "records" ? "active" : ""} onClick={() => setSection("records")}><span>History &amp; offers</span></button><button className={section === "website" ? "active" : ""} onClick={() => setSection("website")}><span>Website</span></button><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><button className={section === "timeclock" ? "active" : ""} onClick={() => setSection("timeclock")}><span>Time clock</span></button><a href="/employee"><span>My clock</span></a></> : <><button className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : section.replace("_", " ")}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}</div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
+    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
   </main></div>;
 }
 
@@ -130,11 +127,11 @@ function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>
     {items.map((item, index) => {
       const snapshot = (item.snapshot as Record<string, unknown>) ?? {};
       const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
-      const modifiers = (snapshot.modifiers as Array<{ label: string; values: Array<{ label: string }> }> | undefined) ?? [];
+      const modifiers = (snapshot.modifiers as Array<{ label: string; group?: string; values: Array<{ label: string; placement?: string }> }> | undefined) ?? [];
       return <div className="ticket-line" key={String(item.id ?? index)}>
         <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{snapshot.halal ? <span className="ticket-tag">HALAL</span> : null}{snapshot.extraCheese ? <span className="ticket-tag">Extra cheese</span> : null}</div>
         {toppings.length ? <div className="ticket-toppings">{toppings.map((topping, toppingIndex) => <span key={toppingIndex}>{toppingNames.get(topping.toppingId) ?? topping.toppingId}{topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}</span>)}</div> : null}
-        {modifiers.map((modifier, modifierIndex) => <div className="ticket-modifier" key={modifierIndex}><em>{modifier.label}:</em> {modifier.values.map((value) => value.label).join(", ")}</div>)}
+        {modifiers.map((modifier, modifierIndex) => <div className="ticket-modifier" key={modifierIndex}><em>{modifier.group ? `${modifier.group} · ${modifier.label}` : modifier.label}:</em> {modifier.values.map((value) => `${value.label}${value.placement === "left" ? " (L)" : value.placement === "right" ? " (R)" : ""}`).join(", ")}</div>)}
         {item.instructions ? <div className="ticket-note">Note: {String(item.instructions)}</div> : null}
       </div>;
     })}
@@ -182,15 +179,3 @@ export function LegacyTeamPanel({ onSaved }: { onSaved: () => Promise<void> }) {
   return <div className="staff-grid"><form className="staff-panel employee-form" onSubmit={submit}><div className="staff-panel-head"><h2>Create employee access</h2></div><label>Name<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>Temporary password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} required /></label><div className="settings-form">{permissionLabels.map(([key, label]) => <label key={key}><span><input type="checkbox" checked={permissions.includes(key)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, key] : current.filter((entry) => entry !== key))} /> {label}</span></label>)}</div><button className="staff-button">Create employee</button>{message ? <p className="staff-empty" role="status">{message}</p> : null}</form><aside className="staff-panel"><div className="staff-panel-head"><h2>Permission boundaries</h2></div><div className="setup-list"><SetupItem title="Refunds are separate" text="Refund, cancellation, payroll and employee-management access are independently grantable." /><SetupItem title="No shared passwords" text="Every employee signs in with an individual email and password." /><SetupItem title="Revocation-ready" text="Disabled users no longer pass server-side session checks." /></div></aside></div>;
 }
 
-function EmployeePortal({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [data, setData] = useState<ClockData | null>(null); const [error, setError] = useState(""); const [timeOffStart, setTimeOffStart] = useState(""); const [timeOffEnd, setTimeOffEnd] = useState(""); const [note, setNote] = useState("");
-  const load = useCallback(async () => { const response = await fetch("/api/timeclock"); if (response.status === 401) { onLogout(); return; } const result = await response.json(); if (!response.ok) setError(result.error); else setData(result); }, [onLogout]);
-  useEffect(() => {
-    const initial = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(initial);
-  }, [load]);
-  const act = async (action: string, extra: Record<string, unknown> = {}) => { setError(""); const response = await fetch("/api/timeclock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...extra }) }); const result = await response.json(); if (!response.ok) setError(result.error); else await load(); };
-  const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
-  const paidHours = data ? data.paidMs / 3_600_000 : 0;
-  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav"><button className="active"><span>My time</span></button><a href="/kitchen"><span>Kitchen</span></a></nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>Your shift, accurately recorded</h1><p>Exact timestamps · Manual unpaid breaks · No automatic rounding</p></div><span className="live-chip"><i /> Secure session</span></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{!data ? <div className="staff-panel">Loading your time record…</div> : <div className="clock-layout"><section className="clock-hero"><span className="live-chip"><i /> {data.state.replaceAll("_", " ")}</span><div className="clock-state"><strong>{data.state === "working" ? "On shift" : data.state === "on_break" ? "On break" : "Off shift"}</strong></div><div className="clock-time">{paidHours.toFixed(2)} h</div><p style={{ textAlign: "center", fontSize: 9, color: "rgba(255,255,255,.55)" }}>Paid time visible in the last 30 days</p><div className="clock-actions"><button className="primary" disabled={data.state !== "clocked_out"} onClick={() => act("clock_in")}>Clock in</button><button disabled={data.state !== "working"} onClick={() => act("break_start")}>Start break</button><button disabled={data.state !== "on_break"} onClick={() => act("break_end")}>End break</button><button disabled={data.state !== "working"} onClick={() => act("clock_out")}>Clock out</button></div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Recent events</h2><span className="live-chip">Exact time</span></div><div className="clock-events">{data.events.slice(-8).reverse().map((event) => <div className="clock-event" key={event.id}><strong>{event.action.replaceAll("_", " ")}</strong><span>{new Date(event.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</span></div>)}{!data.events.length ? <div className="staff-empty">No clock events yet.</div> : null}</div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Request time off</h2></div><div className="timeoff-form"><label>Starts<input type="date" value={timeOffStart} onChange={(event) => setTimeOffStart(event.target.value)} /></label><label>Ends<input type="date" value={timeOffEnd} onChange={(event) => setTimeOffEnd(event.target.value)} /></label><label>Note<textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={500} /></label><button className="staff-button" onClick={() => act("timeoff.request", { startsAt: new Date(`${timeOffStart}T12:00:00`).getTime(), endsAt: new Date(`${timeOffEnd}T12:00:00`).getTime(), partialDay: false, note })}>Submit request</button></div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Request status</h2></div><div className="setup-list">{data.timeOff.map((request) => <div className="setup-item" key={String(request.id)}><b>{String(request.status) === "approved" ? "✓" : "·"}</b><div><strong>{new Date(Number(request.starts_at)).toLocaleDateString("en-CA")} — {new Date(Number(request.ends_at)).toLocaleDateString("en-CA")}</strong><p>Status: {String(request.status)}</p></div></div>)}{!data.timeOff.length ? <div className="staff-empty">No time-off requests.</div> : null}</div></section></div>}</main></div>;
-}
