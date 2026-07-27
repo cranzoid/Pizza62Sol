@@ -21,4 +21,4 @@ COPY --from=build /app/dist ./dist
 
 EXPOSE 3000
 
-CMD ["npx", "wrangler", "dev", "--config", "dist/server/wrangler.json", "--ip", "0.0.0.0", "--port", "3000", "--inspector-ip", "127.0.0.1", "--inspector-port", "9229", "--persist-to", "/tmp/pizza62-state", "--show-interactive-dev-session", "false", "--log-level", "info"]
+CMD ["sh", "-c", "exec npx wrangler dev --config dist/server/wrangler.json --ip 0.0.0.0 --port 3000 --inspector-ip 127.0.0.1 --inspector-port 9229 --persist-to /tmp/pizza62-state --show-interactive-dev-session false --log-level info --var \"OWNER_SETUP_SECRET:$OWNER_SETUP_SECRET\""]
