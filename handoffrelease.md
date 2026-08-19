@@ -90,25 +90,80 @@ order was still there** — the assertion the old build fails.
 
 `npm test` 43/43 · `tsc` clean · `lint` clean · `build` 31 routes.
 
-### ⬜ R1.2 — Azure infrastructure (Terraform) — **NEXT**
-### ⬜ R1.3 — Clover replaces Stripe
-### ⬜ R1.4 — Notifications (Twilio)
-### ⬜ R1.5 — Bug fixes (see §6)
+### ✅ R1.2 — Azure infrastructure (Terraform) — **DONE, PLAN-VERIFIED**
+
+`infra/` — 37 resources, `terraform plan` clean against subscription `7e12a986`
+in `canadacentral` on the `default`, `dev` and `prod` workspaces (48 with every
+optional resource on). Nothing has been applied yet.
+
+Container Apps environment (VNet-injected) with the web app plus three jobs;
+Postgres 16 Flexible Server (private), Blob Storage, Key Vault, ACR, Azure Maps,
+Log Analytics, and an optional Front Door.
+
+**Decisions taken** (answers given 2026-08-19: `canadacentral`, lean budget,
+default Azure hostname, `rg-pizza62-{env}`):
+
+- **Postgres has no public endpoint.** VNet-integrated via a delegated subnet, so
+  it is unreachable from a laptop *by design*. Schema work goes through the
+  `db-migrate` job; a break-glass `psql` needs a temporary jumpbox in `snet-apps`.
+- **The connection budget is enforced.** B1ms serves 50 connections; worst case is
+  `web_max_replicas × pg_pool_max + jobs × job_pg_pool_max` (28 with defaults). A
+  `lifecycle precondition` on the web app **fails the plan** within 5 of the cap.
+  A `check` block was tried first and rejected — it only warns.
+- **Front Door is off** (`enable_front_door = false`). Standard is ~$35/mo flat and
+  buys nothing while the app serves on its `*.azurecontainerapps.io` hostname,
+  which already has TLS. The whole path is written and plan-verified.
+- **Both cron jobs are off**, gated behind `count`, because their entrypoints do
+  not exist yet. R1.3 sets `enable_payment_reaper`, R1.4 `enable_outbox_dispatcher`.
+- **No storage key exists** (`shared_access_key_enabled = false`); one
+  user-assigned managed identity holds AcrPull, Key Vault Secrets User, Storage
+  Blob Data Contributor and Azure Maps Data Reader.
+- Third-party secrets are created holding `"pending"` with `ignore_changes` on the
+  value, so an apply never reverts a credential set out of band.
+
+`infra/deploy.sh` builds `--platform linux/amd64`, pushes, runs migrations, waits,
+and refuses to roll the revision if they fail. `infra/README.md` has the
+first-time bring-up order (ACR must exist before an image can be pushed).
+
+**Rough cost: ~$43/mo** (+$35 when Front Door is enabled).
+
+### ⬜ R1.3 — Clover replaces Stripe — **NEXT** (blocked on §9 items 1–5)
+### ⬜ R1.4 — Notifications (Twilio) — blocked on §9 items 6–10
+### ✅ R1.5 — Bug fixes — **ALL SEVEN DONE**
+
+| ID | State |
+|---|---|
+| **rate limit** | Prefers Front Door's `X-Azure-ClientIP`, else the **last** `X-Forwarded-For` hop (the leftmost is caller-supplied). Missing header → behaviour declared by `TRUST_PROXY_HEADERS`, which Terraform sets; on = refuse, off = fixed local identity. Counter is now one atomic `ON CONFLICT … RETURNING` — the old read-then-write raced across replicas. |
+| **H-17b** | `drizzle/0001` scopes `payments_idempotency_uq` to `status <> 'failed'`. Verified in psql both ways: retry-after-failure inserts, real duplicates still rejected. |
+| **C-09** | Kiosk lists names (`GET /api/timeclock/kiosk`), punch names its employee → one PBKDF2. PIN uniqueness enforced at set time. ⚠️ Adds a public roster endpoint exposing staff first names — may warrant device auth. |
+| **H-11a** | `promotion.upsert` patch-merges; `undefined` leaves alone, explicit `null` still clears. |
+| **H-11b** | Closed type vocabulary on both sides; the bare `else` that granted free delivery is gone. |
+| **H-20a** | Distinct read-only "Awaiting payment" queue on the dashboard, deliberately **not** on the kitchen board, plus a history filter option. |
+| **H-06b** | Azure Maps geocoding. Maps unreachable → fall back to FSA centroid; Maps found-nothing/low-confidence → **block**. |
+
+Also removed the last two TypeScript parameter properties (`lib/auth.ts`,
+`lib/order-service.ts`) — Node's strip-only loader cannot compile them, so both
+modules were unimportable from `scripts/*.ts`. That was a latent blocker for the
+R1.3 reaper and R1.4 dispatcher, found when a script importing `lib/auth` crashed.
+
 ### ⬜ R1.6 — Route-level integration tests
 
 ---
 
-## 4. ⚠️ Uncommitted
+## 4. Branch & commits
 
-**Nothing has been committed.** The whole R1.1 change set is staged/untracked in
-the working tree on branch `main`. Before doing anything else, offer to create a
-branch and commit it.
+Everything is on **`release/r1-runway`** (branched from `main`, not merged):
 
 ```
-git status --short     # ~35 files
+fbb20fe  R1.5: H-06b — geocode delivery addresses instead of postal-district centroids
+d7ac716  R1.5: fix six audit findings (H-17b, C-09, H-11a/b, H-20a, rate limit)
+3ecefc7  R1.2: Azure infrastructure as Terraform
+c7718da  R1.1: port runtime from Cloudflare Workers to Node/Postgres
 ```
 
----
+67 files, +9176/−1750 versus `main`. Gates at the tip: **62/62 tests (0 skipped)**
+· `tsc` clean · `lint` clean · `build` 34 routes · `terraform validate` + `plan`
+clean.
 
 ## 5. Build, toolchain & environment
 
@@ -238,17 +293,19 @@ was never actually exercised.
 
 ---
 
-## 7. Bug fixes still owed (R1.5)
+## 7. Bug fixes — all landed (see §3 R1.5 for the table)
 
-| ID | Fix |
-|---|---|
-| **H-17b** | Failed payment-session creation deletes the idempotency key but leaves a `payments` row holding it under a UNIQUE index → every retry 500s forever. Delete the orphaned row in the same batch |
-| **C-09** | `app/api/timeclock/kiosk/route.ts` runs PBKDF2 100k over *every* staff row until one matches — seconds of CPU per punch, and a shared PIN punches the wrong person. Select employee first, then PIN; enforce PIN uniqueness |
-| **H-11a** | The promotions admin UI omits `exclusive` and `rule`, and `promotion.upsert` writes both unconditionally → **every save wipes `rule_json` targeting**. Patch-merge instead |
-| **H-11b** | No `type` whitelist on promotions; `applyPromotions` falls through `else` → an unrecognised type **silently grants free delivery**. Add an enum check both sides |
-| **H-20a** | `awaiting_payment` orders are invisible in both the live-orders filter and history. Surface as a distinct staff queue |
-| **H-06b** | Delivery area is 17 hard-coded postal-district centroids (`lib/delivery-area.ts`), so a mistyped code in a neighbouring FSA passes. Swap for Azure Maps geocoding — the call site is already isolated |
-| **rate limit** | `lib/security.ts` falls back to the literal `"local"`, making every visitor share one bucket off Cloudflare. Use the Front Door `X-Azure-ClientIP` / `X-Forwarded-For` chain and fail closed |
+All seven are done and verified against a running server, not just typechecked.
+Two follow-ups were opened by the work rather than closed by it:
+
+- **C-09 added a public roster endpoint.** `GET /api/timeclock/kiosk` returns the
+  first names of active staff who have a PIN, so the kiosk can show a picker.
+  It is rate limited and returns nothing else, but it is internet-reachable. If
+  that matters to the owner, the fix is a kiosk device token — deliberately not
+  built, because it needs a settings surface and a decision that is theirs.
+- **`resolveFsaCentroid` is still the delivery fallback.** It only runs when
+  Azure Maps cannot answer at all. Its 17 centroids remain approximate; refine
+  them against an authoritative source if the radius ever needs to be exact.
 
 ---
 
@@ -288,11 +345,13 @@ Ask for these up front — several have real lead time and gate Release 1.
 9. SendGrid API key + a verified sender domain (SPF/DKIM DNS records)
 10. **The restaurant phone number to call** on a new order, and how many retries before giving up
 
-**Blocking R1.2 (Azure)**
-11. Azure region (e.g. `canadacentral`)
-12. Resource-group naming convention / any existing groups to use
-13. Custom domain name + who controls its DNS
-14. Budget ceiling — drives Postgres tier and whether Front Door is Standard or Premium
+**~~Blocking R1.2 (Azure)~~ — answered 2026-08-19, R1.2 is built**
+11. ~~Azure region~~ → `canadacentral`
+12. ~~Resource-group convention~~ → `rg-pizza62-{env}`
+13. ~~Custom domain~~ → default `*.azurecontainerapps.io` hostname for now.
+    **Still needed eventually** — Clover and Twilio webhooks want a stable
+    hostname, and the generated one changes if the environment is rebuilt.
+14. ~~Budget~~ → lean; Postgres B1ms, Front Door off (saves ~$35/mo)
 
 **Blocking R2.2 (printing)**
 15. **Printer make and model.** If cloud-capable (Star CloudPRNT / Epson Server Direct Print) they poll our HTTPS endpoint and need no local software. If LAN-only, a small local print agent is required
@@ -305,7 +364,22 @@ Ask for these up front — several have real lead time and gate Release 1.
 
 ## 10. Suggested first moves in the new chat
 
-1. Read `/Users/cranzoid/.claude/plans/ancient-wishing-wadler.md` for full detail.
-2. Offer to branch and commit the R1.1 work (§4).
-3. Ask me for §9 items 11–14 and start **R1.2 (Terraform)** — it needs nothing from Clover or Twilio and unblocks everything else.
-4. Do **R1.5 bug fixes** in parallel; they depend on nothing external.
+R1.1, R1.2 and R1.5 are done and committed on `release/r1-runway` (§4). What is
+left in Release 1 is R1.3, R1.4 and R1.6.
+
+1. **Ask me for §9 items 1–5 (Clover)** and build **R1.3**. It is the critical
+   path: the site cannot take money without it. Everything needed is in §8 —
+   don't re-research the API.
+2. While waiting on those credentials, **R1.6 route-level integration tests** need
+   nothing external and cover the riskiest untested code (order creation, auth,
+   webhooks, idempotency). `tests/rate-limit.test.ts` and
+   `tests/delivery-area.test.ts` are the pattern to copy — the first probes for a
+   real Postgres and skips cleanly, the second stubs `fetch`.
+3. **Ask me for §9 items 6–10 (Twilio)** early even though R1.4 comes later —
+   toll-free verification takes days-to-weeks and is the most likely thing to
+   slip the schedule.
+4. **Apply the infrastructure** when ready: `infra/README.md` has the bring-up
+   order. Nothing has been applied yet, so the first `terraform apply` is still
+   ahead. Note ACR has to exist before an image can be pushed to it.
+5. Two flags flip as their code lands: `enable_payment_reaper` with R1.3,
+   `enable_outbox_dispatcher` with R1.4.
