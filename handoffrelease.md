@@ -3,6 +3,10 @@
 > Paste this into a new chat to continue the work. It carries the decisions, the
 > state of the code, the traps already discovered, and the list of things you
 > need to ask me for before you can finish Release 1.
+>
+> **Start at §10.** §3 is what is already done, §10 is what to do next.
+>
+> Last updated 2026-08-19, after R1.1, R1.2 and R1.5 landed on `release/r1-runway`.
 
 ---
 
@@ -26,6 +30,11 @@ order entry.
 **Full roadmap:** `/Users/cranzoid/.claude/plans/ancient-wishing-wadler.md`
 (read this — it has the per-release detail this summary compresses).
 
+⚠️ **Where this file and the roadmap disagree, this file wins.** The roadmap was
+written before the printer model was known and before the toll-free decision, so
+its R2.2 section recommends a cloud-polling printer and an ESC/POS serializer —
+both wrong for the hardware the owner actually has. See §11.
+
 Existing audit issue IDs (`C-01`…`H-26`) live in `PIZZA62_FULL_AUDIT.md` and
 `AUDIT_WORKLOG.md`. Keep using that vocabulary; append to the worklog as items land.
 
@@ -39,8 +48,9 @@ Existing audit issue IDs (`C-01`…`H-26`) live in `PIZZA62_FULL_AUDIT.md` and
 | Payments | **Clover Hosted Checkout** replaces Stripe entirely — delete Stripe, don't leave it dormant |
 | Notifications | Twilio: SendGrid (email), Programmable Messaging (SMS), Programmable Voice (call) |
 | Order call | **Restaurant only.** `<Say>` the order + `<Gather>` "press 1 to acknowledge", re-calling until acknowledged. No calls to customers (avoids CRTC/CASL consent burden) |
+| Twilio number | **Local Canadian number, not toll-free** (owner decision, 2026-08-19). Only the restaurant is called, and voice needs no toll-free verification — this removes what was the biggest schedule risk in the plan. See §9 for the SMS caveat this creates |
 | POS | **Replace Loyverse.** This app is the system of record. Clover is online card payments only — no Clover Orders API push |
-| Printing | Owner already owns printers, **make/model still unknown**. Build hardware-agnostic: a `print_jobs` queue + pluggable adapters |
+| Printing | Hardware now known (2026-08-19): till is **Tera**, printer is **Star TSP100III / TSP143III**. Still a `print_jobs` queue + pluggable adapters, but the printer's real constraints now drive the design — see §11 |
 | Release 1 | Make it deployable and safe. No new customer-facing features until orders are durable |
 
 ---
@@ -127,8 +137,24 @@ first-time bring-up order (ACR must exist before an image can be pushed).
 
 **Rough cost: ~$43/mo** (+$35 when Front Door is enabled).
 
-### ⬜ R1.3 — Clover replaces Stripe — **NEXT** (blocked on §9 items 1–5)
-### ⬜ R1.4 — Notifications (Twilio) — blocked on §9 items 6–10
+### ⬜ R1.3 — Clover replaces Stripe — **NEXT, and mostly unblocked**
+
+The owner has the **private token**; that plus the **merchant ID** is everything
+Hosted Checkout needs to make a call. Both remaining items (merchant ID, webhook
+signing secret) are **self-serve from the Clover Merchant Dashboard** — no need to
+go back to Clover support. See §8.
+
+Build order that does not stall: write `createCloverCheckout()`, the webhook route
+and the signature verification against the §8 contract first — none of it needs a
+live credential — then plug the values in and run the sandbox end-to-end.
+
+### ⬜ R1.4 — Notifications (Twilio) — **architecture can be built now**
+
+Owner is provisioning Twilio. Decided: a **local Canadian number, not toll-free**,
+because only the restaurant is called. Build the dispatcher, the three channel
+adapters and the voice `<Say>`/`<Gather>` flow against the Twilio docs now, and
+wire the credentials when they land. Read the SMS caveat in §9 before promising
+customer SMS.
 ### ✅ R1.5 — Bug fixes — **ALL SEVEN DONE**
 
 | ID | State |
@@ -320,6 +346,23 @@ Two follow-ups were opened by the work rather than closed by it:
 - Webhook: header `Clover-Signature: t=<ts>,v1=<hmac>` — HMAC-SHA256 over `` `${t}.${rawBody}` `` with the dashboard-generated signing secret. Payload carries `id` (payment UUID), `merchantId`, `data` (**checkout session UUID**), `status` `APPROVED`/`DECLINED`, `type` `PAYMENT`
 - Supported in **Canada/CAD**
 
+### Credentials — what exists, what is missing
+
+The owner has a **public token** and a **private token**. For Hosted Checkout that
+is *almost* everything, and the gap does **not** require contacting Clover again:
+
+| Item | State | Where it comes from |
+|---|---|---|
+| **Private token** | ✅ owner has it | `Authorization: Bearer <private token>` |
+| **Merchant ID** | ❓ ask the owner | Visible in the **URL of the Clover Merchant Dashboard** — self-serve, no support ticket. Sent as `X-Clover-Merchant-Id` |
+| **Webhook signing secret** | ❌ not yet generated | Merchant Dashboard → *Settings → Ecommerce → Hosted Checkout*. Self-serve |
+| **Return URLs** | ❌ not yet set | Same dashboard screen. Must point at the deployed host (see the return-URL consequence below) |
+| **Sandbox vs production** | ❓ owner decision | Sandbox `apisandbox.dev.clover.com`, production `api.clover.com`. Do sandbox first |
+| **Public token** | ✅ owner has it — **but not needed** | It is the tokenization key for building *your own* card form via the Ecommerce API. Hosted Checkout never uses it. Keep it: it is what a future embedded checkout would need |
+
+So the only true unknowns are the merchant ID (a lookup) and the webhook secret (a
+button). Nothing here is blocked on Clover support.
+
 **Three consequences that change the design:**
 1. **Sessions expire in 15 minutes** (Stripe was 24h) → the payment-reaper job cancels `awaiting_payment` orders after ~20 min.
 2. **No metadata passthrough** → we must persist `checkoutSessionId → orderId` ourselves. `payments.provider_reference` already exists and is already written for this.
@@ -327,59 +370,193 @@ Two follow-ups were opened by the work rather than closed by it:
 
 ---
 
-## 9. 🙋 What to ask me for
+## 9. 🙋 What is still needed from the owner
 
-Ask for these up front — several have real lead time and gate Release 1.
+Most of the original list is answered. What remains is short — and almost none of
+it blocks writing code, because every integration can be built against its
+documented contract and wired up afterwards.
 
-**Blocking R1.3 (Clover)**
-1. `CLOVER_MERCHANT_ID`
-2. `CLOVER_API_TOKEN` (private ecommerce token)
-3. `CLOVER_WEBHOOK_SECRET` — generated under *Settings → Ecommerce → Hosted Checkout* in the Clover Merchant Dashboard
-4. Sandbox or production first?
-5. Confirm the success/failure/cancel return URLs are set in that same dashboard
+### Still genuinely needed
 
-**Blocking R1.4 (Twilio)**
-6. Twilio Account SID + Auth Token
-7. The Twilio phone number to send from
-8. **Toll-free verification status** — since 17 Feb 2026 this needs the restaurant's CRA Business Number (format `123456789RC0001`). Takes days-to-weeks; **the most likely thing to slip the schedule**
-9. SendGrid API key + a verified sender domain (SPF/DKIM DNS records)
-10. **The restaurant phone number to call** on a new order, and how many retries before giving up
+| # | Item | Blocks | Notes |
+|---|---|---|---|
+| 1 | **Clover merchant ID** | R1.3 end-to-end test | Read it out of the Merchant Dashboard URL — self-serve |
+| 2 | **Clover webhook signing secret** | R1.3 webhook | Dashboard → Settings → Ecommerce → Hosted Checkout — self-serve |
+| 3 | **Sandbox or production first?** | R1.3 | Recommend sandbox |
+| 4 | **Twilio Account SID + Auth Token** | R1.4 wiring | Owner is provisioning now |
+| 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
+| 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
+| 7 | **SendGrid API key + a domain to authenticate** | Customer email | See the email/domain note below |
+| 8 | **Which TSP100III variant**, and how it is connected | R2.2 | See §11 — this decides the whole print architecture |
+| 9 | **What OS the Tera till runs** (Windows or Android) | R2.2 | Decides where the print agent can live |
 
-**~~Blocking R1.2 (Azure)~~ — answered 2026-08-19, R1.2 is built**
-11. ~~Azure region~~ → `canadacentral`
-12. ~~Resource-group convention~~ → `rg-pizza62-{env}`
-13. ~~Custom domain~~ → default `*.azurecontainerapps.io` hostname for now.
-    **Still needed eventually** — Clover and Twilio webhooks want a stable
-    hostname, and the generated one changes if the environment is rebuilt.
-14. ~~Budget~~ → lean; Postgres B1ms, Front Door off (saves ~$35/mo)
+### Answered — do not re-ask
 
-**Blocking R2.2 (printing)**
-15. **Printer make and model.** If cloud-capable (Star CloudPRNT / Epson Server Direct Print) they poll our HTTPS endpoint and need no local software. If LAN-only, a small local print agent is required
+| Item | Answer |
+|---|---|
+| Azure region | `canadacentral` |
+| Resource-group convention | `rg-pizza62-{env}` |
+| Budget | Lean — Postgres B1ms, Front Door off |
+| Custom domain | **Later.** Default `*.azurecontainerapps.io` hostname for now |
+| Toll-free verification | **Not required.** Local number; restaurant-only calls |
+| Printer / till hardware | Star TSP100III (TSP143III) + Tera till |
+| Clover public/private token | Owner has both |
 
-**Nice to have**
-16. Should staff orders use a separate order-number series from web orders?
-17. Confirm Ontario HST 13% and the delivery radius/fee are still correct
+### Two consequences worth reading before building R1.4
+
+**Customer SMS is not safe to promise on a local long code.** Dropping toll-free
+is right for *voice* — outbound calls need no verification, and it removes the
+single biggest schedule risk the plan had. But Canadian carriers filter
+application-to-person SMS sent from unregistered local long codes. So:
+
+- Restaurant alerts: **voice call + email** are the reliable pair. Treat SMS as
+  best-effort and never as the only channel that carries an order.
+- Customer order confirmations: **email is the durable copy** (this is also what
+  carries the tracking link, per §8's return-URL consequence). Customer SMS should
+  be built behind a flag and left off until a registered number exists.
+
+**SendGrid domain authentication does not need the app's custom domain.** The
+sender domain and the hosting hostname are independent, so the restaurant's
+existing domain can be authenticated (SPF/DKIM) now, while the app still runs on
+the Azure hostname. Without it, confirmation emails land in spam — and with the
+custom domain deferred, this is the thing that would quietly break customer
+confirmations. Worth doing early.
 
 ---
 
-## 10. Suggested first moves in the new chat
+## 10. What to do next — start here
 
-R1.1, R1.2 and R1.5 are done and committed on `release/r1-runway` (§4). What is
-left in Release 1 is R1.3, R1.4 and R1.6.
+**State:** R1.1, R1.2 and R1.5 are done and committed on `release/r1-runway` (§4).
+Nothing has been deployed to Azure yet. Release 1 needs R1.3, R1.4 and R1.6.
 
-1. **Ask me for §9 items 1–5 (Clover)** and build **R1.3**. It is the critical
-   path: the site cannot take money without it. Everything needed is in §8 —
-   don't re-research the API.
-2. While waiting on those credentials, **R1.6 route-level integration tests** need
-   nothing external and cover the riskiest untested code (order creation, auth,
-   webhooks, idempotency). `tests/rate-limit.test.ts` and
-   `tests/delivery-area.test.ts` are the pattern to copy — the first probes for a
-   real Postgres and skips cleanly, the second stubs `fetch`.
-3. **Ask me for §9 items 6–10 (Twilio)** early even though R1.4 comes later —
-   toll-free verification takes days-to-weeks and is the most likely thing to
-   slip the schedule.
-4. **Apply the infrastructure** when ready: `infra/README.md` has the bring-up
-   order. Nothing has been applied yet, so the first `terraform apply` is still
-   ahead. Note ACR has to exist before an image can be pushed to it.
-5. Two flags flip as their code lands: `enable_payment_reaper` with R1.3,
-   `enable_outbox_dispatcher` with R1.4.
+### Do this first: R1.3 — Clover replaces Stripe
+
+It is the critical path — the site cannot take money without it — and it is **not
+blocked**. The full API contract is in §8; do not re-research it.
+
+Write these before asking for a single credential:
+
+1. `createCloverCheckout()` replacing `createStripeCheckout()` in
+   [lib/order-service.ts](lib/order-service.ts) — same call site, same failure
+   handling. Note the H-17b comment there: the `status = 'failed'` update is what
+   releases the idempotency key, so keep it.
+2. `app/api/payments/clover/webhook/` replacing the Stripe route. Verify
+   `Clover-Signature: t=<ts>,v1=<hmac>` — HMAC-SHA256 over `` `${t}.${rawBody}` ``.
+   The existing constant-time `equalHex` helper is reusable. Look the order up by
+   `provider_reference = data`.
+3. `scripts/reap-payments.ts` — Clover sessions expire in 15 minutes, so cancel
+   `awaiting_payment` orders after ~20. Then set `enable_payment_reaper = true` in
+   Terraform, which creates the cron job that is currently gated off.
+   **The stuck orders this reaps are already visible** in the staff queue built in
+   R1.5 (H-20a), so this is testable the moment it exists.
+4. Delete Stripe entirely — it is a locked decision that nothing is left dormant.
+   `STRIPE_*` still appears in [lib/order-service.ts](lib/order-service.ts) and the
+   old webhook route; `.env.example` is already on `CLOVER_*`.
+5. Refunds (H-07/H-25) — the path never existed. `computeRefund` in
+   [lib/domain.ts](lib/domain.ts) already validates the amount, and the
+   `issue_refunds` permission is already declared but unenforced.
+
+Then ask for §9 items 1–3 and run the sandbox end-to-end.
+
+### In parallel, needing nothing from anyone
+
+- **R1.6 route-level integration tests.** Order creation, auth, webhooks and
+  idempotency are the riskiest code and are entirely untested. Copy the patterns in
+  [tests/rate-limit.test.ts](tests/rate-limit.test.ts) (probes for a real Postgres,
+  skips cleanly if absent) and [tests/delivery-area.test.ts](tests/delivery-area.test.ts)
+  (stubs `fetch`, runs offline).
+- **R1.4 architecture.** Build the dispatcher, channel adapters and the
+  `<Say>`/`<Gather>` voice flow against the Twilio docs; wire credentials later.
+  Read the SMS caveat in §9 first — do not make SMS the only channel carrying an
+  order.
+- **The `@media print` fallback** for kitchen tickets (§11). No hardware needed,
+  works day one, and there is no `@media print` rule anywhere in the codebase yet.
+
+### Ask the owner early (long lead time, not engineering work)
+
+- §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
+  domain and is the thing that quietly breaks customer confirmations if skipped.
+- §9 items 8–9 — **which TSP100III variant, and the till's OS**. §11 explains why
+  this decides the entire print architecture, and why the answer may be worth a
+  cheap hardware swap.
+
+### When ready to deploy
+
+`infra/README.md` has the bring-up order. The one non-obvious step: ACR must exist
+before an image can be pushed, so the first apply is `-target`ed at the registry.
+Two flags flip as their code lands — `enable_payment_reaper` with R1.3,
+`enable_outbox_dispatcher` with R1.4.
+
+---
+
+## 11. Printing hardware (R2.2) — researched 2026-08-19, don't re-research
+
+The owner's hardware is now known:
+
+- **Till:** Tera
+- **Receipt printer:** **Star TSP100III** (the TSP143III family), with futurePRNT
+
+Two verified facts about this specific model overturn the plan's preferred design.
+`ancient-wishing-wadler.md` §R2.2 lists a cloud-polling printer as "best case" and
+an ESC/POS byte serializer as the render target. **Neither applies here.**
+
+### 1. TSP100III does not support CloudPRNT — a local print agent is required
+
+CloudPRNT is supported on the **TSP100IV**, mC-Print2/3, mC-Label3, TSP100IVSK and
+TSP650II (via the HI X Connect option). The **III** generation is absent from every
+Star compatibility list; it ships futurePRNT instead, which is receipt-design and
+setup software, not cloud connectivity.
+
+So option 1 in the plan — the printer polls our HTTPS endpoint, no local software —
+**is off the table.** R2.2 needs option 2: a small local agent (Node or Go) on a
+machine in the store that long-polls our API and pushes bytes to the printer. The
+`print_jobs` queue and the poll endpoint are unchanged; the "no local software"
+shortcut is what is lost.
+
+### 2. The TSP100 family has no onboard fonts — output must be rasterized
+
+This is the bigger surprise. TSP100/TSP143 printers carry **no font sets**. Anything
+sent directly to the device must already be a bitmap, emitted with **Star Graphic
+Mode** raster commands. The Star driver *emulates* Star Line Mode for Windows
+printing, but that emulation is unavailable when talking to the printer directly —
+which is exactly what an agent does.
+
+Consequence for the render layer: the plan's "neutral document model → ESC/POS
+bytes / plain text" split is wrong for this printer. It should be **neutral document
+model → raster bitmap → Star Graphic Mode**. Keep the neutral model — it is still
+the right seam, and it is what makes a future CloudPRNT-capable TSP100IV or an
+ESC/POS printer a new adapter rather than a rewrite.
+
+Practical note: rasterizing 80mm receipts server-side is straightforward (render to
+a 1-bit bitmap at 576px width for 80mm at 203dpi), and `python-StarTSPImage` is a
+readable reference implementation of the conversion even though this project is
+Node.
+
+### What must be asked before building the adapter
+
+The variant determines where the agent can run, and it is printed on the label:
+
+| Variant | Interface | Where the agent must live |
+|---|---|---|
+| TSP143IIIU / TSP143IIU+ | USB (III U also iOS Lightning) | On the machine physically cabled to the printer — almost certainly the Tera till |
+| TSP143IIILAN | Ethernet | Anywhere on the store LAN; pushes to TCP 9100 |
+| TSP143IIIW | Wi-Fi | Anywhere on the store LAN; pushes to TCP 9100 |
+| TSP143IIIBI | Bluetooth | On the paired machine |
+
+**LAN or Wi-Fi is much the better case** — the agent can run on any always-on box
+and does not depend on the till being awake or logged in. If it turns out to be the
+USB variant and the Tera till runs Android, that is the awkward combination and is
+worth surfacing to the owner early, because a cheap Ethernet-capable printer (or a
+TSP100IV, which would restore the no-agent CloudPRNT path) may be less work than
+fighting it.
+
+Also still true from the original plan: the CSP blocks a browser→LAN `fetch`, so a
+browser-side bridge is not viable. And the day-one fallback — a `@media print`
+stylesheet plus `window.print()` from the kitchen board — works regardless of any
+of the above and should be built first, since it needs no hardware access at all.
+
+**Sources:**
+[TSP100III series (Star EMEA)](https://star-emea.com/products/tsp100/) ·
+[CloudPRNT compatibility (Star EMEA)](https://star-emea.com/products/cloudprnt/) ·
+[Star Graphic Mode command spec](https://starmicronics.com/support/Mannualfolder/star_graphic_cm_en.pdf) ·
+[TSP100III support page](https://starmicronics.com/support/products/tsp100iii-support-page/)
