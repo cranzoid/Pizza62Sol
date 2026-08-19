@@ -1,10 +1,11 @@
-// Resolves the project's "@/..." path alias for the plain node test runner, so
-// tests can import any module in the app the same way the app imports it.
+// Resolves the project's "@/..." path alias for plain node processes — the test
+// runner and the migration script — so they import modules exactly as the app
+// does. Lives at the repo root because it is used outside tests as well.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolve(specifier, context, nextResolve) {
   if (!specifier.startsWith("@/")) return nextResolve(specifier, context);

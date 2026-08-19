@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1 } from "@/db/runtime";
 
 function equalHex(left: string, right: string): boolean {
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
           .prepare(
             `UPDATE notification_outbox SET status = ?, updated_at = ?
              WHERE kind = 'customer_order_confirmation'
-               AND json_extract(payload_json, '$.orderId') = ?`,
+               AND payload_json::jsonb->>'orderId' = ?`,
           )
           .bind(confirmationStatus, now, orderId),
       ]);
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
         .prepare(
           `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
            WHERE kind = 'customer_order_confirmation'
-             AND json_extract(payload_json, '$.orderId') = ?`,
+             AND payload_json::jsonb->>'orderId' = ?`,
         )
         .bind(now, orderId),
     ]);

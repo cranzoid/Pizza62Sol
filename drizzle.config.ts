@@ -1,7 +1,7 @@
-import { defineConfig } from "drizzle-kit";
+import type { Config } from "drizzle-kit";
 
-export default defineConfig({
+export default {
   out: "./drizzle",
   schema: "./db/schema.ts",
-  dialect: "sqlite",
-});
+  dialect: "postgresql",
+} satisfies Config;

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1, safeJson } from "@/db/runtime";
 import { generateOpaqueToken, hashOpaqueToken, hasPermission } from "@/lib/domain";
 

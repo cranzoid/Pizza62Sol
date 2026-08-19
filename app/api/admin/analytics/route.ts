@@ -108,9 +108,13 @@ export async function GET(request: Request) {
           .all<Record<string, unknown>>(),
         database
           .prepare(
-            `SELECT COUNT(*) AS customers, COALESCE(SUM(CASE WHEN orders > 1 THEN 1 ELSE 0 END), 0) AS repeat_customers
-             FROM (SELECT customer_email, COUNT(*) AS orders FROM orders
-                   WHERE created_at >= ? AND ${paidFilter} GROUP BY customer_email)`,
+            // The derived table is aliased and its count column renamed: Postgres
+            // requires the alias, and `orders` as a column name shadowed the table
+            // it was selected from.
+            `SELECT COUNT(*) AS customers,
+                    COALESCE(SUM(CASE WHEN order_count > 1 THEN 1 ELSE 0 END), 0) AS repeat_customers
+             FROM (SELECT customer_email, COUNT(*) AS order_count FROM orders
+                   WHERE created_at >= ? AND ${paidFilter} GROUP BY customer_email) AS per_customer`,
           )
           .bind(start)
           .first<Record<string, number>>(),

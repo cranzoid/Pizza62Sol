@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   MENU_CATEGORIES,
@@ -10,213 +10,37 @@ import {
 
 let initialization: Promise<void> | null = null;
 
-const schemaStatements = [
-  `CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY NOT NULL,
-    value_json TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1,
-    updated_by TEXT,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS categories (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE,
-    description TEXT, active INTEGER NOT NULL DEFAULT 1,
-    display_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS products (
-    id TEXT PRIMARY KEY NOT NULL, category_id TEXT NOT NULL, name TEXT NOT NULL,
-    slug TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
-    product_type TEXT NOT NULL, image_url TEXT, base_price_cents INTEGER NOT NULL DEFAULT 0,
-    taxable INTEGER NOT NULL DEFAULT 1, pickup_eligible INTEGER NOT NULL DEFAULT 1,
-    delivery_eligible INTEGER NOT NULL DEFAULT 1, halal_capable INTEGER NOT NULL DEFAULT 0,
-    promotion_eligible INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1,
-    sold_out INTEGER NOT NULL DEFAULT 0, setup_required INTEGER NOT NULL DEFAULT 0,
-    kitchen_label TEXT, configuration_json TEXT NOT NULL DEFAULT '{}',
-    display_order INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS products_category_idx ON products(category_id)`,
-  `CREATE TABLE IF NOT EXISTS product_variations (
-    id TEXT PRIMARY KEY NOT NULL, product_id TEXT NOT NULL, name TEXT NOT NULL,
-    base_price_cents INTEGER NOT NULL, extra_topping_price_cents INTEGER NOT NULL DEFAULT 0,
-    included_topping_units_bps INTEGER NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1, display_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS variations_product_idx ON product_variations(product_id)`,
-  `CREATE TABLE IF NOT EXISTS toppings (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, kitchen_label TEXT NOT NULL,
-    is_meat INTEGER NOT NULL DEFAULT 0, has_halal_version INTEGER NOT NULL DEFAULT 0,
-    halal_display_name TEXT, halal_available INTEGER NOT NULL DEFAULT 0,
-    halal_cost_cents INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
-    display_order INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS promotions (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, code TEXT UNIQUE, type TEXT NOT NULL,
-    amount INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
-    combinable INTEGER NOT NULL DEFAULT 1, exclusive INTEGER NOT NULL DEFAULT 0,
-    stack_group TEXT, active INTEGER NOT NULL DEFAULT 0, starts_at INTEGER, ends_at INTEGER,
-    rule_json TEXT NOT NULL DEFAULT '{}', display_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS staff_users (
-    id TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, role TEXT NOT NULL,
-    password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_iterations INTEGER NOT NULL,
-    permissions_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 1,
-    last_login_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS staff_sessions (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-    expires_at INTEGER NOT NULL, revoked_at INTEGER, created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS staff_sessions_user_idx ON staff_sessions(staff_user_id)`,
-  // H-13: keep the runtime initializer in parity with drizzle/0000_quiet_epoch.sql
-  // so empty and migrated databases converge on the same schema.
-  `CREATE TABLE IF NOT EXISTS customers (
-    id TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL, phone TEXT NOT NULL,
-    password_hash TEXT, active INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS customers_email_uq ON customers(email)`,
-  `CREATE TABLE IF NOT EXISTS refunds (
-    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, payment_id TEXT NOT NULL,
-    amount_cents INTEGER NOT NULL, reason TEXT NOT NULL, internal_note TEXT,
-    customer_note TEXT, provider_reference TEXT, status TEXT NOT NULL, actor_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS refunds_order_idx ON refunds(order_id)`,
-  `CREATE TABLE IF NOT EXISTS order_sequences (
-    key TEXT PRIMARY KEY NOT NULL, current_number INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY NOT NULL, order_number TEXT NOT NULL UNIQUE, tracking_token_hash TEXT NOT NULL UNIQUE,
-    feedback_token_hash TEXT NOT NULL, customer_id TEXT, customer_name TEXT NOT NULL,
-    customer_phone TEXT NOT NULL, customer_email TEXT NOT NULL, fulfilment TEXT NOT NULL,
-    status TEXT NOT NULL, payment_status TEXT NOT NULL, payment_method TEXT NOT NULL,
-    schedule_type TEXT NOT NULL, scheduled_for INTEGER, estimated_for INTEGER NOT NULL,
-    address_json TEXT, instructions TEXT, pricing_json TEXT NOT NULL,
-    subtotal_cents INTEGER NOT NULL, discount_cents INTEGER NOT NULL, tax_cents INTEGER NOT NULL,
-    delivery_fee_cents INTEGER NOT NULL, tip_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL,
-    acknowledged_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS orders_status_idx ON orders(status, created_at)`,
-  `CREATE TABLE IF NOT EXISTS order_items (
-    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, product_id TEXT NOT NULL,
-    product_name TEXT NOT NULL, variation_name TEXT, quantity INTEGER NOT NULL,
-    unit_price_cents INTEGER NOT NULL, line_total_cents INTEGER NOT NULL,
-    taxable INTEGER NOT NULL, snapshot_json TEXT NOT NULL, instructions TEXT,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS order_items_order_idx ON order_items(order_id)`,
-  `CREATE TABLE IF NOT EXISTS payments (
-    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, provider TEXT NOT NULL,
-    provider_reference TEXT, method TEXT NOT NULL, status TEXT NOT NULL,
-    amount_cents INTEGER NOT NULL, currency TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
-    failure_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS order_events (
-    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, previous_status TEXT,
-    next_status TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT, note TEXT,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS audit_log (
-    id TEXT PRIMARY KEY NOT NULL, actor_id TEXT NOT NULL, action TEXT NOT NULL,
-    target_type TEXT NOT NULL, target_id TEXT NOT NULL, previous_json TEXT,
-    next_json TEXT, reason TEXT, request_id TEXT, created_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS time_clock_events (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, session_id TEXT NOT NULL,
-    action TEXT NOT NULL, occurred_at INTEGER NOT NULL, source TEXT NOT NULL,
-    correction_of TEXT, created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS clock_user_time_idx ON time_clock_events(staff_user_id, occurred_at)`,
-  // C-06: compare-and-swap guard row per employee (see db/schema.ts timeClockState).
-  `CREATE TABLE IF NOT EXISTS time_clock_state (
-    staff_user_id TEXT PRIMARY KEY NOT NULL, state TEXT NOT NULL, session_id TEXT,
-    transition_id TEXT, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS correction_requests (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, event_id TEXT NOT NULL,
-    requested_time INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
-    reviewer_id TEXT, reviewer_note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS time_off_requests (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, starts_at INTEGER NOT NULL,
-    ends_at INTEGER NOT NULL, partial_day INTEGER NOT NULL DEFAULT 0, note TEXT,
-    status TEXT NOT NULL, reviewer_id TEXT, reviewer_note TEXT,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS feedback_questions (
-    id TEXT PRIMARY KEY NOT NULL, label TEXT NOT NULL, type TEXT NOT NULL, rating_scale INTEGER,
-    required INTEGER NOT NULL DEFAULT 0, condition_json TEXT NOT NULL DEFAULT '{}',
-    active INTEGER NOT NULL DEFAULT 1, display_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS feedback_responses (
-    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL UNIQUE, overall_rating INTEGER NOT NULL,
-    answers_json TEXT NOT NULL, written_feedback TEXT, reviewed_at INTEGER,
-    internal_note TEXT, submitted_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS notification_outbox (
-    id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, recipient TEXT, payload_json TEXT NOT NULL,
-    status TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, scheduled_for INTEGER NOT NULL,
-    sent_at INTEGER, last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS idempotency_keys (
-    key_hash TEXT PRIMARY KEY NOT NULL, scope TEXT NOT NULL, resource_id TEXT,
-    status TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS rate_limits (
-    key_hash TEXT PRIMARY KEY NOT NULL, window_started_at INTEGER NOT NULL,
-    attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS staff_profiles (
-    staff_user_id TEXT PRIMARY KEY NOT NULL, job_title TEXT, employment_type TEXT NOT NULL DEFAULT 'hourly',
-    wage_cents INTEGER NOT NULL DEFAULT 0, weekly_overtime_minutes INTEGER NOT NULL DEFAULT 2640,
-    overtime_multiplier_bps INTEGER NOT NULL DEFAULT 15000, week_starts_on INTEGER NOT NULL DEFAULT 0,
-    pin_hash TEXT, pin_salt TEXT, pin_iterations INTEGER, availability_json TEXT NOT NULL DEFAULT '[]',
-    hired_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS shifts (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT, role TEXT, starts_at INTEGER NOT NULL,
-    ends_at INTEGER NOT NULL, unpaid_break_minutes INTEGER NOT NULL DEFAULT 0, notes TEXT,
-    published INTEGER NOT NULL DEFAULT 0, published_at INTEGER, created_by TEXT NOT NULL,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS shifts_starts_at_idx ON shifts (starts_at)`,
-  `CREATE INDEX IF NOT EXISTS shifts_staff_idx ON shifts (staff_user_id, starts_at)`,
-  `CREATE TABLE IF NOT EXISTS timesheet_approvals (
-    id TEXT PRIMARY KEY NOT NULL, staff_user_id TEXT NOT NULL, period_start INTEGER NOT NULL,
-    period_end INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'approved', paid_ms INTEGER NOT NULL DEFAULT 0,
-    regular_ms INTEGER NOT NULL DEFAULT 0, overtime_ms INTEGER NOT NULL DEFAULT 0,
-    gross_pay_cents INTEGER NOT NULL DEFAULT 0, note TEXT, approved_by TEXT NOT NULL,
-    approved_at INTEGER NOT NULL
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS timesheet_approvals_period_idx ON timesheet_approvals (staff_user_id, period_start)`,
-  `CREATE TABLE IF NOT EXISTS analytics_events (
-    id TEXT PRIMARY KEY NOT NULL, session_id TEXT, customer_id TEXT, order_id TEXT,
-    event_name TEXT NOT NULL, context_json TEXT NOT NULL DEFAULT '{}', occurred_at INTEGER NOT NULL
-  )`,
-] as const;
 
 export function getD1(): D1Database {
   if (!env.DB) throw new Error("The Pizza 62 database binding is unavailable");
   return env.DB;
 }
 
+/**
+ * Confirms once per process that the database has been migrated.
+ *
+ * This used to create every table and run the seed on the first request, which
+ * cannot work with more than one replica: concurrent cold starts would race on
+ * DDL and on the seed's check-then-insert. Schema and seed now belong to the
+ * migration job (`npm run db:migrate`), and the ~15 handlers that call this keep
+ * doing so only to fail with an actionable message rather than a raw relation
+ * error when someone points the app at an unmigrated database.
+ */
 export async function ensureDatabase(): Promise<void> {
-  if (initialization) return initialization;
-  initialization = (async () => {
-    const database = getD1();
-    for (let index = 0; index < schemaStatements.length; index += 40) {
-      await database.batch(
-        schemaStatements
-          .slice(index, index + 40)
-          .map((statement) => database.prepare(statement)),
+  initialization ??= (async () => {
+    try {
+      const ready = await getD1()
+        .prepare("SELECT value_json FROM settings WHERE key = 'business'")
+        .first();
+      if (ready) return;
+    } catch (error) {
+      throw new Error(
+        `The Pizza 62 database is unavailable or has not been migrated — run "npm run db:migrate". (${
+          error instanceof Error ? error.message : String(error)
+        })`,
       );
     }
-    await seedLaunchData(database);
-    await runDataMigrations(database);
+    throw new Error('The Pizza 62 database has no launch settings — run "npm run db:migrate".');
   })();
   try {
     await initialization;
@@ -226,7 +50,7 @@ export async function ensureDatabase(): Promise<void> {
   }
 }
 
-async function seedLaunchData(database: D1Database): Promise<void> {
+export async function seedLaunchData(database: D1Database): Promise<void> {
   const now = Date.now();
   const operations: D1PreparedStatement[] = [];
   const currentMenuSeed = await database
@@ -247,14 +71,14 @@ async function seedLaunchData(database: D1Database): Promise<void> {
     operations.push(
       database
         .prepare(
-          "INSERT OR IGNORE INTO settings (key, value_json, version, updated_at) VALUES (?, ?, 1, ?)",
+          "INSERT INTO settings (key, value_json, version, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT (key) DO NOTHING",
         )
         .bind(key, JSON.stringify(value), now),
     );
   }
   if (menuNeedsSeed) {
     // C-08: a seed-version bump must not reset owner-owned rows. Settings are seeded
-    // once by the INSERT OR IGNORE above and thereafter belong to the owner; the
+    // once by the conflict-ignoring insert above and thereafter belong to the owner; the
     // retirement lists that used to run on every bump now run once each, as gated
     // entries in DATA_MIGRATIONS, so an item the owner deliberately re-enabled is
     // not silently switched off again by the next deployment.
@@ -358,14 +182,14 @@ async function seedLaunchData(database: D1Database): Promise<void> {
           `INSERT INTO settings (key, value_json, version, updated_at)
            VALUES ('menuSeedVersion', ?, 1, ?)
            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
-             version = version + 1, updated_at = excluded.updated_at`,
+             version = settings.version + 1, updated_at = excluded.updated_at`,
         )
         .bind(JSON.stringify(MENU_SEED_VERSION), now),
     );
   }
   operations.push(
     database
-      .prepare("INSERT OR IGNORE INTO order_sequences (key, current_number) VALUES ('public_order', 1000)"),
+      .prepare("INSERT INTO order_sequences (key, current_number) VALUES ('public_order', 1000) ON CONFLICT (key) DO NOTHING"),
   );
   const feedback = [
     ["overall", "Overall experience", "rating", 5, 1, {}, 10],
@@ -378,9 +202,9 @@ async function seedLaunchData(database: D1Database): Promise<void> {
     operations.push(
       database
         .prepare(
-          `INSERT OR IGNORE INTO feedback_questions
+          `INSERT INTO feedback_questions
            (id, label, type, rating_scale, required, condition_json, active, display_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
         )
         .bind(row[0], row[1], row[2], row[3], row[4], JSON.stringify(row[5]), row[6], now, now),
     );
@@ -434,15 +258,17 @@ const DATA_MIGRATIONS: Array<{
   },
   {
     // H-21: turn the unconfirmed public claims off on databases seeded before the
-    // correction. `json_set` patches only these two fields, so every other feature
+    // correction. `jsonb_set` patches only these two fields, so every other feature
     // flag the owner has since changed is preserved (C-08).
     id: "2026-07-24-disable-unconfirmed-claims",
     run: (database, now) => [
       database
         .prepare(
           `UPDATE settings
-           SET value_json = json_set(value_json, '$.halalPreparationClaim', json('false'),
-                                                 '$.dryRubLabel', json('false')),
+           SET value_json = jsonb_set(
+                 jsonb_set(value_json::jsonb, '{halalPreparationClaim}', 'false'::jsonb),
+                 '{dryRubLabel}', 'false'::jsonb
+               )::text,
                version = version + 1, updated_at = ?
            WHERE key = 'featureFlags'`,
         )
@@ -534,7 +360,7 @@ const DATA_MIGRATIONS: Array<{
   },
 ];
 
-async function runDataMigrations(database: D1Database): Promise<void> {
+export async function runDataMigrations(database: D1Database): Promise<void> {
   const now = Date.now();
   for (const migration of DATA_MIGRATIONS) {
     const marker = `dataMigration:${migration.id}`;
@@ -546,7 +372,7 @@ async function runDataMigrations(database: D1Database): Promise<void> {
     const statements = await migration.run(database, now);
     statements.push(
       database
-        .prepare("INSERT OR IGNORE INTO settings (key, value_json, version, updated_at) VALUES (?, ?, 1, ?)")
+        .prepare("INSERT INTO settings (key, value_json, version, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT (key) DO NOTHING")
         .bind(marker, JSON.stringify({ appliedAt: now }), now),
     );
     for (let index = 0; index < statements.length; index += 40) {

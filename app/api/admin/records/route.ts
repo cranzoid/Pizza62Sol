@@ -35,7 +35,7 @@ export async function GET(request: Request) {
     const bindings: unknown[] = [];
     if (query) {
       // Order number, name, phone or email — whichever the owner has to hand.
-      conditions.push("(order_number LIKE ? OR customer_name LIKE ? OR customer_phone LIKE ? OR customer_email LIKE ?)");
+      conditions.push("(order_number ILIKE ? OR customer_name ILIKE ? OR customer_phone ILIKE ? OR customer_email ILIKE ?)");
       const like = `%${query}%`;
       bindings.push(like, like, like, like);
     }
