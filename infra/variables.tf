@@ -161,3 +161,9 @@ variable "enable_payment_reaper" {
   type        = bool
   default     = false
 }
+
+variable "maps_sku" {
+  description = "Azure Maps account SKU. G2 is the current generation; volume here is one geocode per delivery checkout."
+  type        = string
+  default     = "G2"
+}

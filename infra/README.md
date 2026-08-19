@@ -15,6 +15,7 @@ psql-pizza62-<env>   Postgres 16 Flexible Server, private (VNet-integrated), 7-d
 st…                  Blob Storage — uploads
 kv-pizza62-<env>     Key Vault — every secret, read via managed identity
 acr…                 Container Registry (Basic)
+maps-pizza62-<env>   Azure Maps — delivery-address geocoding (H-06b)
 afd-pizza62-<env>    Front Door Standard — optional, off by default
 ```
 
@@ -154,6 +155,6 @@ actually running.
 | Postgres B1ms, 32 GB, 7-day PITR | 18 |
 | Container Apps, 1 always-on 0.5 vCPU / 1 GiB replica | 15 |
 | Container Registry Basic | 5 |
-| Blob Storage + Log Analytics + Key Vault + private DNS | 4 |
-| **Total** | **~42** |
+| Blob Storage + Log Analytics + Key Vault + private DNS + Maps | 5 |
+| **Total** | **~43** |
 | *Front Door Standard, when enabled* | *+35* |

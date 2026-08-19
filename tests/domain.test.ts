@@ -32,7 +32,7 @@ import {
 } from "../lib/domain.ts";
 import { MENU_PRODUCTS } from "../lib/menu.ts";
 import { PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
-import { resolveDeliveryPoint } from "../lib/delivery-area.ts";
+import { resolveFsaCentroid } from "../lib/delivery-area.ts";
 
 test("uses flyer prices and only charges toppings beyond each included offer", () => {
   const expected = [
@@ -222,14 +222,14 @@ test("resolves Hamilton delivery addresses and blocks out-of-area postal codes (
   const config = { originLatitude: origin.latitude, originLongitude: origin.longitude, radiusKm: LAUNCH_SETTINGS.delivery.radiusKm, feeCents: LAUNCH_SETTINGS.delivery.feeCents, minimumCents: LAUNCH_SETTINGS.delivery.minimumCents };
 
   // A Hamilton postal code resolves and is inside the delivery radius.
-  const local = resolveDeliveryPoint("L8H 5W7");
+  const local = resolveFsaCentroid("L8H 5W7");
   assert.ok(local, "Hamilton FSA should resolve to a point");
   const eligible = validateDelivery({ validated: local !== null, latitude: local?.latitude ?? null, longitude: local?.longitude ?? null }, config, 0);
   assert.equal(eligible.eligible, true);
   assert.equal(eligible.feeCents, LAUNCH_SETTINGS.delivery.feeCents);
 
   // An Ottawa postal code (K1A 0B1) is not in the delivery-area table -> unverified -> blocked.
-  const ottawa = resolveDeliveryPoint("K1A 0B1");
+  const ottawa = resolveFsaCentroid("K1A 0B1");
   assert.equal(ottawa, null);
   const blocked = validateDelivery({ validated: false, latitude: null, longitude: null }, config, 0);
   assert.equal(blocked.eligible, false);

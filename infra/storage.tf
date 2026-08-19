@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 
 resource "azurerm_storage_account" "uploads" {
-  name                = "st${var.project}${local.env}${local.suffix}"
+  name                = "st${var.project}${local.env_short}${local.suffix}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 

@@ -24,6 +24,10 @@ locals {
     # visitor. True for both paths here: Container Apps ingress sets
     # X-Forwarded-For, and Front Door additionally sets X-Azure-ClientIP.
     TRUST_PROXY_HEADERS = "true"
+
+    # H-06b: geocoding for delivery-area checks. The client id selects the Maps
+    # account for the token DefaultAzureCredential requests; there is no key.
+    AZURE_MAPS_CLIENT_ID = azurerm_maps_account.main.x_ms_client_id
   }
 
   # Every secret the app reads, mapped to its Key Vault name.
@@ -170,7 +174,11 @@ resource "azurerm_container_app" "web" {
     }
   }
 
-  depends_on = [azurerm_role_assignment.acr_pull, azurerm_role_assignment.keyvault_secrets]
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_role_assignment.keyvault_secrets,
+    azurerm_role_assignment.maps_reader,
+  ]
 
   lifecycle {
     # Terraform 1.5 cannot cross-reference variables from a validation block, so

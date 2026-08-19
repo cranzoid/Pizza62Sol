@@ -743,7 +743,15 @@ export async function createOrder(body: OrderRequest, origin: string) {
       // before any order/payment is created. Free-delivery items never widen the
       // radius — they only zero the fee for an already-eligible address.
       const hasFreeDeliveryItem = items.some((item) => item.freeDelivery);
-      const point = resolveDeliveryPoint(deliveryAddress.postalCode);
+      // H-06b: geocodes the full street address through Azure Maps, falling back
+      // to the coarse FSA centroid only if Maps cannot answer.
+      const point = await resolveDeliveryPoint({
+        line1: deliveryAddress.line1,
+        unit: deliveryAddress.unit,
+        city: deliveryAddress.city,
+        province: deliveryAddress.province,
+        postalCode: deliveryAddress.postalCode,
+      });
       const eligibility = validateDelivery(
         {
           validated: point !== null,

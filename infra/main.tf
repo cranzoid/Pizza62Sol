@@ -11,6 +11,12 @@ locals {
 
   name = "${var.project}-${local.env}"
 
+  # Key Vault names are capped at 24 characters, which "kv-<project>-<env>-<suffix>"
+  # can exceed for a long workspace name - "default" already produces 25 and fails
+  # the apply with a message that names no resource. Truncating the environment
+  # token keeps the name inside the limit for any workspace.
+  env_short = substr(local.env, 0, 6)
+
   tags = merge({
     project     = var.project
     environment = local.env
