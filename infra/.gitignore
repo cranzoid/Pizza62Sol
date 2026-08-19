@@ -1,0 +1,11 @@
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+# Names a specific subscription's state account.
+backend.hcl
+# May carry real values.
+*.auto.tfvars
+terraform.tfvars
+*_override.tf
