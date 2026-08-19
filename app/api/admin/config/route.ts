@@ -1,6 +1,11 @@
 import { authErrorResponse, createPasswordHash, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
 
+// H-11b: the closed vocabulary of promotion types. `applyPromotions` in
+// lib/domain.ts matches on exactly these three and now ignores anything else;
+// the two lists must stay in step, or an offer saved here would never apply.
+const PROMOTION_TYPES = new Set(["percentage", "fixed", "free_delivery"]);
+
 const PERMISSIONS = new Set([
   "view_orders",
   "acknowledge_orders",
@@ -470,12 +475,43 @@ export async function POST(request: Request) {
       const name = body.name?.trim() ?? "";
       const type = body.type;
       const amount = body.amount ?? 0;
-      if (name.length < 2 || name.length > 120 || !type || !Number.isSafeInteger(amount) || amount < 0 || (type === "percentage" && amount > 10_000) || (type === "fixed" && amount > 100_000)) {
+      // H-11b: the check used to be `!type`, which accepted any non-empty
+      // string. `applyPromotions` then fell through to its `else` arm and
+      // granted free delivery, so a single typo here gave away every delivery
+      // fee on the site. The vocabulary is now closed on both sides.
+      if (!PROMOTION_TYPES.has(String(type))) {
+        return Response.json({ error: "Promotion type must be percentage, fixed, or free_delivery." }, { status: 400 });
+      }
+      if (name.length < 2 || name.length > 120 || !Number.isSafeInteger(amount) || amount < 0 || (type === "percentage" && amount > 10_000) || (type === "fixed" && amount > 100_000)) {
         return Response.json({ error: "Promotion name, type, or amount is invalid." }, { status: 400 });
       }
       const id = body.id?.trim() || crypto.randomUUID();
-      const previous = await getD1().prepare("SELECT * FROM promotions WHERE id = ?").bind(id).first();
+      const previous = await getD1()
+        .prepare("SELECT * FROM promotions WHERE id = ?")
+        .bind(id)
+        .first<Record<string, unknown>>();
       const now = Date.now();
+
+      // H-11a: patch-merge rather than overwrite. The admin editor does not send
+      // `exclusive` or `rule`, and the previous version wrote both
+      // unconditionally — so every save from that screen silently reset
+      // `exclusive` to false and replaced `rule_json` with `{}`, discarding the
+      // product and category targeting that decides which lines an offer even
+      // applies to. Nothing in the UI showed the loss.
+      //
+      // Only fields the caller actually supplied are written. `undefined` means
+      // "leave alone"; an explicit `null` still clears, so removing a coupon code
+      // continues to work.
+      const keep = <T,>(supplied: T | undefined, existing: unknown, fallback: T): T =>
+        supplied !== undefined ? supplied : previous ? (existing as T) : fallback;
+
+      const code = body.code !== undefined ? body.code?.trim().toUpperCase() || null : previous ? (previous.code as string | null) : null;
+      const priority = keep(body.priority, previous?.priority, 0);
+      const combinable = body.combinable !== undefined ? (body.combinable === false ? 0 : 1) : previous ? Number(previous.combinable ?? 1) : 1;
+      const exclusive = body.exclusive !== undefined ? (body.exclusive ? 1 : 0) : previous ? Number(previous.exclusive ?? 0) : 0;
+      const active = body.active !== undefined ? (body.active ? 1 : 0) : previous ? Number(previous.active ?? 0) : 0;
+      const ruleJson = body.rule !== undefined ? JSON.stringify(body.rule) : previous ? String(previous.rule_json ?? "{}") : "{}";
+
       await getD1()
         .prepare(
           `INSERT INTO promotions
@@ -486,7 +522,7 @@ export async function POST(request: Request) {
              combinable = excluded.combinable, exclusive = excluded.exclusive,
              active = excluded.active, rule_json = excluded.rule_json, updated_at = excluded.updated_at`,
         )
-        .bind(id, name, body.code?.trim().toUpperCase() || null, type, amount, body.priority ?? 0, body.combinable === false ? 0 : 1, body.exclusive ? 1 : 0, body.active ? 1 : 0, JSON.stringify(body.rule ?? {}), now, now)
+        .bind(id, name, code, type, amount, priority, combinable, exclusive, active, ruleJson, now, now)
         .run();
       await writeAudit({ actorId: user.id, action: previous ? "promotion.update" : "promotion.create", targetType: "promotion", targetId: id, previous, next: body });
       return Response.json({ ok: true, id });

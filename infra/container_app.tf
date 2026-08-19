@@ -17,6 +17,13 @@ locals {
     # in order. Naming the client id makes it pick this user-assigned identity
     # immediately instead of probing and timing out on the others.
     AZURE_CLIENT_ID = azurerm_user_assigned_identity.app.client_id
+
+    # Asserts to lib/security.ts that an ingress always stamps the caller's
+    # address, so a request arriving without one bypassed it and must be
+    # refused rather than rate limited on a key shared with every other
+    # visitor. True for both paths here: Container Apps ingress sets
+    # X-Forwarded-For, and Front Door additionally sets X-Azure-ClientIP.
+    TRUST_PROXY_HEADERS = "true"
   }
 
   # Every secret the app reads, mapped to its Key Vault name.

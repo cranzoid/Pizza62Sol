@@ -29,7 +29,7 @@ export async function GET(request: Request) {
     const canManageEmployees = user.role === "owner" || user.permissions.includes("manage_employees");
     // C-03: customer contact (phone/email) is a distinct permission from viewing orders.
     const canViewContact = user.role === "owner" || user.permissions.includes("view_customer_contact");
-    const [orders, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
+    const [orders, awaitingPayment, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
       getD1()
         .prepare(
           `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, status,
@@ -38,6 +38,22 @@ export async function GET(request: Request) {
                   delivery_fee_cents, tip_cents, total_cents, created_at, acknowledged_at
            FROM orders WHERE status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
            ORDER BY created_at DESC LIMIT 60`,
+        )
+        .all<Record<string, unknown>>(),
+      // H-20a: orders that started a checkout and never came back. They were in
+      // no list at all - not the live queue above, and not reachable from
+      // history, whose filter offered no such status - so a customer whose
+      // payment succeeded but whose webhook was lost simply vanished. Nobody
+      // could see the order to rescue it.
+      //
+      // Kept as its own queue rather than merged into the live one: these are
+      // not confirmed orders and the kitchen must not start cooking them.
+      getD1()
+        .prepare(
+          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment,
+                  status, payment_status, payment_method, total_cents, created_at
+           FROM orders WHERE status = 'awaiting_payment'
+           ORDER BY created_at DESC LIMIT 30`,
         )
         .all<Record<string, unknown>>(),
       getD1()
@@ -138,6 +154,13 @@ export async function GET(request: Request) {
     return Response.json({
       user,
       orders: serializedOrders,
+      // Same contact-permission rule as the live queue (C-03).
+      awaitingPayment: awaitingPayment.results.map((order) => ({
+        ...order,
+        customer_phone: canViewContact ? order.customer_phone : undefined,
+        customer_email: canViewContact ? order.customer_email : undefined,
+        contactRedacted: !canViewContact,
+      })),
       metrics: today,
       availabilityWarnings: availability,
       clockedIn: clocked.results,

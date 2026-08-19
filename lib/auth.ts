@@ -168,11 +168,15 @@ export async function requireStaff(
 }
 
 export class AuthError extends Error {
-  constructor(
-    public status: 401 | 403,
-    message: string,
-  ) {
+  // An explicit field, not a `public status` parameter property: Node's
+  // strip-only type loader cannot compile parameter properties, and it is what
+  // runs scripts/*.ts in the migration and background jobs. Written this way,
+  // lib/auth stays importable from those scripts.
+  readonly status: 401 | 403;
+
+  constructor(status: 401 | 403, message: string) {
     super(message);
+    this.status = status;
   }
 }
 

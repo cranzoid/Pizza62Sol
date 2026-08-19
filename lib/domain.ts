@@ -438,8 +438,15 @@ export function applyPromotions(
       amount = Math.round((eligibleCents * promotion.amount) / 10_000);
     } else if (promotion.type === "fixed") {
       amount = Math.min(eligibleCents, promotion.amount);
-    } else {
+    } else if (promotion.type === "free_delivery") {
       freeDelivery = true;
+    } else {
+      // H-11b: this used to be a bare `else`, so any value that was not
+      // "percentage" or "fixed" granted free delivery. The type is a string
+      // column with no database constraint and the admin route checked only that
+      // it was truthy, so a typo — or an old row from a renamed type — silently
+      // gave away every delivery fee. Unknown types are now inert.
+      continue;
     }
     amount = Math.min(amount, subtotal - discountCents);
     if (amount === 0 && promotion.type !== "free_delivery") continue;

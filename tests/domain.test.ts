@@ -509,3 +509,28 @@ test("pay periods follow on from each other without drifting", () => {
   assert.equal(previous.start, first.start);
   assert.equal(payPeriodFor(anchor, { period: "weekly", anchor }).end, anchor + 7 * 86_400_000);
 });
+
+test("an unrecognised promotion type grants nothing, least of all free delivery (H-11b)", () => {
+  const lines = [{ id: "1", productId: "pizza", categoryId: "pizza", quantity: 1, unitPriceCents: 2000, taxable: true, promotionEligible: true }];
+
+  // The regression: the type test used to end in a bare `else`, so anything that
+  // was not "percentage" or "fixed" landed in the free-delivery arm. A typo in
+  // the admin form, or a row left over from a renamed type, quietly waived the
+  // delivery fee on every qualifying order.
+  const unknown = applyPromotions(
+    lines,
+    [{ id: "typo", name: "Free Delivry", type: "free_delivry" as never, amount: 0, priority: 1, combinable: true, exclusive: false }],
+    "delivery",
+  );
+  assert.equal(unknown.freeDelivery, false, "an unknown type must not waive the delivery fee");
+  assert.equal(unknown.discountCents, 0);
+  assert.deepEqual(unknown.applied, []);
+
+  // The real type still works, so the guard has not over-corrected.
+  const genuine = applyPromotions(
+    lines,
+    [{ id: "fd", name: "Free delivery", type: "free_delivery", amount: 0, priority: 1, combinable: true, exclusive: false }],
+    "delivery",
+  );
+  assert.equal(genuine.freeDelivery, true);
+});

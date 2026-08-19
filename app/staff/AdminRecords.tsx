@@ -7,7 +7,9 @@ import type { Dashboard } from "@/app/staff/StaffPortal";
 type OrderRow = Record<string, unknown>;
 type FeedbackRow = Record<string, unknown>;
 
-const STATUSES = ["all", "received", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled"];
+// H-20a: "awaiting_payment" was missing, so an order stuck mid-checkout could
+// not be filtered for here and appeared in no operational view at all.
+const STATUSES = ["all", "awaiting_payment", "received", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled"];
 
 const when = (value: unknown) =>
   new Date(Number(value)).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });

@@ -9,6 +9,7 @@
  * booleans are `integer` 0/1 rather than `boolean`. Both preserve the contract
  * the 169 raw SQL statements already assume.
  */
+import { sql } from "drizzle-orm";
 import { bigint, index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 
 const timestamps = {
@@ -251,7 +252,16 @@ export const payments = pgTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("payments_idempotency_uq").on(table.idempotencyKey),
+    // H-17b: scoped to live payments rather than all of them. When a checkout
+    // session cannot be created the order is cancelled and the idempotency key
+    // released so the customer can retry — but the payments row stays behind for
+    // reconciliation, still holding that key. Under an unconditional unique
+    // index that leftover row makes every retry collide, so the customer is
+    // locked out of their own order permanently. Excluding failed payments frees
+    // the key without discarding the audit trail.
+    uniqueIndex("payments_idempotency_uq")
+      .on(table.idempotencyKey)
+      .where(sql`${table.status} <> 'failed'`),
     index("payments_order_idx").on(table.orderId),
   ],
 );

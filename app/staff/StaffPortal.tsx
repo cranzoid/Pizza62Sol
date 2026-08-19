@@ -13,6 +13,9 @@ type User = { id: string; email: string; name: string; role: string; permissions
 export type Dashboard = {
   user: User;
   orders: Array<Record<string, unknown>>;
+  // H-20a: checkouts that were started and never completed. A separate list from
+  // `orders` on purpose - they are not confirmed and must not reach the kitchen.
+  awaitingPayment: Array<Record<string, unknown>>;
   metrics: Record<string, unknown>;
   availabilityWarnings: { count?: number };
   clockedIn: Array<Record<string, unknown>>;
@@ -103,13 +106,13 @@ function OperationsPortal({ mode, user, onLogout }: { mode: "admin" | "kitchen";
   };
   const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
   return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}><span>Analytics</span></button><button className={section === "records" ? "active" : ""} onClick={() => setSection("records")}><span>History &amp; offers</span></button><button className={section === "website" ? "active" : ""} onClick={() => setSection("website")}><span>Website</span></button><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><button className={section === "timeclock" ? "active" : ""} onClick={() => setSection("timeclock")}><span>Time clock</span></button><a href="/employee"><span>My clock</span></a></> : <><button className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : section.replace("_", " ")}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}</div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
-    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
+    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <>{mode === "kitchen" ? null : <AwaitingPaymentPanel dashboard={dashboard} />}<OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /></> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
   </main></div>;
 }
 
 function AdminOverview({ dashboard, action }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void> }) {
   const metrics = dashboard.metrics; const ordering = dashboard.settings.ordering?.value ?? {};
-  return <><div className={ordering.paused ? "danger-banner" : "danger-banner"}><span><strong>{ordering.paused ? "Online ordering is paused" : "Online ordering is live"}</strong> · Pickup {String(ordering.pickupEstimateMinutes ?? 15)} min · Delivery {String(ordering.deliveryEstimateMinutes ?? 30)} min</span><button onClick={() => action({ action: "ordering.pause", paused: !ordering.paused, reason: "Changed from operations overview" })}>{ordering.paused ? "Resume ordering" : "Pause ordering"}</button></div><section className="stats-grid"><Stat label="Sales · today" value={formatMoney(Number(metrics.sales_cents ?? 0))} note="Paid orders · Toronto day" /><Stat label="Orders · today" value={String(metrics.order_count ?? 0)} note="Paid · Toronto day" /><Stat label="Average order" value={formatMoney(Math.round(Number(metrics.average_cents ?? 0)))} note="Paid orders today" /><Stat label="Team on clock" value={String(dashboard.clockedIn.length)} note="Live clock status" /></section><div className="staff-grid"><OrdersPanel dashboard={dashboard} action={action} compact /><aside className="staff-panel"><div className="staff-panel-head"><h2>Launch status</h2></div><div className="setup-list"><SetupItem title="Actual menu loaded" text={`${dashboard.products.filter((product) => product.active).length} current menu items are available to manage.`} /><SetupItem title="Stripe" text={dashboard.integrations.stripeSecret && dashboard.integrations.stripeWebhook ? "Payment and webhook secrets are configured." : "Add STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET before online payment."} /><SetupItem title="Email" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Email"} credentials are configured.` : "Add EMAIL_PROVIDER and EMAIL_API_KEY when you choose a provider."} /><SetupItem title="Owner setup" text={`${dashboard.availabilityWarnings.count ?? 0} active items are sold out or need attention.`} /></div></aside></div></>;
+  return <><div className={ordering.paused ? "danger-banner" : "danger-banner"}><span><strong>{ordering.paused ? "Online ordering is paused" : "Online ordering is live"}</strong> · Pickup {String(ordering.pickupEstimateMinutes ?? 15)} min · Delivery {String(ordering.deliveryEstimateMinutes ?? 30)} min</span><button onClick={() => action({ action: "ordering.pause", paused: !ordering.paused, reason: "Changed from operations overview" })}>{ordering.paused ? "Resume ordering" : "Pause ordering"}</button></div><section className="stats-grid"><Stat label="Sales · today" value={formatMoney(Number(metrics.sales_cents ?? 0))} note="Paid orders · Toronto day" /><Stat label="Orders · today" value={String(metrics.order_count ?? 0)} note="Paid · Toronto day" /><Stat label="Average order" value={formatMoney(Math.round(Number(metrics.average_cents ?? 0)))} note="Paid orders today" /><Stat label="Team on clock" value={String(dashboard.clockedIn.length)} note="Live clock status" /></section><AwaitingPaymentPanel dashboard={dashboard} /><div className="staff-grid"><OrdersPanel dashboard={dashboard} action={action} compact /><aside className="staff-panel"><div className="staff-panel-head"><h2>Launch status</h2></div><div className="setup-list"><SetupItem title="Actual menu loaded" text={`${dashboard.products.filter((product) => product.active).length} current menu items are available to manage.`} /><SetupItem title="Stripe" text={dashboard.integrations.stripeSecret && dashboard.integrations.stripeWebhook ? "Payment and webhook secrets are configured." : "Add STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET before online payment."} /><SetupItem title="Email" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Email"} credentials are configured.` : "Add EMAIL_PROVIDER and EMAIL_API_KEY when you choose a provider."} /><SetupItem title="Owner setup" text={`${dashboard.availabilityWarnings.count ?? 0} active items are sold out or need attention.`} /></div></aside></div></>;
 }
 function Stat({ label, value, note }: { label: string; value: string; note: string }) { return <article className="stat-card"><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 function SetupItem({ title, text }: { title: string; text: string }) { return <div className="setup-item"><b>!</b><div><strong>{title}</strong><p>{text}</p></div></div>; }
@@ -139,6 +142,39 @@ function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>
     <div className="ticket-payment">{String(order.payment_method ?? "").replaceAll("_", " ")} · {String(order.payment_status ?? "").replaceAll("_", " ")}{phone ? ` · ${phone}` : order.contactRedacted ? " · contact hidden" : ""}</div>
     {order.instructions ? <div className="ticket-note">Order note: {String(order.instructions)}</div> : null}
   </div>;
+}
+
+/**
+ * H-20a: checkouts that started and never finished.
+ *
+ * These orders exist, hold a real cart, and belong to a real customer, but they
+ * were absent from every screen — the live queue filters them out and the
+ * history filter had no option for the status. So the one case that most needs a
+ * human, a customer whose card was charged but whose confirmation never arrived,
+ * was the one case nobody could see.
+ *
+ * Deliberately read-only and visually quiet: it is a watchlist, not a work
+ * queue. Most rows here are abandoned carts that the payment reaper will cancel
+ * on its own. What matters is that a row which *stays* becomes visible.
+ */
+function AwaitingPaymentPanel({ dashboard }: { dashboard: Dashboard }) {
+  const waiting = dashboard.awaitingPayment ?? [];
+  if (waiting.length === 0) return null;
+  return <section className="staff-panel">
+    <div className="staff-panel-head">
+      <h2>Awaiting payment</h2>
+      <span className="live-chip">{waiting.length} unconfirmed</span>
+    </div>
+    <p className="editor-hint">Checkout was started but never confirmed. Nothing has been cooked and no payment is recorded. Most of these are abandoned carts and expire on their own — one that lingers may mean a payment went through without reaching us.</p>
+    {waiting.map((order) => <article className="ops-order" key={String(order.id)}>
+      <div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div>
+      <div>
+        <h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3>
+        <p>Started {new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })} · {formatMoney(Number(order.total_cents))}</p>
+        <span className="status-pill">{String(order.payment_status).replaceAll("_", " ")}</span>
+      </div>
+    </article>)}
+  </section>;
 }
 
 function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void>; compact?: boolean; kitchen?: boolean }) {

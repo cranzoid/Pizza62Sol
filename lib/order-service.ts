@@ -604,12 +604,16 @@ async function createStripeCheckout(input: {
 }
 
 export class OrderValidationError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-    public code = "ORDER_VALIDATION_FAILED",
-  ) {
+  // Explicit fields rather than parameter properties: Node's strip-only type
+  // loader cannot compile the latter, and it is what runs scripts/*.ts. The
+  // payment reaper (R1.3) has to import this module to cancel stale orders.
+  readonly status: number;
+  readonly code: string;
+
+  constructor(message: string, status = 400, code = "ORDER_VALIDATION_FAILED") {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -942,6 +946,14 @@ export async function createOrder(body: OrderRequest, origin: string) {
           // H-17: releasing the idempotency key lets the customer retry the same
           // checkout attempt and get a fresh order instead of resolving to this
           // cancelled one. The failed order/payment rows remain for reconciliation.
+          //
+          // H-17b: that retry only works because payments_idempotency_uq is a
+          // partial index excluding status = 'failed' (drizzle/0001). The row
+          // left behind above still holds this key; under an unconditional
+          // unique index it would collide with the retry's insert and the
+          // customer would be locked out of their own order forever. The
+          // status = 'failed' update is therefore load-bearing, not just
+          // bookkeeping — it is what releases the key.
           getD1()
             .prepare("DELETE FROM idempotency_keys WHERE key_hash = ?")
             .bind(keyHash),

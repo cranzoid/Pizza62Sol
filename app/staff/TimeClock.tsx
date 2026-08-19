@@ -248,47 +248,117 @@ const KIOSK_ACTIONS = [
   ["clock_out", "Clock out"],
 ] as const;
 
-/** A shared tablet at the store: PIN in, one punch, no session and no data shown. */
+/**
+ * A shared tablet at the store: pick your name, PIN in, one punch. No session
+ * and no data shown.
+ *
+ * C-09: the name step is not cosmetic. Sending a bare PIN made the server derive
+ * PBKDF2 against every staff profile until one matched, and let two people with
+ * the same PIN punch each other's cards. Naming the employee first makes it one
+ * derivation against one row.
+ */
 export function TimeClockKiosk() {
+  const [employees, setEmployees] = useState<{ id: string; name: string }[]>([]);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const [clock, setClock] = useState(() => new Date());
+
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/timeclock/kiosk");
+        const payload = (await response.json()) as { employees?: { id: string; name: string }[]; error?: string };
+        if (cancelled) return;
+        if (!response.ok) setRosterError(payload.error ?? "The staff list could not be loaded.");
+        else setEmployees(payload.employees ?? []);
+      } catch {
+        if (!cancelled) setRosterError("The staff list could not be loaded.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!result) return;
     const timer = window.setTimeout(() => setResult(null), 6000);
     return () => window.clearTimeout(timer);
   }, [result]);
+
+  // Never leave someone else's name selected on a shared tablet: clearing on
+  // success means the next person cannot punch into the previous one's card by
+  // walking up and typing their own PIN.
+  const reset = () => {
+    setPin("");
+    setSelected(null);
+  };
+
   const punch = async (action: string) => {
+    if (!selected) return;
     setBusy(true);
     try {
-      const response = await fetch("/api/timeclock/kiosk", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pin, action }) });
+      const response = await fetch("/api/timeclock/kiosk", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ staffUserId: selected.id, pin, action }),
+      });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) setResult({ tone: "error", text: payload.error ?? "That did not work." });
-      else setResult({ tone: "ok", text: `${payload.name} — ${String(payload.state).replaceAll("_", " ")} at ${new Date(payload.occurredAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" })}` });
-      setPin("");
-    } finally { setBusy(false); }
+      if (!response.ok) {
+        setResult({ tone: "error", text: payload.error ?? "That did not work." });
+        setPin("");
+      } else {
+        setResult({
+          tone: "ok",
+          text: `${payload.name} — ${String(payload.state).replaceAll("_", " ")} at ${new Date(payload.occurredAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" })}`,
+        });
+        reset();
+      }
+    } finally {
+      setBusy(false);
+    }
   };
+
   return <div className="kiosk-shell">
     <div className="kiosk-card">
       <BrandLogo name="Pizza 62" />
       <div className="kiosk-clock">{clock.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" })}</div>
       <p className="kiosk-date">{clock.toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric" })}</p>
-      <div className="kiosk-pin" aria-label="PIN entry">{[0, 1, 2, 3, 4, 5, 6, 7].map((slot) => <i key={slot} className={slot < pin.length ? "filled" : ""} aria-hidden="true" />)}</div>
-      <div className="kiosk-keypad">
-        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((key) => <button key={key} onClick={() => setPin((value) => (value + key).slice(0, 8))}>{key}</button>)}
-        <button onClick={() => setPin("")}>Clear</button>
-        <button onClick={() => setPin((value) => (value + "0").slice(0, 8))}>0</button>
-        <button onClick={() => setPin((value) => value.slice(0, -1))}>←</button>
-      </div>
-      <div className="kiosk-actions">
-        {KIOSK_ACTIONS.map(([action, label]) => <button key={action} disabled={busy || pin.length < 4} onClick={() => void punch(action)}>{label}</button>)}
-      </div>
-      {result ? <p className={result.tone === "ok" ? "kiosk-result" : "kiosk-result kiosk-result--error"} role="status">{result.text}</p> : <p className="kiosk-hint">Enter your PIN, then choose what you are doing.</p>}
+
+      {selected === null ? <>
+        <div className="kiosk-roster" aria-label="Choose your name">
+          {employees.map((employee) => <button key={employee.id} onClick={() => setSelected(employee)}>{employee.name}</button>)}
+        </div>
+        {rosterError
+          ? <p className="kiosk-result kiosk-result--error" role="status">{rosterError}</p>
+          : employees.length === 0
+            ? <p className="kiosk-hint">No one has a clock-in PIN yet. A manager can set one from the staff portal.</p>
+            : <p className="kiosk-hint">Tap your name to start.</p>}
+      </> : <>
+        <p className="kiosk-selected">{selected.name}</p>
+        <div className="kiosk-pin" aria-label="PIN entry">{[0, 1, 2, 3, 4, 5, 6, 7].map((slot) => <i key={slot} className={slot < pin.length ? "filled" : ""} aria-hidden="true" />)}</div>
+        <div className="kiosk-keypad">
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((key) => <button key={key} onClick={() => setPin((value) => (value + key).slice(0, 8))}>{key}</button>)}
+          <button onClick={() => setPin("")}>Clear</button>
+          <button onClick={() => setPin((value) => (value + "0").slice(0, 8))}>0</button>
+          <button onClick={() => setPin((value) => value.slice(0, -1))}>←</button>
+        </div>
+        <div className="kiosk-actions">
+          {KIOSK_ACTIONS.map(([action, label]) => <button key={action} disabled={busy || pin.length < 4} onClick={() => void punch(action)}>{label}</button>)}
+        </div>
+        <button className="text-button" onClick={reset}>Not {selected.name}?</button>
+      </>}
+
+      {result ? <p className={result.tone === "ok" ? "kiosk-result" : "kiosk-result kiosk-result--error"} role="status">{result.text}</p> : null}
       <a className="text-button" href="/employee">Sign in instead</a>
     </div>
   </div>;

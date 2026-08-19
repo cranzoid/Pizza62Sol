@@ -1,4 +1,4 @@
-import { authErrorResponse, createPinHash, requireStaff, validatePin } from "@/lib/auth";
+import { authErrorResponse, createPinHash, requireStaff, validatePin, verifyPin } from "@/lib/auth";
 import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
 import { ONTARIO_WEEKLY_OVERTIME_MINUTES, hasPermission, type ClockAction } from "@/lib/domain";
 import {
@@ -237,6 +237,34 @@ export async function POST(request: Request) {
         return Response.json({ ok: true, hasPin: false });
       }
       validatePin(pin);
+
+      // C-09: two employees sharing a PIN used to mean one silently punched the
+      // other's card. The kiosk now identifies the employee before verifying, so
+      // a collision no longer misattributes a punch — but it would still let two
+      // people believe the same PIN is "theirs", so it is rejected outright.
+      //
+      // This is O(staff) PBKDF2 derivations, which is exactly what was removed
+      // from the punch path. It is acceptable here: setting a PIN is a rare
+      // manager action, not something that happens at every shift change.
+      const existing = await database
+        .prepare(
+          `SELECT staff_user_id, pin_hash, pin_salt, pin_iterations
+           FROM staff_profiles
+           WHERE pin_hash IS NOT NULL AND staff_user_id <> ?`,
+        )
+        .bind(staffUserId)
+        .all<{ staff_user_id: string; pin_hash: string; pin_salt: string; pin_iterations: number }>();
+      for (const profile of existing.results) {
+        if (await verifyPin(pin, profile.pin_hash, profile.pin_salt, profile.pin_iterations)) {
+          // Deliberately does not say who holds it - that would hand a manager
+          // another employee's PIN.
+          return Response.json(
+            { error: "Another employee already uses that PIN. Choose a different one." },
+            { status: 409 },
+          );
+        }
+      }
+
       const hashed = await createPinHash(pin);
       await database
         .prepare(
