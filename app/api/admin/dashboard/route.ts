@@ -1,6 +1,7 @@
 import { env } from "@/lib/runtime-env";
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
+import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover";
 
 // Start of the current day in America/Toronto, returned as an epoch-ms timestamp.
 function torontoStartOfDay(nowMs: number): number {
@@ -185,8 +186,8 @@ export async function GET(request: Request) {
         rule_json: undefined,
       })),
       integrations: {
-        stripeSecret: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY),
-        stripeWebhook: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET),
+        cloverCheckout: cloverCheckoutConfigured(),
+        cloverWebhook: cloverWebhookConfigured(),
         emailApiKey: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
         emailProvider: (env as unknown as Record<string, string | undefined>).EMAIL_PROVIDER ?? null,
       },

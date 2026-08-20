@@ -24,9 +24,14 @@ const SECURITY_HEADERS: Record<string, string> = {
     "img-src 'self' data: blob:",
     "style-src 'self' 'unsafe-inline'",
     "script-src 'self' 'unsafe-inline'",
-    "connect-src 'self' https://api.stripe.com",
+    // Clover Hosted Checkout is never called from the browser — the session is
+    // created server-side and the customer is sent to Clover's own page by a
+    // top-level navigation, which no directive here restricts. So unlike the
+    // Stripe setup this replaces, neither connect-src nor form-action needs a
+    // payment-provider origin.
+    "connect-src 'self'",
     "font-src 'self' data:",
-    "form-action 'self' https://checkout.stripe.com",
+    "form-action 'self'",
     "frame-ancestors 'none'",
     "object-src 'none'",
   ].join("; "),

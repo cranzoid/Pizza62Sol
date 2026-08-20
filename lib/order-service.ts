@@ -23,6 +23,7 @@ import {
   type WeeklyAvailability,
 } from "@/lib/domain";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
+import { createCloverCheckout, cloverCheckoutConfigured } from "@/lib/clover";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
 type OrderRequest = {
@@ -553,56 +554,6 @@ async function activePromotions(
   return rules;
 }
 
-async function createStripeCheckout(input: {
-  origin: string;
-  orderId: string;
-  orderNumber: string;
-  trackingToken: string;
-  customerEmail: string;
-  totalCents: number;
-}): Promise<{ id: string; url: string }> {
-  const secret = (env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY;
-  if (!secret) {
-    throw new OrderValidationError(
-      "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
-      503,
-      "PAYMENT_SETUP_REQUIRED",
-    );
-  }
-  const successUrl = new URL("/track", input.origin);
-  successUrl.searchParams.set("order", input.orderNumber);
-  successUrl.searchParams.set("token", input.trackingToken);
-  successUrl.searchParams.set("payment", "success");
-  const cancelUrl = new URL("/", input.origin);
-  cancelUrl.searchParams.set("checkout", "cancelled");
-  const form = new URLSearchParams({
-    mode: "payment",
-    success_url: successUrl.toString(),
-    cancel_url: cancelUrl.toString(),
-    customer_email: input.customerEmail,
-    client_reference_id: input.orderId,
-    "metadata[order_id]": input.orderId,
-    "metadata[order_number]": input.orderNumber,
-    "line_items[0][price_data][currency]": "cad",
-    "line_items[0][price_data][unit_amount]": String(input.totalCents),
-    "line_items[0][price_data][product_data][name]": `Pizza 62 order ${input.orderNumber}`,
-    "line_items[0][quantity]": "1",
-  });
-  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${secret}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: form,
-  });
-  const result = await response.json() as { id?: string; url?: string; error?: { message?: string } };
-  if (!response.ok || !result.id || !result.url) {
-    throw new Error(result.error?.message ?? "Stripe checkout session could not be created");
-  }
-  return { id: result.id, url: result.url };
-}
-
 export class OrderValidationError extends Error {
   // Explicit fields rather than parameter properties: Node's strip-only type
   // loader cannot compile the latter, and it is what runs scripts/*.ts. The
@@ -617,7 +568,12 @@ export class OrderValidationError extends Error {
   }
 }
 
-export async function createOrder(body: OrderRequest, origin: string) {
+// `origin` used to be a parameter here: Stripe's success_url was built per
+// session and needed the caller's host. Clover's return URL is configured once
+// in its merchant dashboard and is the same for every order, so there is nothing
+// left for a request origin to influence — the browser stashes the tracking
+// credentials before redirecting instead (see /order/return).
+export async function createOrder(body: OrderRequest) {
   await ensureDatabase();
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
@@ -696,9 +652,9 @@ export async function createOrder(body: OrderRequest, origin: string) {
     if (paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
       throw new OrderValidationError("Pay at store is available for pickup orders only.");
     }
-    if (paymentMethod === "online" && !(env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY) {
+    if (paymentMethod === "online" && !cloverCheckoutConfigured()) {
       throw new OrderValidationError(
-        "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
+        "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",
         503,
         "PAYMENT_SETUP_REQUIRED",
       );
@@ -795,7 +751,7 @@ export async function createOrder(body: OrderRequest, origin: string) {
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
     const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
     const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
-    const paymentProvider = paymentMethod === "online" ? "stripe" : "store";
+    const paymentProvider = paymentMethod === "online" ? "clover" : "store";
     const outboxStatus = paymentMethod === "online"
       ? "waiting_payment"
       : (env as unknown as Record<string, string | undefined>).EMAIL_API_KEY
@@ -866,7 +822,7 @@ export async function createOrder(body: OrderRequest, origin: string) {
           orderId,
           orderStatus,
           paymentMethod === "online"
-            ? "Order validated; waiting for Stripe payment"
+            ? "Order validated; waiting for Clover payment"
             : "Order accepted after server validation",
           now,
         ),
@@ -919,17 +875,24 @@ export async function createOrder(body: OrderRequest, origin: string) {
     await getD1().batch(operationsBatch);
     if (paymentMethod === "online") {
       try {
-        const checkout = await createStripeCheckout({
-          origin,
-          orderId,
+        const checkout = await createCloverCheckout({
           orderNumber,
-          trackingToken,
+          customerName: customer.name,
           customerEmail: customer.email,
+          customerPhone: customer.phone,
           totalCents: price.totalCents,
+          summary: items
+            .map((item) => `${item.quantity}x ${item.productName}`)
+            .join(", "),
         });
+        // Clover has no metadata passthrough, so this row is the *only* link from
+        // the checkout session back to the order. It is written before the URL is
+        // handed to the customer: if the write fails, the catch below cancels the
+        // order rather than leaving a payable session no webhook could ever
+        // reconcile.
         await getD1()
-          .prepare("UPDATE payments SET provider_reference = ?, updated_at = ? WHERE order_id = ? AND provider = 'stripe'")
-          .bind(checkout.id, Date.now(), orderId)
+          .prepare("UPDATE payments SET provider_reference = ?, updated_at = ? WHERE order_id = ? AND provider = 'clover'")
+          .bind(checkout.checkoutSessionId, Date.now(), orderId)
           .run();
         return {
           duplicate: false,
@@ -941,13 +904,13 @@ export async function createOrder(body: OrderRequest, origin: string) {
           paymentStatus,
           estimateAt: schedule.estimatedFor,
           price,
-          checkoutUrl: checkout.url,
+          checkoutUrl: checkout.href,
         };
       } catch (error) {
         await getD1().batch([
           getD1()
             .prepare("UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE order_id = ?")
-            .bind(error instanceof Error ? error.message.slice(0, 500) : "Stripe checkout failed", Date.now(), orderId),
+            .bind(error instanceof Error ? error.message.slice(0, 500) : "Clover checkout failed", Date.now(), orderId),
           getD1()
             .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
             .bind(Date.now(), orderId),
@@ -967,7 +930,7 @@ export async function createOrder(body: OrderRequest, origin: string) {
             .bind(keyHash),
         ]);
         throw new OrderValidationError(
-          "Stripe checkout could not start. No payment was taken; please try again.",
+          "Clover checkout could not start. No payment was taken; please try again.",
           502,
           "PAYMENT_PROVIDER_ERROR",
         );

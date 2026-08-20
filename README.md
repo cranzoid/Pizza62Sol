@@ -15,11 +15,12 @@ The local server initializes a development D1 database with the versioned menu s
 ## Production environment
 
 - `OWNER_SETUP_SECRET` — one-time owner bootstrap credential, at least 24 characters
-- `STRIPE_SECRET_KEY` — Stripe secret key used to create hosted Checkout sessions
-- `STRIPE_WEBHOOK_SECRET` — signing secret for `/api/payments/stripe/webhook`
+- `CLOVER_MERCHANT_ID`, `CLOVER_API_TOKEN` — Clover Hosted Checkout credentials, used to create checkout sessions
+- `CLOVER_WEBHOOK_SECRET` — signing secret for `/api/payments/clover/webhook`
+- `CLOVER_ENVIRONMENT` — `sandbox` (default) or `production`
 - `EMAIL_PROVIDER`, `EMAIL_API_KEY`, `EMAIL_FROM` — provider-neutral email settings to add after a provider is selected
 
-Create a Stripe webhook for `checkout.session.completed` and `checkout.session.expired`. Pickup can use pay-at-store without Stripe; delivery requires hosted online payment. Card numbers never touch this application.
+Point a Clover webhook at `/api/payments/clover/webhook` for `PAYMENT` events. Clover sends no expiry event and its sessions last 15 minutes, so abandoned checkouts are cancelled by the `payment-reaper` job (`scripts/reap-payments.ts`) rather than by a webhook. Clover's return URL is set once in the Clover dashboard and should point at `/order/return`. Pickup can use pay-at-store without Clover; delivery requires hosted online payment. Card numbers never touch this application.
 
 For Azure, run the production build in a Node 22.13+ environment and provide a Cloudflare-compatible D1 binding named `DB`, or adapt the persistence binding before deployment. The included Sites setup supplies that binding for its preview environment.
 

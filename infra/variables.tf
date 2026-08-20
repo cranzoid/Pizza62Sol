@@ -157,9 +157,9 @@ variable "enable_outbox_dispatcher" {
 }
 
 variable "enable_payment_reaper" {
-  description = "Create the payment-reaper cron job. Turn on with R1.3, once scripts/reap-payments.ts exists."
+  description = "Create the payment-reaper cron job. On by default since R1.3: scripts/reap-payments.ts exists, and Clover sends no session-expiry webhook, so without this job abandoned checkouts stay in the queue forever."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "maps_sku" {

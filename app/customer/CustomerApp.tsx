@@ -67,7 +67,7 @@ type Catalog = {
   variations: Variation[];
   toppings: Topping[];
   settings: Record<string, { value: Record<string, unknown>; version: number }>;
-  integrations: { stripe: boolean; email: boolean };
+  integrations: { clover: boolean; email: boolean };
 };
 type ModifierSelection = {
   id: string;
@@ -562,7 +562,7 @@ export default function CustomerApp() {
           cart={cart}
           fulfilment={fulfilment}
           settings={catalog?.settings ?? {}}
-          integrations={catalog?.integrations ?? { stripe: false, email: false }}
+          integrations={catalog?.integrations ?? { clover: false, email: false }}
           store={store}
           hours={hours}
           timeZone={timeZone}
@@ -918,12 +918,25 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
       // checkout from this browser to the same duplicate and block ordering for good.
       clearIdempotencyKey();
       if (result.duplicate) { onConfirmed(result); return; }
-      if (typeof result.checkoutUrl === "string") { window.location.assign(result.checkoutUrl); return; }
+      if (typeof result.checkoutUrl === "string") {
+        // Clover's return URL is configured once per merchant in its dashboard and
+        // cannot carry per-order query parameters, the way Stripe's per-session
+        // success_url could. So the tracking credentials are stashed here, before
+        // the browser leaves for Clover, and recovered at /order/return. The
+        // confirmation email remains the durable copy for a customer who comes
+        // back on another device or with storage cleared.
+        window.localStorage.setItem("p62_pending_order", JSON.stringify({
+          orderNumber: result.orderNumber, trackingToken: result.trackingToken,
+          feedbackToken: result.feedbackToken, estimateAt: result.estimateAt, startedAt: Date.now(),
+        }));
+        window.location.assign(result.checkoutUrl);
+        return;
+      }
       onConfirmed(result);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "The order was not accepted."); setSubmitting(false); }
   };
   return <div className="modal-backdrop"><section className="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><p className="eyebrow dark"><span /> Secure checkout</p><h2 id="checkout-title">Finish your <em>{fulfilment}</em> order</h2>
-    {fulfilment === "delivery" && !integrations.stripe ? <div className="setup-alert"><strong>Online delivery payment is ready for its Stripe key</strong><p>The ordering flow and 30-minute estimate are configured. Add the Stripe secrets in the hosting environment to accept delivery payment.</p></div> : null}
+    {fulfilment === "delivery" && !integrations.clover ? <div className="setup-alert"><strong>Online delivery payment is ready for its Clover credentials</strong><p>The ordering flow and 30-minute estimate are configured. Add the Clover secrets in the hosting environment to accept delivery payment.</p></div> : null}
     <div className="checkout-grid"><div><fieldset><legend>Contact details</legend><label>Full name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /></label><label>Phone<input value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="tel" inputMode="tel" /></label><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" inputMode="email" /></label></fieldset>
       {fulfilment === "delivery" ? <fieldset><legend>Delivery address</legend><label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} autoComplete="street-address" /></label><label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="address-line2" /></label><label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value)} autoComplete="postal-code" placeholder="L8H 5W7" /></label><label>Delivery instructions<textarea value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} maxLength={500} /></label></fieldset> : null}
       <fieldset><legend>When?</legend>
@@ -940,8 +953,8 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         </label> : null}
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
-      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.stripe ? "" : "disabled"}`}><input type="radio" disabled={!integrations.stripe} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online with Stripe</b><small>{integrations.stripe ? "Secure hosted checkout" : "Add Stripe keys to enable"}</small></span></label></fieldset></div>
-      <aside className="checkout-summary"><h3>Order summary</h3>{cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}<hr /><p>Tip</p><div className="tip-grid"><button type="button" className={tip === 0 ? "active" : ""} onClick={() => setTip(0)}>None</button>{tipPresets.map((preset) => <button type="button" className={tip === preset ? "active" : ""} key={preset} onClick={() => setTip(preset)}>{preset / 100}%</button>)}</div><p className="tip-note">Percentage tips use the discounted menu subtotal before HST and exclude delivery.</p>{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="primary-button" disabled={submitting || (paymentMethod === "online" && !integrations.stripe) || (scheduleType === "scheduled" && !scheduledFor)} onClick={submit}>{submitting ? "Confirming…" : paymentMethod === "online" ? "Continue to Stripe" : "Place pickup order"} <ArrowIcon /></button><small>Prices and choices are checked again by Pizza 62 before the order is accepted. Online card details stay with Stripe.</small></aside></div>
+      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? "Secure hosted checkout by Clover" : "Add Clover credentials to enable"}</small></span></label></fieldset></div>
+      <aside className="checkout-summary"><h3>Order summary</h3>{cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}<hr /><p>Tip</p><div className="tip-grid"><button type="button" className={tip === 0 ? "active" : ""} onClick={() => setTip(0)}>None</button>{tipPresets.map((preset) => <button type="button" className={tip === preset ? "active" : ""} key={preset} onClick={() => setTip(preset)}>{preset / 100}%</button>)}</div><p className="tip-note">Percentage tips use the discounted menu subtotal before HST and exclude delivery.</p>{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="primary-button" disabled={submitting || (paymentMethod === "online" && !integrations.clover) || (scheduleType === "scheduled" && !scheduledFor)} onClick={submit}>{submitting ? "Confirming…" : paymentMethod === "online" ? "Continue to payment" : "Place pickup order"} <ArrowIcon /></button><small>Prices and choices are checked again by Pizza 62 before the order is accepted. Online card details stay with Clover.</small></aside></div>
   </section></div>;
 }
 
