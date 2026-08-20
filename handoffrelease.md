@@ -31,9 +31,9 @@ order entry.
 (read this — it has the per-release detail this summary compresses).
 
 ⚠️ **Where this file and the roadmap disagree, this file wins.** The roadmap was
-written before the printer model was known and before the toll-free decision, so
-its R2.2 section recommends a cloud-polling printer and an ESC/POS serializer —
-both wrong for the hardware the owner actually has. See §11.
+written before the hardware was identified and before the toll-free decision. Its
+R2.2 section recommends a cloud-polling printer and an ESC/POS serializer; the
+printer the owner actually has supports neither. See §11.
 
 Existing audit issue IDs (`C-01`…`H-26`) live in `PIZZA62_FULL_AUDIT.md` and
 `AUDIT_WORKLOG.md`. Keep using that vocabulary; append to the worklog as items land.
@@ -50,7 +50,7 @@ Existing audit issue IDs (`C-01`…`H-26`) live in `PIZZA62_FULL_AUDIT.md` and
 | Order call | **Restaurant only.** `<Say>` the order + `<Gather>` "press 1 to acknowledge", re-calling until acknowledged. No calls to customers (avoids CRTC/CASL consent burden) |
 | Twilio number | **Local Canadian number, not toll-free** (owner decision, 2026-08-19). Only the restaurant is called, and voice needs no toll-free verification — this removes what was the biggest schedule risk in the plan. See §9 for the SMS caveat this creates |
 | POS | **Replace Loyverse.** This app is the system of record. Clover is online card payments only — no Clover Orders API push |
-| Printing | Hardware now known (2026-08-19): till is **Tera**, printer is **Star TSP100III / TSP143III**. Still a `print_jobs` queue + pluggable adapters, but the printer's real constraints now drive the design — see §11 |
+| Printing | Hardware confirmed from the labels (2026-08-20): **Star TSP143IIILAN** (Ethernet) driving a **Tera 350R** cash drawer over 24V RJ12. Still a `print_jobs` queue + pluggable adapters; the printer's real command set and the drawer both shape the design — see §11 |
 | Release 1 | Make it deployable and safe. No new customer-facing features until orders are durable |
 
 ---
@@ -387,8 +387,7 @@ documented contract and wired up afterwards.
 | 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
 | 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
 | 7 | **SendGrid API key + a domain to authenticate** | Customer email | See the email/domain note below |
-| 8 | **Which TSP100III variant**, and how it is connected | R2.2 | See §11 — this decides the whole print architecture |
-| 9 | **What OS the Tera till runs** (Windows or Android) | R2.2 | Decides where the print agent can live |
+| 8 | **What machine will be always-on in the store, and its OS** | R2.2 | The print agent has to live somewhere on the store LAN. This is *not* the Tera — see the correction below |
 
 ### Answered — do not re-ask
 
@@ -399,8 +398,17 @@ documented contract and wired up afterwards.
 | Budget | Lean — Postgres B1ms, Front Door off |
 | Custom domain | **Later.** Default `*.azurecontainerapps.io` hostname for now |
 | Toll-free verification | **Not required.** Local number; restaurant-only calls |
-| Printer / till hardware | Star TSP100III (TSP143III) + Tera till |
+| Printer variant | **Star TSP143IIILAN** — Ethernet. The good case: the agent is not tied to a USB-cabled machine |
+| Cash drawer | **Tera 350R**, 24V RJ12, into the printer's DK port |
 | Clover public/private token | Owner has both |
+
+### Correction: "Tera" is the cash drawer, not the till
+
+An earlier version of this file called the Tera a till and asked what OS it runs.
+It has no OS — the **Tera 350R is the cash drawer**. The POS computer that will run
+this system is a separate, still-unidentified machine, and item 8 above is the real
+question: what box will be always-on in the store to host the print agent. It does
+not have to be a POS terminal; anything on the store LAN that stays awake works.
 
 ### Two consequences worth reading before building R1.4
 
@@ -476,9 +484,10 @@ Then ask for §9 items 1–3 and run the sandbox end-to-end.
 
 - §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
   domain and is the thing that quietly breaks customer confirmations if skipped.
-- §9 items 8–9 — **which TSP100III variant, and the till's OS**. §11 explains why
-  this decides the entire print architecture, and why the answer may be worth a
-  cheap hardware swap.
+- §9 item 8 — **which always-on machine in the store will host the print agent**,
+  and its OS. The printer being the LAN variant means this can be almost any box on
+  the store network, so it is a cheap question to answer — but nothing in R2.2 ships
+  without it.
 
 ### When ready to deploy
 
@@ -489,74 +498,115 @@ Two flags flip as their code lands — `enable_payment_reaper` with R1.3,
 
 ---
 
-## 11. Printing hardware (R2.2) — researched 2026-08-19, don't re-research
+## 11. Printing hardware (R2.2) — confirmed 2026-08-20, don't re-research
 
-The owner's hardware is now known:
+Read off the physical labels, so this is settled:
 
-- **Till:** Tera
-- **Receipt printer:** **Star TSP100III** (the TSP143III family), with futurePRNT
-
-Two verified facts about this specific model overturn the plan's preferred design.
-`ancient-wishing-wadler.md` §R2.2 lists a cloud-polling printer as "best case" and
-an ESC/POS byte serializer as the render target. **Neither applies here.**
-
-### 1. TSP100III does not support CloudPRNT — a local print agent is required
-
-CloudPRNT is supported on the **TSP100IV**, mC-Print2/3, mC-Label3, TSP100IVSK and
-TSP650II (via the HI X Connect option). The **III** generation is absent from every
-Star compatibility list; it ships futurePRNT instead, which is receipt-design and
-setup software, not cloud connectivity.
-
-So option 1 in the plan — the printer polls our HTTPS endpoint, no local software —
-**is off the table.** R2.2 needs option 2: a small local agent (Node or Go) on a
-machine in the store that long-polls our API and pushes bytes to the printer. The
-`print_jobs` queue and the poll endpoint are unchanged; the "no local software"
-shortcut is what is lost.
-
-### 2. The TSP100 family has no onboard fonts — output must be rasterized
-
-This is the bigger surprise. TSP100/TSP143 printers carry **no font sets**. Anything
-sent directly to the device must already be a bitmap, emitted with **Star Graphic
-Mode** raster commands. The Star driver *emulates* Star Line Mode for Windows
-printing, but that emulation is unavailable when talking to the printer directly —
-which is exactly what an agent does.
-
-Consequence for the render layer: the plan's "neutral document model → ESC/POS
-bytes / plain text" split is wrong for this printer. It should be **neutral document
-model → raster bitmap → Star Graphic Mode**. Keep the neutral model — it is still
-the right seam, and it is what makes a future CloudPRNT-capable TSP100IV or an
-ESC/POS printer a new adapter rather than a rewrite.
-
-Practical note: rasterizing 80mm receipts server-side is straightforward (render to
-a 1-bit bitmap at 576px width for 80mm at 203dpi), and `python-StarTSPImage` is a
-readable reference implementation of the conversion even though this project is
-Node.
-
-### What must be asked before building the adapter
-
-The variant determines where the agent can run, and it is printed on the label:
-
-| Variant | Interface | Where the agent must live |
+| Component | Model | Interface |
 |---|---|---|
-| TSP143IIIU / TSP143IIU+ | USB (III U also iOS Lightning) | On the machine physically cabled to the printer — almost certainly the Tera till |
-| TSP143IIILAN | Ethernet | Anywhere on the store LAN; pushes to TCP 9100 |
-| TSP143IIIW | Wi-Fi | Anywhere on the store LAN; pushes to TCP 9100 |
-| TSP143IIIBI | Bluetooth | On the paired machine |
+| Receipt printer | **Star Micronics TSP143IIILAN** (TSP100III family) | **Ethernet / LAN** |
+| Cash drawer | **Tera 350R**, 13", 4 bill / 6 coin, key lock | **24V RJ12 → the printer's DK port** |
 
-**LAN or Wi-Fi is much the better case** — the agent can run on any always-on box
-and does not depend on the till being awake or logged in. If it turns out to be the
-USB variant and the Tera till runs Android, that is the awkward combination and is
-worth surfacing to the owner early, because a cheap Ethernet-capable printer (or a
-TSP100IV, which would restore the no-agent CloudPRNT path) may be less work than
-fighting it.
+`ancient-wishing-wadler.md` §R2.2 predates this and recommends a cloud-polling
+printer and an ESC/POS serializer. **Both are wrong for this hardware.** What
+follows replaces it.
 
-Also still true from the original plan: the CSP blocks a browser→LAN `fetch`, so a
-browser-side bridge is not viable. And the day-one fallback — a `@media print`
-stylesheet plus `window.print()` from the kitchen board — works regardless of any
-of the above and should be built first, since it needs no hardware access at all.
+### The good news: LAN, so the agent is not tied to one machine
+
+The Ethernet variant means the print agent does **not** have to run on a machine
+cabled to the printer. It can live on any always-on box on the store LAN and reach
+the printer over **raw TCP on port 9100**.
+
+It does still have to be *on the LAN*: the printer sits behind the store's NAT with
+no public address, and the TSP100**III** does not support CloudPRNT (that is the IV
+generation, mC-Print, mC-Label3 and TSP650II-with-HI-X). So the shape is:
+
+```
+Container App  ──(agent long-polls outbound HTTPS)──►  GET /api/print/poll
+     ▲                                                      │
+     └──────────── ack / status ◄───────── print agent ──────┘
+                                                │
+                                   TCP 9100 on the store LAN
+                                                ▼
+                                 TSP143IIILAN ──RJ12──► Tera 350R
+```
+
+Only outbound connections from the store — no inbound firewall rule, no port
+forward, no static IP needed. Give the printer a DHCP reservation so its address
+does not move.
+
+### The constraint: no onboard fonts, so everything is raster
+
+Confirmed from Star's own spec: **TSP100IIILAN is listed in the STAR Graphic Mode
+Command Specifications** (Rev 2.32, §"Name of applicable models"). These printers
+carry no font sets — anything sent directly must already be a bitmap, emitted as
+Graphic Mode raster commands. The Windows driver emulates Star Line Mode, but that
+emulation is unavailable when talking to the printer directly, which is exactly what
+an agent does.
+
+Ignore any source claiming the TSP100III speaks ESC/POS — one turned up while
+researching this and it is wrong; Star's model list is authoritative.
+
+So the render pipeline is **neutral document model → 1-bit bitmap → Star Graphic
+Mode**, not the plan's "→ ESC/POS bytes". Keep the neutral model; it is the seam
+that makes a future TSP100IV or an ESC/POS printer a new adapter rather than a
+rewrite. For 80mm at 203 dpi the raster width is **576 px**.
+[`python-StarTSPImage`](https://github.com/geftactics/python-StarTSPImage) is a
+readable reference for the bitmap→Graphic Mode conversion even though this project
+is Node.
+
+### The cash drawer is driven *through the printer*
+
+There is no separate cable to a computer — the drawer hangs off the printer's DK
+port, so opening it is a command in the print stream and belongs to the same agent.
+
+**Drive drawer (raster mode)** — from the Graphic Mode spec, p.27:
+
+```
+ESC * r D n NUL     hex: 1B 2A 72 44 n 00
+  n = 0  none
+  n = 1  external device drive 1   ← the Tera 350R on the DK port
+  n = 2  external device drive 2
+  n = 3  both
+```
+
+Two traps, both from the spec itself:
+
+1. **Never use the buzzer commands to open the drawer.** `ESC GS BEL` (p.12) and
+   `ESC GS EM DC2` (p.14) both carry an explicit warning that using them to drive a
+   drawer on models with external device terminals **will damage the system**. This
+   is a real trap, not pedantry: on Epson ESC/POS the drawer pulse is `ESC p`, and
+   naive ports reach for the nearest-looking Star command. Use `ESC * r D` only.
+2. **The drawer command is ignored if raster data is still in the image buffer.**
+   Sequencing matters — the kick has to be issued when the buffer is clear, not
+   blindly appended to the receipt bytes. Get this wrong and the drawer silently
+   never opens while the receipt prints fine, which is a miserable thing to debug.
+
+Also note the drawer only needs to open for **cash** payments. Card and online-paid
+orders should not trigger it, so the kick belongs to the payment method on the job,
+not to every `customer_receipt`.
+
+### What to build, in order
+
+1. **`@media print` + `window.print()` from the kitchen board.** Needs no hardware,
+   works day one, and there is still no `@media print` rule anywhere in the codebase.
+   Do this first so the restaurant is never blocked on the agent.
+2. **`print_jobs` table and the poll/ack endpoints.** Pure server work, testable
+   without a printer. Include a `open_drawer` flag on the job.
+3. **The raster renderer.** `KitchenTicket` in
+   [app/staff/StaffPortal.tsx](app/staff/StaffPortal.tsx) already assembles the right
+   content — toppings with half-placement, extra cheese, halal, modifiers, notes,
+   address, payment state. Note `kitchen_label` exists on products and toppings and
+   is **never copied into the order snapshot**; add it so tickets do not depend on
+   live catalog joins.
+4. **The agent**, once the always-on machine is known (§9 item 8). Long-polls,
+   pushes to 9100, acks. Keep it small and dumb — all formatting happens server-side.
+
+The CSP still blocks a browser→LAN `fetch`, so a browser-side bridge remains
+non-viable.
 
 **Sources:**
+[STAR Graphic Mode command spec, Rev 2.32](https://starmicronics.com/support/Mannualfolder/star_graphic_cm_en.pdf) (model list p.5, drive drawer p.27, buzzer warnings pp.12–14) ·
 [TSP100III series (Star EMEA)](https://star-emea.com/products/tsp100/) ·
 [CloudPRNT compatibility (Star EMEA)](https://star-emea.com/products/cloudprnt/) ·
-[Star Graphic Mode command spec](https://starmicronics.com/support/Mannualfolder/star_graphic_cm_en.pdf) ·
-[TSP100III support page](https://starmicronics.com/support/products/tsp100iii-support-page/)
+[Star cash drawer cables & connectivity guide](https://starmicronics.com/cash-drawer-cables-connectivity-guide/)
