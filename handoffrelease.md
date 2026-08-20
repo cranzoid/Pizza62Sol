@@ -387,9 +387,7 @@ documented contract and wired up afterwards.
 | 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
 | 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
 | 7 | **SendGrid API key + a domain to authenticate** | Customer email | See the email/domain note below |
-| 8 | **What device is Loyverse running on today?** (Android tablet / iPad / SunMi or iMin terminal) | R2.2 | Loyverse is Android/iOS only, so it is a tablet or phone — not a PC. This tells us what already exists in the store |
-| 9 | **The printer's IP address** | R2.2 | Self-serve: hold the FEED button while powering the printer on and it prints a self-test showing its IP |
-| 10 | **Decision: dedicated mini-PC/Pi, or add a Windows PC?** | R2.2 | See §11 "Where the print agent runs". Recommend the dedicated box |
+| 8 | **The printer's IP address** | R2.2 | Self-serve: hold the FEED button while powering the printer on and it prints a self-test showing its IP. The only printing question left |
 
 ### Answered — do not re-ask
 
@@ -400,8 +398,10 @@ documented contract and wired up afterwards.
 | Budget | Lean — Postgres B1ms, Front Door off |
 | Custom domain | **Later.** Default `*.azurecontainerapps.io` hostname for now |
 | Toll-free verification | **Not required.** Local number; restaurant-only calls |
-| Printer variant | **Star TSP143IIILAN** — Ethernet. The good case: the agent is not tied to a USB-cabled machine |
+| Printer variant | **Star TSP143IIILAN** — Ethernet. The good case: output is not tied to a USB-cabled machine |
 | Cash drawer | **Tera 350R**, 24V RJ12, into the printer's DK port |
+| Store device | **Samsung Android tablet** running Loyverse. There is a PC but it is "not in good condition" — treat it as unavailable |
+| How printing reaches it | **Star PassPRNT** app on the tablet, triggered by URL scheme from the kitchen board. No hardware purchase, no custom Android app — see §11 |
 | Clover public/private token | Owner has both |
 
 ### Correction: "Tera" is the cash drawer, not the till
@@ -410,11 +410,11 @@ An earlier version of this file called the Tera a till and asked what OS it runs
 It has no OS — the **Tera 350R is the cash drawer**, and it is wired to the printer,
 not to a computer.
 
-There is no store PC identified. **Loyverse — which runs on Android and iOS only —
-is currently the thing driving this printer**, and Loyverse explicitly supports the
-TSP143IIILAN over Ethernet. So today the chain is: tablet → LAN → printer → drawer,
-and it works. Since replacing Loyverse is a locked decision, that job becomes ours,
-which is what items 8–10 are really asking about. §11 explains the options.
+**Loyverse — Android/iOS only — is currently the thing driving this printer**, on a
+Samsung tablet, and it explicitly supports the TSP143IIILAN over Ethernet. So today
+the chain is tablet → LAN → printer → drawer, and it works. Replacing Loyverse means
+that job becomes ours; §11 explains how, and the answer turned out not to need any
+new hardware.
 
 ### Two consequences worth reading before building R1.4
 
@@ -490,10 +490,8 @@ Then ask for §9 items 1–3 and run the sandbox end-to-end.
 
 - §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
   domain and is the thing that quietly breaks customer confirmations if skipped.
-- §9 items 8–10 — **what device Loyverse runs on, the printer's IP, and whether the
-  store gets a dedicated print box or a Windows PC**. §11 explains why this exists
-  at all (Azure cannot reach a printer on the store LAN, and Loyverse is doing that
-  job today). It changes how much there is to build, but not when to start.
+- §9 item 8 — **the printer's IP address**, the only printing question left. Everything
+  else about R2.2 is now settled: PassPRNT on the existing tablet, no purchase (§11).
 
 ### When ready to deploy
 
@@ -541,47 +539,66 @@ Only outbound connections from the store — no inbound firewall rule, no port
 forward, no static IP needed. Give the printer a DHCP reservation so its address
 does not move.
 
-### Where the print agent runs — the open question
+### How output reaches the printer — PassPRNT on the tablet (revised 2026-08-20)
 
 **Why anything is needed at all.** The app runs in Azure. The printer sits on the
-restaurant's own network behind their router, with no public address, so Azure
+restaurant's own network behind their router with no public address, so Azure
 cannot reach it. Something *inside the restaurant* has to bridge the two. Today
-that bridge is **Loyverse** — the Loyverse app on the store's tablet is what talks
-to the printer. Replacing Loyverse is a locked decision, so that job becomes ours.
+that bridge is Loyverse; replacing Loyverse is a locked decision, so the job
+becomes ours.
 
-Note what this means for the hardware work the owner is doing now: the **physical
-and network setup carries over** (printer on the LAN with a stable IP, drawer cabled
-to the DK port, drawer tested). The **Loyverse integration itself does not** — but it
-is not wasted, because the restaurant has to keep operating until we are ready.
+**What the store actually has** (owner, 2026-08-20): Loyverse runs on a **Samsung
+Android tablet**. There is a PC but it is "not in good condition". So there is no
+reliable computer, and the tablet is the only always-present device.
 
-A tablet alone cannot do this job. Browsers cannot open raw TCP sockets, and the CSP
-blocks browser→LAN requests, so the kitchen board in a browser cannot drive the
-printer directly however convenient that would be.
+**The answer is Star's own PassPRNT app, and it is much cheaper than an agent.**
+PassPRNT is a free Star app for iOS/Android that "receives print data from native
+and web-based applications using a URL scheme and sends it to the printer". Star's
+compatible-model list names the **TSP143IIILAN** explicitly, it works over
+Ethernet, and its settings screen has a **drawer ON/OFF** control.
 
-That leaves two real options:
+```
+Container App ──► kitchen board in Chrome on the Samsung tablet
+                            │  starpassprnt:// URL with the ticket
+                            ▼
+                       PassPRNT app
+                            │  over the store LAN
+                            ▼
+              TSP143IIILAN ──RJ12──► Tera 350R
+```
 
-**A. A small dedicated box on the LAN — recommended.** A mini PC or Raspberry Pi
-(~$60–100) plugged into the router, running a small Node or Go program that
-long-polls our API and pushes raster bytes to port 9100.
+**This deletes the two riskiest parts of R2.2.** PassPRNT does the rasterizing and
+drives the drawer from its own settings, so we write **neither** the Graphic Mode
+raster pipeline **nor** the `ESC * r D` drawer command — and the buzzer-command
+damage trap below stops being reachable at all. The remaining work is building the
+ticket as HTML and handing it to a URL.
 
-- Fully automatic: order lands → ticket prints → drawer kicks on cash.
-- Does not depend on anyone keeping a tablet awake, logged in, or on the right screen.
-- Survives staff closing an app, and restarts on its own after a power cut.
-- Cost is a one-off and small next to the risk of missed tickets.
+**Verify these three things early — they decide whether this holds:**
 
-**B. A Windows PC with the Star futurePRNT driver.** If a Windows PC is going into
-the store anyway, the driver does the hard parts for us: it rasterizes, and it has a
-built-in **"Open Cash Drawer 1 before printing"** setting with a configurable pulse
-width. Our app would then just call `window.print()` from the kitchen board against a
-`@media print` stylesheet — **no custom agent, no raster code, no drawer command**.
+1. **Does Chrome fire the URL scheme without a user gesture?** Browsers commonly
+   block programmatic navigation to a custom scheme unless a tap triggered it. If it
+   does need a tap, printing becomes one tap per order — which is fine, and matches
+   what staff do in Loyverse today. Fold it into the existing acknowledge button as
+   a single "Acknowledge &amp; print".
+2. **The app-switch is visible.** PassPRNT foregrounds itself, prints, and returns
+   via a `back=` callback URL. Confirm the return trip lands back on the kitchen
+   board and does not lose scroll position or state.
+3. **Android will likely prompt** the first time, and possibly per-launch. Find the
+   "always open" setting during setup.
 
-- Much less to build, and the drawer traps below stop being our problem.
-- But: needs a PC, needs the browser left open on the right page, and needs Chrome's
-  kiosk-printing mode for it to print without a dialog. More moving parts operationally,
-  fewer in the codebase.
+**Fallback if it does not hold: a dedicated box.** A mini PC or Raspberry Pi
+(~$60–100) on the LAN, long-polling our API and pushing raster to port 9100. Fully
+automatic and independent of whether the tablet is awake — but then the raster
+pipeline and the drawer command below *are* ours to write. Do not start here; start
+with PassPRNT, and keep this in reserve.
 
-Either way the server-side work — `print_jobs`, the poll endpoint, the document model —
-is identical, so **this decision does not block starting R2.2.**
+**Do not put the agent on the tablet as a custom app.** It is possible — Loyverse
+proves it — but it means a whole Android codebase outside this stack, APK
+distribution, and fighting Android's background-process killing. PassPRNT is the
+supported path to the same place.
+
+Note the server side — `print_jobs`, the poll/ack endpoints, the neutral document
+model — is **identical under all three**, so none of this blocks starting R2.2.
 
 ### The constraint: no onboard fonts, so everything is raster
 
