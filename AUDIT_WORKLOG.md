@@ -215,3 +215,111 @@ and `plan` clean at 38 resources, connection budget 32 against a 45 ceiling.
 **Still not done: the Docker image has never been built.** The daemon was not
 running during this session either. Everything in R1.2 — and now the payment
 reaper job added to it — still rests on an image that has never existed.
+
+### 2026-08-20 — R1.4: the notification outbox finally has a consumer
+
+This closes the audit's central finding. `notification_outbox` was already a
+complete job queue — `kind`, `recipient`, `payload_json`, `status`,
+`attempt_count`, `scheduled_for`, `sent_at`, `last_error` — and **nothing read
+it**, so no customer or staff member was ever told an order existed. Two of the
+producers were missing as well: nothing ever wrote a `restaurant_new_order` row
+at all, which is the finding in its most literal form.
+
+**Created:** `lib/notifications/{config,channels,messages,dispatcher}.ts`,
+`scripts/dispatch-outbox.ts`, `app/api/notifications/voice/ack/route.ts`.
+`enable_outbox_dispatcher` now defaults to `true`.
+
+**Rows are claimed, not selected.** `FOR UPDATE SKIP LOCKED` inside a
+transaction, flipping the row to `sending` before the transaction commits. This is
+not defensive programming for a rare case: the routes dispatch inline on every
+order while the cron sweeper runs every minute, so two workers contending for one
+row is the *normal* path. Two that merely `SELECT`ed it would both send, and the
+customer would get two confirmations.
+
+**There are two trigger points, not the one the roadmap assumed.** A pay-at-store
+order is real when it commits and is dispatched then. An online order's
+notifications stay parked in `waiting_payment` until Clover approves the payment,
+so the webhook is the second trigger. Confirming an order nobody paid for, and
+telephoning the kitchen about it, are both worse than saying nothing. The reaper
+and the staff cancel path both cancel parked rows for the same reason — and all
+three scope by *status* rather than by kind, so a kind added later is released or
+cancelled by them too instead of silently staying parked forever.
+
+**Failure handling distinguishes "could work later" from "never will."** A 4xx is
+the provider saying the request itself is wrong, so repeating it verbatim is six
+guaranteed failures delaying everything queued behind it; 429 is the exception,
+because "not now" is not "not ever". Separately, a channel with no credentials
+**parks** the row *without incrementing `attempt_count`* rather than failing it —
+during the window where Twilio is provisioned and SendGrid is not, a confirmation
+should wait, not burn its retry budget and land in `failed` where nobody looks.
+
+**H-09 closed.** `feedback_request` is queued at order creation in a new
+`waiting_completion` state and released when staff complete the order, delayed by
+`operations.feedbackDelayMinutes` (75). Verified end to end against a running
+server: `waiting_completion` → `pending`, scheduled 75 minutes out.
+
+**H-15's trade, made explicit.** Tracking and feedback tokens are stored in
+`orders` only as hashes, so a dispatcher running minutes later cannot reconstruct
+them; they have to be handed to the outbox at write time. Everything else — status,
+total, items, schedule — is read from the database at send time instead, which
+keeps the payload minimal and keeps the message accurate if the order changed
+while queued. The dispatcher **scrubs the payload on send**, so a plaintext token
+lives in the queue for the length of the queue window rather than forever. The
+alternative was a confirmation email with no tracking link, and per H-15 the email
+is precisely the private channel that makes such a link safe to hand out at all.
+
+**Customer SMS is built and off** behind `CUSTOMER_SMS_ENABLED`. The Twilio number
+is an unregistered local long code and Canadian carriers filter A2P traffic from
+those, so it would deliver unpredictably *and silently*. Email is the durable copy
+for both the customer and the restaurant; SMS is additive and is never allowed to
+fail a row on its own. Only the restaurant is ever called — calling customers
+would pull the project into CRTC/CASL consent obligations it has not met.
+
+**Voice acknowledgement reuses `orders.acknowledged_at`**, the same field the
+Acknowledge button on the staff dashboard already wrote. One piece of state with
+two ways to set it: tapping the kitchen screen stops the phone ringing, and
+pressing 1 clears the banner on the screen. Re-calling is a *sweep*
+(`requeueUnacknowledgedOrders`) rather than something a delivery schedules for
+itself, because "still unacknowledged" is only knowable later and the call that
+would have scheduled the retry may itself have failed. The Twilio callback
+verifies `X-Twilio-Signature`; without it anyone who guessed the URL could silence
+the escalation for an order the kitchen has never seen.
+
+**Live verification found a bug the tests had not.** Nothing reclaimed rows
+orphaned in `sending`. A worker dying mid-delivery — a replica restart, an OOM, a
+deploy rolling the revision — stranded that customer's confirmation permanently,
+which is the exact class of failure this release exists to eliminate. The claim
+query now also takes back rows untouched for five minutes. Reclaiming too early
+costs a duplicate message; never reclaiming costs silence, which is worse. Both
+halves of the guard are now tested.
+
+It also demonstrated defence in depth working: cancelling an order whose
+restaurant alert had *already* been claimed did not un-claim it, because the
+status-scoped cancel sweep cannot see `sending` — but the delivery-time guard in
+`deliver()` refused to send for a cancelled order anyway, and the row ended
+`failed: order was cancelled`. Nothing went out.
+
+**Two latent bugs in the R1.6 tests, both mine, both the same shape.** State that
+outlives a run: rate-limit identities restarted from the same values every run, so
+repeated `npm test` runs shared one hourly `owner-bootstrap` budget (5 per hour)
+and began failing on the second or third run; and test order numbers collided on
+`orders_number_uq`. Both now seeded with a per-run token. They presented as flaky
+tests and were not — this is recorded as trap 7 in the handoff.
+
+**Verified against a running server**, not only typechecked: an order queues all
+three rows with the correct parked states; inline dispatch claims the two live
+ones within milliseconds; a bad SendGrid key fails in one attempt rather than six;
+a missing channel parks with `attempt_count` still zero; completion releases the
+feedback request 75 minutes out; cancellation silences everything; and the voice
+callback acknowledges on a valid signature, returns 403 on a forged or absent one,
+and is idempotent on replay. The dispatcher entrypoint was then run inside the
+container with the exact `command`/`args` from `jobs.tf`.
+
+Gates: `npm test` 154/154 with 0 skipped, and 73 pass / 81 skipped / 0 failed with
+no database reachable · `tsc` clean · `lint` clean · `build` 34 routes ·
+`terraform validate` and `plan` clean at 39 resources. The connection budget rose
+to **36 of 45** with the third job — 9 of headroom, so the next addition needs the
+arithmetic re-checked rather than assumed.
+
+**Release 1 is now written in full.** What remains is credentials, one Clover
+sandbox run, one real notification, and the first apply.

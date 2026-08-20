@@ -6,8 +6,9 @@
 >
 > **Start at §10.** §3 is what is already done, §10 is what to do next.
 >
-> Last updated 2026-08-20, after R1.3 and R1.6 landed and the Docker image was
-> built and booted for the first time. Release 1 now needs only R1.4.
+> Last updated 2026-08-20, after R1.3, R1.4 and R1.6 landed and the Docker image
+> was built and booted for the first time. **Every piece of Release 1 is now
+> written.** What remains is credentials, a sandbox run, and the first deploy.
 
 ---
 
@@ -99,7 +100,8 @@ transition to `preparing`. All side effects landed (order_items, payments, 2
 order_events, outbox row, audit entries). **Then the server was restarted and the
 order was still there** — the assertion the old build fails.
 
-`npm test` 43/43 · `tsc` clean · `lint` clean · `build` 31 routes.
+Gates *as they stood when R1.1 landed*: `npm test` 43/43 · `tsc` clean · `lint`
+clean · `build` 31 routes. Current numbers are in §4.
 
 ### ✅ R1.2 — Azure infrastructure (Terraform) — **DONE, PLAN-VERIFIED**
 
@@ -124,8 +126,12 @@ default Azure hostname, `rg-pizza62-{env}`):
 - **Front Door is off** (`enable_front_door = false`). Standard is ~$35/mo flat and
   buys nothing while the app serves on its `*.azurecontainerapps.io` hostname,
   which already has TLS. The whole path is written and plan-verified.
-- **Both cron jobs are off**, gated behind `count`, because their entrypoints do
-  not exist yet. R1.3 sets `enable_payment_reaper`, R1.4 `enable_outbox_dispatcher`.
+- **All three jobs now exist and are on.** Both cron jobs were originally gated
+  behind `count` because their entrypoints did not exist; R1.3 added
+  `scripts/reap-payments.ts` and R1.4 `scripts/dispatch-outbox.ts`, so
+  `enable_payment_reaper` and `enable_outbox_dispatcher` both default to `true`.
+  The connection budget went from 28 to **36 of 45** as a result — 9 of headroom,
+  so the next thing added there needs the arithmetic re-checked, not assumed.
 - **No storage key exists** (`shared_access_key_enabled = false`); one
   user-assigned managed identity holds AcrPull, Key Vault Secrets User, Storage
   Blob Data Contributor and Azure Maps Data Reader.
@@ -182,13 +188,74 @@ and no refund endpoint.
 **Remaining:** plug in the merchant ID and webhook secret (§9 items 1–3) and run
 the sandbox end-to-end. Everything else is written and verified.
 
-### ⬜ R1.4 — Notifications (Twilio) — **architecture can be built now**
+### ✅ R1.4 — Notifications (Twilio) — **DONE, pending credentials**
 
-Owner is provisioning Twilio. Decided: a **local Canadian number, not toll-free**,
-because only the restaurant is called. Build the dispatcher, the three channel
-adapters and the voice `<Say>`/`<Gather>` flow against the Twilio docs now, and
-wire the credentials when they land. Read the SMS caveat in §9 before promising
-customer SMS.
+The audit's central finding, closed. `notification_outbox` was already a complete
+job queue and nothing read it, so nobody was ever told an order existed.
+
+**Created:** `lib/notifications/{config,channels,messages,dispatcher}.ts`,
+`scripts/dispatch-outbox.ts`, `app/api/notifications/voice/ack/route.ts`.
+**Producers added:** `restaurant_new_order` (the alert that tells the restaurant
+an order exists at all — the finding itself) and `feedback_request` (closing
+**H-09**). `enable_outbox_dispatcher` now defaults to **true**.
+
+**The things that are not obvious, and that you should not undo:**
+
+- **Rows are claimed, not selected.** `FOR UPDATE SKIP LOCKED` in a transaction,
+  flipping to `sending` before commit. Inline dispatch fires on every order while
+  the cron sweeper runs every minute, so two workers racing for one row is the
+  *normal* case; two that merely selected it would both send it.
+- **There are two trigger points, not the one the roadmap assumed.** A
+  pay-at-store order is live when it commits. An online order's notifications stay
+  parked in `waiting_payment` until Clover approves, so the webhook is the second
+  trigger. Confirming an unpaid order and phoning the kitchen about it are both
+  worse than silence.
+- **Dispatch is inline and not awaited.** Node can do the work in-process, so
+  nobody waits on the one-minute cron floor. The outbox row is already durable, so
+  a crash between commit and send loses nothing — the sweeper picks it up. A
+  failed inline dispatch must never turn a placed order into an error response.
+- **Missing credentials *park* a row without spending an attempt** rather than
+  failing it. During the window where Twilio exists and SendGrid does not, a
+  confirmation should wait, not land in `failed` where nobody looks.
+- **A 4xx fails immediately; 429 and 5xx retry.** A malformed address retried six
+  times is six guaranteed failures delaying everything behind it.
+- **Rows orphaned in `sending` are reclaimed after five minutes.** Found by live
+  verification, not by a test: a replica dying mid-delivery stranded a customer's
+  confirmation permanently, which is precisely the failure this release exists to
+  eliminate. Reclaiming too early costs a duplicate; never reclaiming costs silence.
+
+**Outbox status vocabulary** — anything touching the queue has to respect it:
+
+| Status | Meaning |
+|---|---|
+| `waiting_payment` | online order, not yet paid. Released by the Clover webhook, cancelled by the reaper |
+| `waiting_completion` | feedback request, released when staff complete the order |
+| `pending` / `retrying` | claimable by a dispatcher |
+| `pending_provider_setup` | parked: no channel can deliver yet. **Attempt count untouched** |
+| `sending` | claimed by a worker; reclaimed after 5 minutes |
+| `sent` / `failed` / `cancelled` | terminal |
+
+**Tokens in the payload are a deliberate, bounded trade.** Tracking and feedback
+tokens live in `orders` only as hashes, so a dispatcher running minutes later
+cannot reconstruct them — and per **H-15** the email is exactly the private
+channel that makes a tracking link safe to hand out at all. Everything else is
+read from the database at send time, so a message describes the order as it is
+when sent. The payload is scrubbed on send, bounding exposure to the queue window.
+
+**Customer SMS is built and off**, behind `CUSTOMER_SMS_ENABLED`. See §9: an
+unregistered local long code delivers unpredictably *and silently*. Email is the
+durable copy; SMS never fails a row on its own. Only the restaurant is called.
+
+**Voice acknowledgement writes `orders.acknowledged_at`** — the same field the
+Acknowledge button on the kitchen screen writes. One piece of state, two ways to
+set it: tapping the screen stops the phone ringing, pressing 1 clears the banner.
+Re-calling is a *sweep* (`requeueUnacknowledgedOrders`), not something a delivery
+schedules for itself — "still unacknowledged" is only knowable later, and the call
+that would have scheduled the retry may itself have failed. The callback verifies
+Twilio's `X-Twilio-Signature`; without it anyone who guessed the URL could silence
+the escalation for an order the kitchen has never seen.
+
+**Remaining:** wire §9 items 4–7 and send a real message. Nothing else.
 ### ✅ R1.5 — Bug fixes — **ALL SEVEN DONE**
 
 | ID | State |
@@ -219,8 +286,9 @@ database-backed suites probe at module load and skip cleanly.
 | `tests/order-create.test.ts` | C-07 end to end, concurrent same-key submissions, server-side pricing, hours, per-caller throttling |
 | `tests/clover-webhook.test.ts` | the transition that takes the money, and the reaper. Orders built through the real `POST /api/orders`, so the session id under test is the one the order service stored |
 | `tests/auth.test.ts` | the staff session cookie — revocation and deactivation taking effect on live sessions, 401 vs 403, bootstrap closed both ways |
+| `tests/notifications.test.ts` | added by R1.4: queue mechanics above all — two dispatchers racing one row, the stale-`sending` reclaim and its inverse, retry vs permanent failure, parking without spending an attempt, token scrubbing, and the unacknowledged-order sweep |
 
-**129/129, 0 skipped** with Postgres; **66 pass / 63 skipped / 0 failed** without,
+**154/154, 0 skipped** with Postgres; **73 pass / 81 skipped / 0 failed** without,
 so the suite stays hermetic and the skip count is still a reliable signal.
 
 ---
@@ -230,6 +298,7 @@ so the suite stays hermetic and the skip count is still a reliable signal.
 Everything is on **`release/r1-runway`** (branched from `main`, not merged):
 
 ```
+1f073eb R1.4: drain the notification outbox
 c264076 R1.6: route-level integration tests for orders, payments and auth
 2891cae R1.3: replace Stripe with Clover Hosted Checkout
 fbb20fe R1.5: H-06b — geocode delivery addresses instead of postal-district centroids
@@ -238,9 +307,11 @@ d7ac716 R1.5: fix six audit findings (H-17b, C-09, H-11a/b, H-20a, rate limit)
 c7718da R1.1: port runtime from Cloudflare Workers to Node/Postgres
 ```
 
-81 files changed versus `main` (81 files changed, 11562 insertions(+), 1933 deletions(-)). Gates at the tip:
-**129/129 tests (0 skipped)** · `tsc` clean · `lint` clean · `build` 33 routes ·
-`terraform validate` + `plan` clean (38 resources, connection budget 32 of 45) ·
+89 files changed, 13335 insertions(+), 1934 deletions(-) versus `main`. Gates at the tip:
+**154/154 tests (0 skipped)** with Postgres, and **73 pass / 81 skipped / 0 failed**
+without one, so the suite stays hermetic and the skip count remains a reliable
+signal · `tsc` clean · `lint` clean · `build` 34 routes · `terraform validate`
++ `plan` clean (39 resources, connection budget 36 of 45) ·
 **Docker image builds, boots and serves `/api/health`** (§12).
 
 ## 5. Build, toolchain & environment
@@ -304,7 +375,13 @@ or the server crashes on boot (see trap 2 in §6).
 | `AZURE_STORAGE_CONTAINER` | Blob container, default `uploads` |
 | `AZURE_STORAGE_CONNECTION_STRING` | Local/CI alternative to managed identity |
 | `OWNER_SETUP_SECRET` | One-time owner bootstrap, ≥24 chars |
-| `EMAIL_PROVIDER` `EMAIL_API_KEY` `EMAIL_FROM` | Notification provider (wired in R1.4) |
+| `EMAIL_PROVIDER` `EMAIL_API_KEY` `EMAIL_FROM` | SendGrid. Email is the durable notification channel — it carries the customer's tracking link |
+| `TWILIO_ACCOUNT_SID` `TWILIO_AUTH_TOKEN` | Twilio API credentials |
+| `TWILIO_FROM_NUMBER` | E.164 number SMS and calls originate from. Local Canadian, not toll-free |
+| `RESTAURANT_ALERT_PHONE` | E.164 number the restaurant is called and texted on. **Deliberately separate from the public `business.phone` setting** — the number customers call and the one that should ring in the kitchen are not necessarily the same |
+| `CUSTOMER_SMS_ENABLED` | Customer confirmation SMS. **Leave off** until a registered A2P number exists (§9) |
+| `VOICE_RETRY_LIMIT` `VOICE_RETRY_MINUTES` | Re-call budget for an unacknowledged order. Default 3 attempts, 2 min apart |
+| `PUBLIC_BASE_URL` | Absolute origin for notification links and Twilio's `<Gather>` callback. **The dispatcher is a cron job with no request to derive an origin from.** Terraform composes it from the Container Apps environment's default domain rather than the app's own FQDN, which would be a dependency cycle |
 | `CLOVER_MERCHANT_ID` `CLOVER_API_TOKEN` | Hosted Checkout credentials |
 | `CLOVER_WEBHOOK_SECRET` | Signing secret for `/api/payments/clover/webhook` |
 | `CLOVER_ENVIRONMENT` | `sandbox` (default) or `production`. Defaults the safe way round — anything but `production` is sandbox |
@@ -375,6 +452,18 @@ was never actually exercised.
    a reachable database at module load, not in a `before` hook.
 6. **`vinext start` is already a Node server** honouring `PORT` and binding `0.0.0.0`.
    Don't write a custom server entry.
+7. **Test state outlives the test run, and `pizza62_test` is never reset.** Two
+   separate bugs came from the same mistake — a counter that restarts at the same
+   value every run. Rate-limit budgets live in the database and are *long*
+   (owner-bootstrap is 5 per **hour**), so reused client identities share one
+   budget across runs and start failing on the second or third `npm test` of the
+   hour. And `orders.order_number` is `UNIQUE`, so a reused test order number
+   collides outright. **Seed anything that must be unique with a per-run token**
+   (`crypto.randomUUID().slice(0, 8)`), not with a bare counter. Both bugs look
+   like flaky tests and are not.
+8. **A dispatch claims rows across the whole database, not just yours.** Anything
+   calling `dispatchOutbox()` in a test will pick up rows left by other suites and
+   earlier runs. Assert on your own row by id; never on aggregate counts.
 
 ---
 
@@ -444,10 +533,11 @@ documented contract and wired up afterwards.
 | 3 | **Sandbox or production first?** | R1.3 | Recommend sandbox |
 | 3b | **Set the Clover return URL to `/order/return`** | R1.3 customer experience | Same dashboard screen as item 2, so do it in the same visit. Clover's return URL is per-merchant, not per session, so this one static path is where every paying customer lands |
 | 3c | **The Clover refund API contract** | H-07/H-25 refunds | **New.** §8 covers checkout creation and the payment webhook and documents no refund endpoint. Writing one would mean guessing at an API, and a refund path that records a refund without moving money is worse than none. Needs either the contract from Clover's docs or a decision to handle refunds in the Clover dashboard by hand for now |
-| 4 | **Twilio Account SID + Auth Token** | R1.4 wiring | Owner is provisioning now |
-| 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
-| 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
-| 7 | **SendGrid API key + a domain to authenticate** | Customer email | See the email/domain note below |
+| 4 | **Twilio Account SID + Auth Token** | R1.4 wiring | `twilio_account_sid` / `twilio_auth_token` in Key Vault. The code is written and tested |
+| 5 | **The Twilio number**, in E.164 | R1.4 wiring | `twilio_from_number`. Local Canadian, not toll-free |
+| 6 | **The restaurant's alert number**, in E.164 | R1.4 voice + SMS | `restaurant_alert_phone`. **Not necessarily the public number** — this is the one that should ring in the kitchen at 9pm. Retries default to 3 attempts, 2 minutes apart (`voice_retry_limit` / `voice_retry_minutes`); say if you want different |
+| 7 | **SendGrid API key + a domain to authenticate** | Customer email — **and the restaurant's** | See the email/domain note below. Email is now the *durable* channel for both sides, so this is the single most load-bearing credential in R1.4 |
+| 7b | **The restaurant's own email address** | Restaurant alerts, low-rating alerts | **New.** The dispatcher sends the new-order alert and the low-rating alert to `business.email` in settings, which is not currently populated. Without it those alerts fall back to voice and SMS only |
 | 8 | **The printer's IP address** | R2.2 | Self-serve: hold the FEED button while powering the printer on and it prints a self-test showing its IP. The only printing question left |
 
 ### Answered — do not re-ask
@@ -477,7 +567,7 @@ the chain is tablet → LAN → printer → drawer, and it works. Replacing Loyv
 that job becomes ours; §11 explains how, and the answer turned out not to need any
 new hardware.
 
-### Two consequences worth reading before building R1.4
+### Two consequences that shaped R1.4 — they are already implemented
 
 **Customer SMS is not safe to promise on a local long code.** Dropping toll-free
 is right for *voice* — outbound calls need no verification, and it removes the
@@ -501,61 +591,74 @@ confirmations. Worth doing early.
 
 ## 10. What to do next — start here
 
-**State:** R1.1, R1.2, R1.3, R1.5 and R1.6 are done and committed on
-`release/r1-runway`. **The Docker image has been built and booted** (§12), so the
-deployment is no longer resting on an image that has never existed. Nothing has
-been deployed to Azure yet. Release 1 needs **R1.4** and the Clover sandbox run.
+**Every piece of Release 1 is written.** R1.1, R1.2, R1.3, R1.4, R1.5 and R1.6
+are done and committed on `release/r1-runway`. The Docker image builds and boots
+(§12). Nothing has been deployed to Azure yet.
 
-### 1. R1.4 — Notifications (Twilio)
+What is left is not engineering. It is credentials, one sandbox run, and the
+first apply — in that order.
 
-The largest remaining piece, and the one the audit's central finding is about:
-nothing drains `notification_outbox`, so no customer or staff member is ever told
-an order exists. The rows are written correctly — `tests/order-create.test.ts`
-now pins that — but nothing reads them.
+### 1. Collect the credentials (§9 items 1–7b)
 
-Build the dispatcher, the three channel adapters and the `<Say>`/`<Gather>` voice
-flow against the Twilio docs; wire credentials when they land (§9 items 4–7).
-Then set `enable_outbox_dispatcher = true`, which creates the cron job that is
-still gated off. **Read the SMS caveat in §9 first** — do not make SMS the only
-channel carrying an order.
+None of this is code. All of it is self-serve except the Twilio/SendGrid signup
+the owner is already doing.
 
-Note the outbox states the payment work introduced, because the dispatcher has to
-respect them: `waiting_payment` (an online order that has not been paid — never
-send), `pending` / `pending_provider_setup` (released by the webhook once the
-payment is approved), `cancelled` (the reaper, or a cancelled order).
+- **Clover** (items 1, 2, 3, 3b): merchant ID from the dashboard URL, generate the
+  webhook signing secret, choose sandbox, and set the return URL to
+  **`/order/return`**. All one dashboard visit.
+- **Twilio** (4, 5, 6): SID, auth token, the number, and the restaurant's alert
+  number.
+- **SendGrid** (7, 7b): API key, an authenticated sender domain, and the
+  restaurant's own email address in the `business` setting.
 
-### 2. The Clover sandbox run
+Put them in Key Vault — the secrets already exist holding `"pending"` with
+`ignore_changes` on the value, so setting them out of band is safe and an apply
+will not revert them.
 
-Everything is written and verified against a running server and inside the
-container; it needs only §9 items 1–3, 3b. Plug in the merchant ID and webhook
-secret, point the return URL at `/order/return`, and run a real card through the
-sandbox. Then flip `CLOVER_ENVIRONMENT` when the owner is ready for production.
+### 2. Run the Clover sandbox end-to-end
 
-### 3. Then deploy
+Place a real sandbox order and confirm: the checkout session is created, the
+customer lands on `/order/return` and sees the order once the webhook arrives,
+`payments.provider_reference` matches the session, and the reaper cancels an
+abandoned one after 20 minutes. The webhook signature path is already verified
+against a running server and in tests, so what this is really testing is the
+credentials and the dashboard configuration.
+
+### 3. Send one real notification
+
+Confirm a confirmation email arrives and is not in spam (this is what §9 item 7's
+domain authentication is for), and that the restaurant call places and that
+pressing 1 clears the banner on the kitchen screen. `orders.acknowledged_at` is
+the single field to watch.
+
+### 4. Deploy
 
 `infra/README.md` has the bring-up order. The one non-obvious step: ACR must
 exist before an image can be pushed, so the first apply is `-target`ed at the
-registry. `enable_payment_reaper` is already on; `enable_outbox_dispatcher` flips
-with R1.4.
+registry. Both cron jobs are now on by default, so nothing has to be flipped.
 
-### Also worth doing, needing nothing from anyone
+### Then, and only then: Release 2
 
-- **`middleware.ts` → `proxy.ts`.** The container build warns:
-  *"middleware.ts is deprecated in Next.js 16. Rename to proxy.ts and export a
-  default or named proxy function."* The security headers still apply — verified
-  in the running container (§12) — so this is a future break, not a current one.
-  Worth doing before it becomes one.
-- **The `@media print` fallback** for kitchen tickets (§11). No hardware needed,
-  works day one, and there is still no `@media print` rule anywhere.
-- **Refunds (H-07/H-25)** once §9 item 3c is answered.
+`ancient-wishing-wadler.md` has the detail. Two things there are worth starting
+early because they need nothing from anyone:
 
-### Ask the owner early (long lead time, not engineering work)
+- **The `@media print` fallback** for kitchen tickets (§11). No hardware, works
+  day one, and there is still no `@media print` rule anywhere in the codebase.
+- **`print_jobs` and the poll/ack endpoints** (§11). Pure server work, identical
+  under all three output options, so it does not block on the printer's IP.
 
-- §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
-  domain and is the thing that quietly breaks customer confirmations if skipped.
-- §9 item 8 — **the printer's IP address**, the only printing question left.
+### Known open items, none blocking
 
----
+- **Refunds (H-07/H-25)** — blocked on §9 item 3c, a contract we do not have.
+- **`middleware.ts` → `proxy.ts`.** The build warns it is deprecated in Next.js
+  16. The security headers still apply (verified in the container, §12), so this
+  is a future break, not a current one.
+- **C-09's public roster endpoint.** `GET /api/timeclock/kiosk` exposes staff
+  first names to the internet. Rate limited, nothing else returned, but if that
+  matters the fix is a kiosk device token — deliberately not built, because it
+  needs a settings surface and a decision that is the owner's.
+- **`resolveFsaCentroid`** is still the delivery fallback when Azure Maps cannot
+  answer at all. Its 17 centroids are approximate.
 
 ## 11. Printing hardware (R2.2) — confirmed 2026-08-20, don't re-research
 
@@ -767,6 +870,7 @@ is amd64 — so the slowness is inherent to building it here, not a fault.
 | Externalised native deps resolve | `/api/catalog` returns the seeded menu, so `pg` loaded at runtime |
 | Security headers | CSP, HSTS, `X-Frame-Options`, `nosniff` all present |
 | **Payment-reaper entrypoint** | run with the exact `command`/`args` from `jobs.tf`: cancelled the 25-minute-old unpaid order, left the 5-minute-old and the already-paid one alone |
+| **Outbox-dispatcher entrypoint** | rebuilt with R1.4 and run the same way. With no provider configured it claims nothing and leaves the row `pending` rather than burning its retries; with a (bogus) SendGrid key it claims the row, gets a 401, and fails it in **one** attempt because a 4xx is not retryable |
 
 **One deviation from the command this file used to recommend.** §10 previously
 suggested pointing the container at `host.docker.internal`. That cannot work
