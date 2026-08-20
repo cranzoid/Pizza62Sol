@@ -1,6 +1,7 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, getSetting, writeAudit } from "@/db/runtime";
 import { canTransitionOrderStatus, type Fulfilment } from "@/lib/domain";
+import { anyProviderConfigured } from "@/lib/notifications/config";
 
 type ActionBody =
   | { action: "order.status"; orderId?: string; status?: string; note?: string; override?: boolean }
@@ -52,6 +53,38 @@ export async function POST(request: Request) {
           )
           .bind(crypto.randomUUID(), order.id, order.status, target, user.id, body.note?.trim() || null, now),
       ]);
+      // H-09: completing an order is what releases its feedback request, delayed
+      // by operations.feedbackDelayMinutes so the customer is asked after they
+      // have actually eaten rather than as they walk out of the door.
+      if (target === "completed") {
+        const operations = await getSetting<{ feedbackDelayMinutes: number }>("operations");
+        await getD1()
+          .prepare(
+            `UPDATE notification_outbox SET status = ?, scheduled_for = ?, updated_at = ?
+             WHERE kind = 'feedback_request'
+               AND status = 'waiting_completion'
+               AND payload_json::jsonb->>'orderId' = ?`,
+          )
+          .bind(
+            anyProviderConfigured() ? "pending" : "pending_provider_setup",
+            now + (operations.feedbackDelayMinutes ?? 75) * 60_000,
+            now,
+            order.id,
+          )
+          .run();
+      }
+      // A cancelled order must never confirm itself, ring the kitchen, or ask
+      // the customer how their meal was.
+      if (target === "cancelled") {
+        await getD1()
+          .prepare(
+            `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
+             WHERE status IN ('waiting_payment', 'waiting_completion', 'pending', 'retrying', 'pending_provider_setup')
+               AND payload_json::jsonb->>'orderId' = ?`,
+          )
+          .bind(now, order.id)
+          .run();
+      }
       await writeAudit({
         actorId: user.id,
         action: body.override ? "order.status.override" : "order.status.change",
@@ -72,6 +105,10 @@ export async function POST(request: Request) {
         .bind(now, now, body.orderId ?? "")
         .run();
       if (!result.meta.changes) return Response.json({ error: "Order not found or already acknowledged." }, { status: 409 });
+      // Acknowledging on the kitchen screen is what stops the escalation calls:
+      // requeueUnacknowledgedOrders() only re-queues orders whose acknowledged_at
+      // is still null, so this button and the phone keypad share one piece of
+      // state rather than each keeping their own.
       await writeAudit({ actorId: user.id, action: "order.acknowledge", targetType: "order", targetId: body.orderId ?? "", requestId });
       return Response.json({ ok: true });
     }

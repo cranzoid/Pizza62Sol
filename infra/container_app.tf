@@ -13,6 +13,25 @@ locals {
     AZURE_STORAGE_CONTAINER = azurerm_storage_container.uploads.name
     CLOVER_ENVIRONMENT      = var.clover_environment
     EMAIL_FROM              = var.email_from
+    EMAIL_PROVIDER          = var.email_provider
+
+    # R1.4. The dispatcher runs as a cron job with no incoming request to derive
+    # an origin from, and Twilio needs a URL it can reach from the public
+    # internet for the <Gather> callback. Composed from the environment's default
+    # domain rather than from the container app's own FQDN, which would be a
+    # dependency cycle: this value is an input to the very resource that would
+    # export it.
+    PUBLIC_BASE_URL = var.enable_front_door ? "https://${var.custom_domain}" : "https://ca-${local.name}-web.${azurerm_container_app_environment.main.default_domain}"
+
+    TWILIO_FROM_NUMBER     = var.twilio_from_number
+    RESTAURANT_ALERT_PHONE = var.restaurant_alert_phone
+    VOICE_RETRY_LIMIT      = tostring(var.voice_retry_limit)
+    VOICE_RETRY_MINUTES    = tostring(var.voice_retry_minutes)
+
+    # Off until a registered A2P number exists. Canadian carriers filter
+    # application-to-person SMS from unregistered local long codes, so customer
+    # SMS would deliver unpredictably and silently. Email is the durable copy.
+    CUSTOMER_SMS_ENABLED = tostring(var.customer_sms_enabled)
     # lib/blob-store.ts uses DefaultAzureCredential, which tries several sources
     # in order. Naming the client id makes it pick this user-assigned identity
     # immediately instead of probing and timing out on the others.

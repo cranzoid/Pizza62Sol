@@ -151,9 +151,9 @@ variable "tags" {
 # ---------------------------------------------------------------------------
 
 variable "enable_outbox_dispatcher" {
-  description = "Create the outbox-dispatcher cron job. Turn on with R1.4, once scripts/dispatch-outbox.ts exists."
+  description = "Create the outbox-dispatcher cron job. On by default since R1.4: scripts/dispatch-outbox.ts exists. The routes dispatch inline, so this job is the retry sweeper and the safety net — without it, anything that failed its first attempt is never tried again."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "enable_payment_reaper" {
@@ -166,4 +166,52 @@ variable "maps_sku" {
   description = "Azure Maps account SKU. G2 is the current generation; volume here is one geocode per delivery checkout."
   type        = string
   default     = "G2"
+}
+
+# --- R1.4 notifications -----------------------------------------------------
+
+variable "email_provider" {
+  description = "Email provider name. SendGrid is the only adapter implemented."
+  type        = string
+  default     = "sendgrid"
+}
+
+variable "twilio_from_number" {
+  description = "The Twilio number SMS and calls originate from, in E.164 (e.g. +19055550142). A local Canadian number, not toll-free — only the restaurant is called, and outbound voice needs no toll-free verification."
+  type        = string
+  default     = ""
+}
+
+variable "restaurant_alert_phone" {
+  description = "The number the restaurant is called and texted on for new orders, in E.164. Deliberately separate from the public business.phone setting: the number customers call and the one that should ring in the kitchen are not necessarily the same."
+  type        = string
+  default     = ""
+}
+
+variable "customer_sms_enabled" {
+  description = "Send order confirmations to customers by SMS as well as email. Leave false until a registered A2P/toll-free number exists — Canadian carriers filter application-to-person SMS from unregistered local long codes, so delivery would be unpredictable and silent."
+  type        = bool
+  default     = false
+}
+
+variable "voice_retry_limit" {
+  description = "How many times the restaurant is called about one unacknowledged order before giving up."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.voice_retry_limit >= 1 && var.voice_retry_limit <= 10
+    error_message = "voice_retry_limit must be between 1 and 10."
+  }
+}
+
+variable "voice_retry_minutes" {
+  description = "Minutes between re-calls while an order is still unacknowledged."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.voice_retry_minutes >= 1 && var.voice_retry_minutes <= 60
+    error_message = "voice_retry_minutes must be between 1 and 60."
+  }
 }

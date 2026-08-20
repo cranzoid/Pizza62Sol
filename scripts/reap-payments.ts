@@ -78,13 +78,13 @@ export async function reapStalePayments(
            VALUES (?, ?, 'awaiting_payment', 'cancelled', 'system', NULL, 'Clover checkout expired without payment', ?)`,
         )
         .bind(crypto.randomUUID(), order.id, now),
-      // The confirmation was parked in `waiting_payment` at order creation and
-      // must never be sent now: nobody paid, and there is no order to confirm.
+      // Everything parked on this payment must never be sent now: nobody paid,
+      // so there is no order to confirm and nothing for the kitchen to cook.
+      // Scoped by status, not by kind, so a kind added later is cancelled too.
       database
         .prepare(
           `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
-           WHERE kind = 'customer_order_confirmation'
-             AND status = 'waiting_payment'
+           WHERE status IN ('waiting_payment', 'waiting_completion')
              AND payload_json::jsonb->>'orderId' = ?`,
         )
         .bind(now, order.id),

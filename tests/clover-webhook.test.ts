@@ -50,7 +50,11 @@ afterEach(() => {
 });
 
 let addressCounter = 0;
-const nextClientIp = () => `203.0.113.${(addressCounter += 1) % 250}`;
+// Per-run unique: rate-limit budgets outlive the process, so a counter that
+// restarts identically each run would share buckets across runs. See the note in
+// tests/auth.test.ts.
+const RUN = crypto.randomUUID().slice(0, 8);
+const nextClientIp = () => `203.0.113.${(addressCounter += 1) % 250}-${RUN}`;
 
 /**
  * Creates a real online order, with Clover's checkout call stubbed.
@@ -135,12 +139,24 @@ const approval = (sessionId: string) => ({
   type: "PAYMENT",
 });
 
-type OrderRow = { status: string; payment_status: string; payment_row_status: string; outbox: string | null; approvals: number };
+type OrderRow = {
+  status: string;
+  payment_status: string;
+  payment_row_status: string;
+  /** Distinct outbox statuses across every kind queued for this order. */
+  outbox: string[] | null;
+  outbox_kinds: string[] | null;
+  approvals: number;
+};
 
 async function readOrder(orderId: string): Promise<OrderRow> {
+  // R1.4 made this an aggregate rather than a scalar: an order now queues two
+  // notifications — the customer's confirmation and the restaurant's alert — and
+  // both are parked and released together.
   const rows = await getPool().query<OrderRow>(
     `SELECT o.status, o.payment_status, p.status AS payment_row_status,
-            (SELECT n.status FROM notification_outbox n WHERE n.payload_json::jsonb->>'orderId' = o.id) AS outbox,
+            (SELECT array_agg(DISTINCT n.status) FROM notification_outbox n WHERE n.payload_json::jsonb->>'orderId' = o.id) AS outbox,
+            (SELECT array_agg(DISTINCT n.kind) FROM notification_outbox n WHERE n.payload_json::jsonb->>'orderId' = o.id) AS outbox_kinds,
             (SELECT count(*) FROM order_events e WHERE e.order_id = o.id AND e.note LIKE 'Clover payment approved%') AS approvals
      FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.id = $1`,
     [orderId],
@@ -160,9 +176,22 @@ withDb("an approved payment marks the order paid and releases its confirmation",
   assert.equal(row.payment_status, "paid");
   assert.equal(row.payment_row_status, "captured");
   assert.equal(row.approvals, 1);
-  // Parked at `waiting_payment` when the order was created, precisely so an
-  // unpaid order never sends a confirmation. This is what un-parks it.
-  assert.notEqual(row.outbox, "waiting_payment");
+  // Both notifications were parked at `waiting_payment` when the order was
+  // created, precisely so an unpaid order never confirms itself or rings the
+  // kitchen. This is what un-parks them — and it must un-park *both*, which is
+  // why the webhook scopes its release by status rather than by kind.
+  assert.deepEqual(
+    [...(row.outbox_kinds ?? [])].sort(),
+    ["customer_order_confirmation", "feedback_request", "restaurant_new_order"],
+  );
+  assert.ok(!(row.outbox ?? []).includes("waiting_payment"), `still parked: ${JSON.stringify(row.outbox)}`);
+  // The feedback request is deliberately NOT released by payment — it waits for
+  // staff to complete the order. Asking someone how their meal was before it has
+  // been cooked would be worse than not asking.
+  assert.ok(
+    (row.outbox ?? []).includes("waiting_completion"),
+    `feedback request should still be waiting: ${JSON.stringify(row.outbox)}`,
+  );
 });
 
 withDb("redelivering the same approval changes nothing", async () => {
@@ -294,8 +323,9 @@ withDb("cancels an order whose checkout window has closed", async () => {
   assert.equal(row.status, "cancelled");
   assert.equal(row.payment_status, "expired");
   assert.equal(row.payment_row_status, "expired");
-  // The customer never paid, so the confirmation must never be sent.
-  assert.equal(row.outbox, "cancelled");
+  // The customer never paid, so neither the confirmation nor the kitchen alert
+  // may ever be sent.
+  assert.deepEqual(row.outbox, ["cancelled"]);
 });
 
 withDb("leaves an order inside its checkout window alone", async () => {

@@ -1,4 +1,3 @@
-import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1, getSetting, safeJson } from "@/db/runtime";
 import {
   BAKE_SAUCE_OPTIONS,
@@ -24,6 +23,8 @@ import {
 } from "@/lib/domain";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
 import { createCloverCheckout, cloverCheckoutConfigured } from "@/lib/clover";
+import { anyProviderConfigured } from "@/lib/notifications/config";
+import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
 type OrderRequest = {
@@ -752,9 +753,17 @@ export async function createOrder(body: OrderRequest) {
     const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
     const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
     const paymentProvider = paymentMethod === "online" ? "clover" : "store";
+    // An online order's notifications are parked until Clover confirms payment:
+    // confirming an order nobody paid for, and calling the kitchen about it, are
+    // both worse than saying nothing. The webhook releases them.
+    //
+    // `pending_provider_setup` is the no-credentials state. It exists so that a
+    // deployment without a provider does not burn every row's retry budget and
+    // bury real notifications in `failed` — the dispatcher leaves these alone
+    // until something can actually deliver.
     const outboxStatus = paymentMethod === "online"
       ? "waiting_payment"
-      : (env as unknown as Record<string, string | undefined>).EMAIL_API_KEY
+      : anyProviderConfigured()
         ? "pending"
         : "pending_provider_setup";
     const operationsBatch: D1PreparedStatement[] = [
@@ -835,8 +844,51 @@ export async function createOrder(body: OrderRequest) {
         .bind(
           crypto.randomUUID(),
           customer.email,
+          // The tracking token is handed over here because it cannot be
+          // recovered later: `orders` keeps only its hash. The dispatcher
+          // scrubs it from the payload once the message is sent — see
+          // lib/notifications/messages.ts for the trade this makes.
+          JSON.stringify({ orderId, orderNumber, trackingToken }),
+          outboxStatus,
+          now,
+          now,
+          now,
+        ),
+      // The alert that tells the restaurant an order exists at all. This is the
+      // audit's central finding: the queue had no row for it and no consumer.
+      getD1()
+        .prepare(
+          `INSERT INTO notification_outbox
+           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+           VALUES (?, 'restaurant_new_order', NULL, ?, ?, 0, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
           JSON.stringify({ orderId, orderNumber }),
           outboxStatus,
+          now,
+          now,
+          now,
+        ),
+      // H-09: the post-order feedback request. Queued here rather than when the
+      // order completes, for the same reason the tracking token is — the
+      // feedback token cannot be recovered later, `orders` keeps only its hash,
+      // and the link in the customer's confirmation has to keep working, so
+      // minting a fresh one at completion is not an option.
+      //
+      // It sits in `waiting_completion` until staff actually complete the order,
+      // at which point it is released with the configured delay. An order that
+      // never completes leaves an inert row that no dispatcher will ever claim.
+      getD1()
+        .prepare(
+          `INSERT INTO notification_outbox
+           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+           VALUES (?, 'feedback_request', ?, ?, 'waiting_completion', 0, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          customer.email,
+          JSON.stringify({ orderId, orderNumber, feedbackToken }),
           now,
           now,
           now,
@@ -936,6 +988,12 @@ export async function createOrder(body: OrderRequest) {
         );
       }
     }
+    // A pay-at-store order is real the instant it commits, so it is dispatched
+    // now rather than waiting up to a minute for the cron floor. Deliberately not
+    // awaited: the outbox row is already durable, so a crash here loses nothing
+    // and the sweeper will pick it up. An online order is dispatched by the
+    // webhook instead, once payment is confirmed.
+    dispatchSoon();
     return {
       duplicate: false,
       orderId,

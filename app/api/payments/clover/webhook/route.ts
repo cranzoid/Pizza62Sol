@@ -23,6 +23,8 @@
 import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { cloverMerchantId, verifyCloverSignature, type CloverWebhookEvent } from "@/lib/clover";
+import { anyProviderConfigured } from "@/lib/notifications/config";
+import { dispatchSoon } from "@/lib/notifications/dispatcher";
 
 export async function POST(request: Request) {
   const webhookSecret = (env as unknown as Record<string, string | undefined>).CLOVER_WEBHOOK_SECRET;
@@ -81,9 +83,7 @@ export async function POST(request: Request) {
     // event cannot re-open an order the kitchen has since moved on, or resurrect
     // one the reaper cancelled.
     if (record.status !== "awaiting_payment") return Response.json({ received: true });
-    const confirmationStatus = (env as unknown as Record<string, string | undefined>).EMAIL_API_KEY
-      ? "pending"
-      : "pending_provider_setup";
+    const releasedStatus = anyProviderConfigured() ? "pending" : "pending_provider_setup";
     await getD1().batch([
       getD1()
         .prepare(
@@ -102,17 +102,26 @@ export async function POST(request: Request) {
            VALUES (?, ?, 'awaiting_payment', 'received', 'clover', NULL, ?, ?)`,
         )
         .bind(crypto.randomUUID(), orderId, `Clover payment approved (${event.id ?? "no payment id"})`, now),
-      // Releases the confirmation the customer is waiting on. It was parked in
-      // `waiting_payment` at order creation precisely so an unpaid order never
-      // sends one.
+      // Releases everything parked on this payment — the customer's
+      // confirmation and the restaurant's new-order alert both. They were parked
+      // in `waiting_payment` at order creation precisely so an unpaid order
+      // never confirms itself or rings the kitchen.
+      //
+      // Scoped by status rather than by kind, so a kind added later is released
+      // by this too instead of silently staying parked forever.
       getD1()
         .prepare(
           `UPDATE notification_outbox SET status = ?, updated_at = ?
-           WHERE kind = 'customer_order_confirmation'
+           WHERE status = 'waiting_payment'
              AND payload_json::jsonb->>'orderId' = ?`,
         )
-        .bind(confirmationStatus, now, orderId),
+        .bind(releasedStatus, now, orderId),
     ]);
+    // The order is live now, so tell the customer and the kitchen immediately
+    // rather than waiting for the cron sweeper. Not awaited: Clover is waiting on
+    // this response, and a slow provider must not cause a webhook timeout and a
+    // redelivery of an event already applied.
+    dispatchSoon();
     return Response.json({ received: true });
   }
 

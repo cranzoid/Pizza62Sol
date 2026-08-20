@@ -41,7 +41,13 @@ const withDb = (name: string, body: () => Promise<void>) =>
   test(name, { skip: reachable ? false : "Postgres is not reachable" }, body);
 
 let addressCounter = 0;
-const nextClientIp = () => `192.0.2.${(addressCounter += 1) % 250}`;
+// The limiter treats the client identity as an opaque string, and the budgets it
+// enforces outlive a test run — owner-bootstrap allows only 5 per *hour*. A
+// counter that restarts at the same value every run would therefore share one
+// budget across runs and start failing on the second or third `npm test` of the
+// hour. Seeding it per run keeps each run in its own buckets.
+const RUN = crypto.randomUUID().slice(0, 8);
+const nextClientIp = () => `192.0.2.${(addressCounter += 1) % 250}-${RUN}`;
 
 // Satisfies validatePassword(): upper-case, lower-case and numeric characters.
 const PASSWORD = "Correct Horse Battery Staple 62";

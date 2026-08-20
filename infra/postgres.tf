@@ -15,9 +15,11 @@ locals {
   #   web  : web_max_replicas * pg_pool_max
   #   jobs : (db-migrate, plus whichever cron jobs are enabled) * job_pg_pool_max
   #
-  # With the defaults - 3 replicas, db-migrate plus the payment reaper that R1.3
-  # turned on - that is 3*8 + 2*4 = 32. Adding the outbox dispatcher in R1.4
-  # makes it 36, still inside the 45 the precondition allows. Raising web_max_replicas or
+  # With the defaults - 3 replicas and all three jobs (db-migrate, the payment
+  # reaper from R1.3, the outbox dispatcher from R1.4) - that is 3*8 + 3*4 = 36,
+  # against the 45 the precondition allows. That is now only 9 of headroom, so
+  # the next thing added here needs the arithmetic re-checked rather than
+  # assumed. Raising web_max_replicas or
   # pg_pool_max without raising the SKU exhausts the server, and every route
   # starts throwing "too many clients": a failed checkout, not a tidy error page.
   job_count = 1 + (var.enable_outbox_dispatcher ? 1 : 0) + (var.enable_payment_reaper ? 1 : 0)

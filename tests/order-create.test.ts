@@ -42,8 +42,12 @@ const withDb = (name: string, body: () => Promise<void>) =>
   test(name, { skip: reachable ? false : "Postgres is not reachable" }, body);
 
 let addressCounter = 0;
-/** A distinct caller per test, so budgets never bleed across tests. */
-const nextClientIp = () => `198.51.100.${(addressCounter += 1) % 250}`;
+// A distinct caller per test, and per run: rate-limit budgets are stored in the
+// database and outlive the process, so a counter that restarts identically each
+// run would share buckets across runs and fail on a later `npm test` in the same
+// window. The limiter treats the identity as an opaque string.
+const RUN = crypto.randomUUID().slice(0, 8);
+const nextClientIp = () => `198.51.100.${(addressCounter += 1) % 250}-${RUN}`;
 
 const uniqueKey = () => `test-${crypto.randomUUID()}-${crypto.randomUUID()}`;
 
@@ -128,7 +132,11 @@ withDb("lands every side effect of an accepted order", async () => {
   );
   // The audit's finding was that nothing drained the outbox; the row still has
   // to be written, or there is nothing for R1.4 to drain.
-  assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: 1 });
+  // Three outbox rows, not one. R1.4 queues the customer's confirmation, the
+  // restaurant's new-order alert (the audit's central finding — nothing
+  // previously told the restaurant an order existed at all), and the delayed
+  // feedback request (H-09).
+  assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: 3 });
 });
 
 withDb("a pay-at-store order parks no payment with a provider", async () => {
