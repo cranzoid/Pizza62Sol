@@ -443,7 +443,38 @@ confirmations. Worth doing early.
 **State:** R1.1, R1.2 and R1.5 are done and committed on `release/r1-runway` (§4).
 Nothing has been deployed to Azure yet. Release 1 needs R1.3, R1.4 and R1.6.
 
-### Do this first: R1.3 — Clover replaces Stripe
+### Do this first (30 minutes, and it de-risks everything): build the image
+
+**The Dockerfile has never been built. Not once.** Docker is installed on this
+machine but the daemon has never been running during any session, so every claim in
+R1.2 rests on an image that has never existed. If it does not build, or builds and
+will not boot, that blocks the entire deployment — and it is cheap to find out.
+
+Ask the owner to start Docker Desktop, then:
+
+```bash
+docker build --platform linux/amd64 -t pizza62-web:test .
+docker run --rm -p 3000:3000 \
+  -e DATABASE_URL="postgres://host.docker.internal:5432/pizza62_test" \
+  -e PGSSLMODE=disable \
+  -e OWNER_SETUP_SECRET="local-smoke-test-secret-value-1234" \
+  pizza62-web:test
+curl localhost:3000/api/health     # expect {"status":"ok"}
+```
+
+Watch for: the runtime stage copying everything `scripts/migrate.ts` needs
+(`drizzle/`, `scripts/`, `db/`, `lib/`, the alias hooks); the externalised native
+deps resolving at runtime; and `vinext start` binding `0.0.0.0`. Then run the
+migration entrypoint the same way the `db-migrate` job will:
+
+```bash
+docker run --rm -e DATABASE_URL=... -e PGSSLMODE=disable pizza62-web:test \
+  node --import ./register-alias.mjs --experimental-strip-types scripts/migrate.ts
+```
+
+Only after both work is the Terraform in `infra/` trustworthy.
+
+### Then: R1.3 — Clover replaces Stripe
 
 It is the critical path — the site cannot take money without it — and it is **not
 blocked**. The full API contract is in §8; do not re-research it.
