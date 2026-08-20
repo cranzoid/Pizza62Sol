@@ -6,7 +6,8 @@
 >
 > **Start at §10.** §3 is what is already done, §10 is what to do next.
 >
-> Last updated 2026-08-19, after R1.1, R1.2 and R1.5 landed on `release/r1-runway`.
+> Last updated 2026-08-20, after R1.3 and R1.6 landed and the Docker image was
+> built and booted for the first time. Release 1 now needs only R1.4.
 
 ---
 
@@ -137,16 +138,49 @@ first-time bring-up order (ACR must exist before an image can be pushed).
 
 **Rough cost: ~$43/mo** (+$35 when Front Door is enabled).
 
-### ⬜ R1.3 — Clover replaces Stripe — **NEXT, and mostly unblocked**
+### ✅ R1.3 — Clover replaces Stripe — **DONE, pending the sandbox run**
 
-The owner has the **private token**; that plus the **merchant ID** is everything
-Hosted Checkout needs to make a call. Both remaining items (merchant ID, webhook
-signing secret) are **self-serve from the Clover Merchant Dashboard** — no need to
-go back to Clover support. See §8.
+Stripe is deleted, not left dormant. `lib/clover.ts` holds both halves of the
+contract — creating a hosted session and verifying the webhook — so the order
+service and the webhook route cannot drift apart on it.
 
-Build order that does not stall: write `createCloverCheckout()`, the webhook route
-and the signature verification against the §8 contract first — none of it needs a
-live credential — then plug the values in and run the sandbox end-to-end.
+**Created:** `lib/clover.ts`, `app/api/payments/clover/webhook/route.ts`,
+`scripts/reap-payments.ts`, `app/order/return/` (page + client).
+**Deleted:** `app/api/payments/stripe/`, `createStripeCheckout()`, every
+`STRIPE_*` read, the payment-provider origins in the CSP, and Stripe naming
+across the customer and staff UIs. `createOrder` lost its `origin` parameter with
+them — it existed only to build Stripe's per-session `success_url`.
+
+**Three design responses that are not renames.** They are explained at length in
+`lib/clover.ts` and `AUDIT_WORKLOG.md`; the short version:
+
+1. **The cart goes to Clover as one line item for `total_cents`, tips disabled,
+   no tax rate.** Itemising it with a tax rate would let Clover recompute tax and
+   charge its own figure rather than the amount this app priced, stored, and will
+   reconcile against; the tip is already inside the total, so Clover's tip screen
+   would collect a second one no order row knows about.
+2. **No metadata passthrough** → `payments.provider_reference` holds the session
+   id and is the webhook's only route back to the order.
+3. **No expiry event, 15-minute sessions** → `scripts/reap-payments.ts` cancels
+   `awaiting_payment` after 20 minutes, and `enable_payment_reaper` now defaults
+   to **true**.
+
+**Two guards could not be carried over as written — know about these:**
+
+- **The amount cross-check is gone.** The Stripe event carried `amount_total`;
+  the Clover event carries no amount, so it is not reproducible from the payload.
+  What protects the amount instead is that it is never sent from the browser.
+- **A `DECLINED` event does not cancel the order.** The session stays valid and
+  the customer may retry on it, so cancelling would destroy an order about to be
+  paid for; the reaper decides. It writes status `declined`, not `failed` —
+  `failed` is what releases the checkout key via the H-17b partial index.
+
+**Still open: refunds (H-07/H-25).** Now blocked on information, not effort — see
+§9. The researched contract documents checkout creation and the payment webhook
+and no refund endpoint.
+
+**Remaining:** plug in the merchant ID and webhook secret (§9 items 1–3) and run
+the sandbox end-to-end. Everything else is written and verified.
 
 ### ⬜ R1.4 — Notifications (Twilio) — **architecture can be built now**
 
@@ -172,7 +206,22 @@ Also removed the last two TypeScript parameter properties (`lib/auth.ts`,
 modules were unimportable from `scripts/*.ts`. That was a latent blocker for the
 R1.3 reaper and R1.4 dispatcher, found when a script importing `lib/auth` crashed.
 
-### ⬜ R1.6 — Route-level integration tests
+### ✅ R1.6 — Route-level integration tests — **DONE**
+
+Four suites calling the exported route handlers with real `Request` objects, so
+the rate limiter, validation, database writes and error mapping are the ones
+production runs. `tests/clover.test.ts` stubs `fetch` and runs offline; the three
+database-backed suites probe at module load and skip cleanly.
+
+| Suite | Covers |
+|---|---|
+| `tests/clover.test.ts` | the payment contract — the amount, the absent tax rate, tips off; signature verification, mostly negatively |
+| `tests/order-create.test.ts` | C-07 end to end, concurrent same-key submissions, server-side pricing, hours, per-caller throttling |
+| `tests/clover-webhook.test.ts` | the transition that takes the money, and the reaper. Orders built through the real `POST /api/orders`, so the session id under test is the one the order service stored |
+| `tests/auth.test.ts` | the staff session cookie — revocation and deactivation taking effect on live sessions, 401 vs 403, bootstrap closed both ways |
+
+**129/129, 0 skipped** with Postgres; **66 pass / 63 skipped / 0 failed** without,
+so the suite stays hermetic and the skip count is still a reliable signal.
 
 ---
 
@@ -181,15 +230,18 @@ R1.3 reaper and R1.4 dispatcher, found when a script importing `lib/auth` crashe
 Everything is on **`release/r1-runway`** (branched from `main`, not merged):
 
 ```
-fbb20fe  R1.5: H-06b — geocode delivery addresses instead of postal-district centroids
-d7ac716  R1.5: fix six audit findings (H-17b, C-09, H-11a/b, H-20a, rate limit)
-3ecefc7  R1.2: Azure infrastructure as Terraform
-c7718da  R1.1: port runtime from Cloudflare Workers to Node/Postgres
+c264076 R1.6: route-level integration tests for orders, payments and auth
+2891cae R1.3: replace Stripe with Clover Hosted Checkout
+fbb20fe R1.5: H-06b — geocode delivery addresses instead of postal-district centroids
+d7ac716 R1.5: fix six audit findings (H-17b, C-09, H-11a/b, H-20a, rate limit)
+3ecefc7 R1.2: Azure infrastructure as Terraform
+c7718da R1.1: port runtime from Cloudflare Workers to Node/Postgres
 ```
 
-67 files, +9176/−1750 versus `main`. Gates at the tip: **62/62 tests (0 skipped)**
-· `tsc` clean · `lint` clean · `build` 34 routes · `terraform validate` + `plan`
-clean.
+81 files changed versus `main` (81 files changed, 11562 insertions(+), 1933 deletions(-)). Gates at the tip:
+**129/129 tests (0 skipped)** · `tsc` clean · `lint` clean · `build` 33 routes ·
+`terraform validate` + `plan` clean (38 resources, connection budget 32 of 45) ·
+**Docker image builds, boots and serves `/api/health`** (§12).
 
 ## 5. Build, toolchain & environment
 
@@ -223,9 +275,14 @@ dist/client/          static assets, hashed JS/CSS, fonts
 dist/server/index.js  RSC/route entry (~836 KB), imported by vinext's prod server
 dist/server/ssr/      SSR entry
 ```
-No `wrangler.json` is emitted any more. Expected, harmless build noise:
-`"Some routes could not be classified"` — vinext's static analysis can't see
-`headers()`/`cookies()` usage. Not an error.
+No `wrangler.json` is emitted any more. Two expected, harmless pieces of build
+noise:
+
+- `"Some routes could not be classified"` — vinext's static analysis can't see
+  `headers()`/`cookies()` usage. Not an error.
+- `"middleware.ts is deprecated in Next.js 16. Rename to proxy.ts…"` — the
+  security headers still apply, verified in the running container (§12). A future
+  break, not a current one; see §10.
 
 ### Server externals — important
 `vite.config.ts` externalises `pg`, `pg-native`, `@azure/storage-blob`,
@@ -248,13 +305,13 @@ or the server crashes on boot (see trap 2 in §6).
 | `AZURE_STORAGE_CONNECTION_STRING` | Local/CI alternative to managed identity |
 | `OWNER_SETUP_SECRET` | One-time owner bootstrap, ≥24 chars |
 | `EMAIL_PROVIDER` `EMAIL_API_KEY` `EMAIL_FROM` | Notification provider (wired in R1.4) |
-| `STRIPE_SECRET_KEY` `STRIPE_WEBHOOK_SECRET` | **Still read by the code today** — replaced by `CLOVER_*` in R1.3 |
+| `CLOVER_MERCHANT_ID` `CLOVER_API_TOKEN` | Hosted Checkout credentials |
+| `CLOVER_WEBHOOK_SECRET` | Signing secret for `/api/payments/clover/webhook` |
+| `CLOVER_ENVIRONMENT` | `sandbox` (default) or `production`. Defaults the safe way round — anything but `production` is sandbox |
 | `PORT` | Server port, default 3000 |
 
-⚠️ **`.env.example` is ahead of the code**: it already lists `CLOVER_MERCHANT_ID`,
-`CLOVER_API_TOKEN`, `CLOVER_WEBHOOK_SECRET`, `CLOVER_ENVIRONMENT`, but
-`lib/order-service.ts` and the webhook route still read `STRIPE_*`. R1.3 closes
-that gap. Don't be confused by the mismatch.
+`.env.example` and the code now agree on `CLOVER_*` — the mismatch noted here
+before R1.3 is closed. No `STRIPE_*` variable is read anywhere.
 
 ### Database & migrations
 - Schema source of truth: **`db/schema.ts`** (drizzle `pg-core`). Edit it, then `npm run db:generate`
@@ -275,8 +332,10 @@ the container never hits the network to start.
 - **Azure CLI authenticated** — subscription `7e12a986-4373-4371-814c-95542713a50f`
   ("Azure subscription 1"), tenant `7f915c40-6d85-490b-a0ae-0fbf34fabf72`,
   user `vishesh@thelearningartistry.com`
-- **Terraform** 1.5.7 · **Docker** installed but *daemon not running* (so the
-  Dockerfile is written but has never been built) · **Node** v26.3.1
+- **Terraform** 1.5.7 · **Node** v26.3.1
+- **Docker image built and booted, 2026-08-20** — see §12. `pizza62-web:test`,
+  810 MB, `linux/amd64`. Note the host is arm64, so the build is emulated and
+  `npm ci` takes ~4.5 minutes; that is expected, not a fault.
 - **Postgres 14 running locally on :5432** (Homebrew). Test DB `pizza62_test`
   exists, is migrated and seeded, and holds smoke-test order `P62-1001`
 
@@ -383,6 +442,8 @@ documented contract and wired up afterwards.
 | 1 | **Clover merchant ID** | R1.3 end-to-end test | Read it out of the Merchant Dashboard URL — self-serve |
 | 2 | **Clover webhook signing secret** | R1.3 webhook | Dashboard → Settings → Ecommerce → Hosted Checkout — self-serve |
 | 3 | **Sandbox or production first?** | R1.3 | Recommend sandbox |
+| 3b | **Set the Clover return URL to `/order/return`** | R1.3 customer experience | Same dashboard screen as item 2, so do it in the same visit. Clover's return URL is per-merchant, not per session, so this one static path is where every paying customer lands |
+| 3c | **The Clover refund API contract** | H-07/H-25 refunds | **New.** §8 covers checkout creation and the payment webhook and documents no refund endpoint. Writing one would mean guessing at an API, and a refund path that records a refund without moving money is worse than none. Needs either the contract from Clover's docs or a decision to handle refunds in the Clover dashboard by hand for now |
 | 4 | **Twilio Account SID + Auth Token** | R1.4 wiring | Owner is provisioning now |
 | 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
 | 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
@@ -440,96 +501,59 @@ confirmations. Worth doing early.
 
 ## 10. What to do next — start here
 
-**State:** R1.1, R1.2 and R1.5 are done and committed on `release/r1-runway` (§4).
-Nothing has been deployed to Azure yet. Release 1 needs R1.3, R1.4 and R1.6.
+**State:** R1.1, R1.2, R1.3, R1.5 and R1.6 are done and committed on
+`release/r1-runway`. **The Docker image has been built and booted** (§12), so the
+deployment is no longer resting on an image that has never existed. Nothing has
+been deployed to Azure yet. Release 1 needs **R1.4** and the Clover sandbox run.
 
-### Do this first (30 minutes, and it de-risks everything): build the image
+### 1. R1.4 — Notifications (Twilio)
 
-**The Dockerfile has never been built. Not once.** Docker is installed on this
-machine but the daemon has never been running during any session, so every claim in
-R1.2 rests on an image that has never existed. If it does not build, or builds and
-will not boot, that blocks the entire deployment — and it is cheap to find out.
+The largest remaining piece, and the one the audit's central finding is about:
+nothing drains `notification_outbox`, so no customer or staff member is ever told
+an order exists. The rows are written correctly — `tests/order-create.test.ts`
+now pins that — but nothing reads them.
 
-Ask the owner to start Docker Desktop, then:
+Build the dispatcher, the three channel adapters and the `<Say>`/`<Gather>` voice
+flow against the Twilio docs; wire credentials when they land (§9 items 4–7).
+Then set `enable_outbox_dispatcher = true`, which creates the cron job that is
+still gated off. **Read the SMS caveat in §9 first** — do not make SMS the only
+channel carrying an order.
 
-```bash
-docker build --platform linux/amd64 -t pizza62-web:test .
-docker run --rm -p 3000:3000 \
-  -e DATABASE_URL="postgres://host.docker.internal:5432/pizza62_test" \
-  -e PGSSLMODE=disable \
-  -e OWNER_SETUP_SECRET="local-smoke-test-secret-value-1234" \
-  pizza62-web:test
-curl localhost:3000/api/health     # expect {"status":"ok"}
-```
+Note the outbox states the payment work introduced, because the dispatcher has to
+respect them: `waiting_payment` (an online order that has not been paid — never
+send), `pending` / `pending_provider_setup` (released by the webhook once the
+payment is approved), `cancelled` (the reaper, or a cancelled order).
 
-Watch for: the runtime stage copying everything `scripts/migrate.ts` needs
-(`drizzle/`, `scripts/`, `db/`, `lib/`, the alias hooks); the externalised native
-deps resolving at runtime; and `vinext start` binding `0.0.0.0`. Then run the
-migration entrypoint the same way the `db-migrate` job will:
+### 2. The Clover sandbox run
 
-```bash
-docker run --rm -e DATABASE_URL=... -e PGSSLMODE=disable pizza62-web:test \
-  node --import ./register-alias.mjs --experimental-strip-types scripts/migrate.ts
-```
+Everything is written and verified against a running server and inside the
+container; it needs only §9 items 1–3, 3b. Plug in the merchant ID and webhook
+secret, point the return URL at `/order/return`, and run a real card through the
+sandbox. Then flip `CLOVER_ENVIRONMENT` when the owner is ready for production.
 
-Only after both work is the Terraform in `infra/` trustworthy.
+### 3. Then deploy
 
-### Then: R1.3 — Clover replaces Stripe
+`infra/README.md` has the bring-up order. The one non-obvious step: ACR must
+exist before an image can be pushed, so the first apply is `-target`ed at the
+registry. `enable_payment_reaper` is already on; `enable_outbox_dispatcher` flips
+with R1.4.
 
-It is the critical path — the site cannot take money without it — and it is **not
-blocked**. The full API contract is in §8; do not re-research it.
+### Also worth doing, needing nothing from anyone
 
-Write these before asking for a single credential:
-
-1. `createCloverCheckout()` replacing `createStripeCheckout()` in
-   [lib/order-service.ts](lib/order-service.ts) — same call site, same failure
-   handling. Note the H-17b comment there: the `status = 'failed'` update is what
-   releases the idempotency key, so keep it.
-2. `app/api/payments/clover/webhook/` replacing the Stripe route. Verify
-   `Clover-Signature: t=<ts>,v1=<hmac>` — HMAC-SHA256 over `` `${t}.${rawBody}` ``.
-   The existing constant-time `equalHex` helper is reusable. Look the order up by
-   `provider_reference = data`.
-3. `scripts/reap-payments.ts` — Clover sessions expire in 15 minutes, so cancel
-   `awaiting_payment` orders after ~20. Then set `enable_payment_reaper = true` in
-   Terraform, which creates the cron job that is currently gated off.
-   **The stuck orders this reaps are already visible** in the staff queue built in
-   R1.5 (H-20a), so this is testable the moment it exists.
-4. Delete Stripe entirely — it is a locked decision that nothing is left dormant.
-   `STRIPE_*` still appears in [lib/order-service.ts](lib/order-service.ts) and the
-   old webhook route; `.env.example` is already on `CLOVER_*`.
-5. Refunds (H-07/H-25) — the path never existed. `computeRefund` in
-   [lib/domain.ts](lib/domain.ts) already validates the amount, and the
-   `issue_refunds` permission is already declared but unenforced.
-
-Then ask for §9 items 1–3 and run the sandbox end-to-end.
-
-### In parallel, needing nothing from anyone
-
-- **R1.6 route-level integration tests.** Order creation, auth, webhooks and
-  idempotency are the riskiest code and are entirely untested. Copy the patterns in
-  [tests/rate-limit.test.ts](tests/rate-limit.test.ts) (probes for a real Postgres,
-  skips cleanly if absent) and [tests/delivery-area.test.ts](tests/delivery-area.test.ts)
-  (stubs `fetch`, runs offline).
-- **R1.4 architecture.** Build the dispatcher, channel adapters and the
-  `<Say>`/`<Gather>` voice flow against the Twilio docs; wire credentials later.
-  Read the SMS caveat in §9 first — do not make SMS the only channel carrying an
-  order.
+- **`middleware.ts` → `proxy.ts`.** The container build warns:
+  *"middleware.ts is deprecated in Next.js 16. Rename to proxy.ts and export a
+  default or named proxy function."* The security headers still apply — verified
+  in the running container (§12) — so this is a future break, not a current one.
+  Worth doing before it becomes one.
 - **The `@media print` fallback** for kitchen tickets (§11). No hardware needed,
-  works day one, and there is no `@media print` rule anywhere in the codebase yet.
+  works day one, and there is still no `@media print` rule anywhere.
+- **Refunds (H-07/H-25)** once §9 item 3c is answered.
 
 ### Ask the owner early (long lead time, not engineering work)
 
 - §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
   domain and is the thing that quietly breaks customer confirmations if skipped.
-- §9 item 8 — **the printer's IP address**, the only printing question left. Everything
-  else about R2.2 is now settled: PassPRNT on the existing tablet, no purchase (§11).
-
-### When ready to deploy
-
-`infra/README.md` has the bring-up order. The one non-obvious step: ACR must exist
-before an image can be pushed, so the first apply is `-target`ed at the registry.
-Two flags flip as their code lands — `enable_payment_reaper` with R1.3,
-`enable_outbox_dispatcher` with R1.4.
+- §9 item 8 — **the printer's IP address**, the only printing question left.
 
 ---
 
@@ -708,3 +732,47 @@ non-viable.
 [TSP100III series (Star EMEA)](https://star-emea.com/products/tsp100/) ·
 [CloudPRNT compatibility (Star EMEA)](https://star-emea.com/products/cloudprnt/) ·
 [Star cash drawer cables & connectivity guide](https://starmicronics.com/cash-drawer-cables-connectivity-guide/)
+
+---
+
+## 12. The Docker image — built and verified, 2026-08-20
+
+The claim this file carried for two revisions — that the Dockerfile had never
+been built — is now closed. What follows is what was actually checked, so nobody
+has to redo it.
+
+**Getting there took one detour worth recording.** The first build died with
+`error committing …: write /var/lib/docker/buildkit/metadata_v2.db:
+input/output error`. That was not the Dockerfile: the host disk was at **100%
+(175 MiB free of 228 GiB)**. Clearing the npm cache freed enough, but the failed
+write had left BuildKit wedged — the daemon stopped answering `docker info`
+entirely — and it took a Docker Desktop restart to recover. If the build ever
+fails on a metadata or I/O error, check `df -h` before suspecting the image.
+
+**Build:** `docker build --platform linux/amd64 -t pizza62-web:test .` →
+**810 MB**, exit 0. The host is arm64, so amd64 is emulated: `npm ci` takes
+~4.5 minutes and the whole build ~5. That is the right platform — Container Apps
+is amd64 — so the slowness is inherent to building it here, not a fault.
+
+**Verified in the container, not just built:**
+
+| Check | Result |
+|---|---|
+| Migration from an **empty** database | both migrations applied, seed complete, exit 0 |
+| What it created | 30 tables (29 + `schema_migrations`), 61 products, 52 variations, 13 settings, **0 boolean columns** — the deliberate type mapping holds |
+| Migration run a second time | `schema already current`, exit 0 — idempotent |
+| `vinext start` | boots, `/api/health` → `{"status":"ok"}` HTTP 200 |
+| Binds `0.0.0.0` | confirmed via `/proc/net/tcp`: `00000000:0BB8` |
+| Runs unprivileged | `uid=1000(node) gid=1000(node)` |
+| Externalised native deps resolve | `/api/catalog` returns the seeded menu, so `pg` loaded at runtime |
+| Security headers | CSP, HSTS, `X-Frame-Options`, `nosniff` all present |
+| **Payment-reaper entrypoint** | run with the exact `command`/`args` from `jobs.tf`: cancelled the 25-minute-old unpaid order, left the 5-minute-old and the already-paid one alone |
+
+**One deviation from the command this file used to recommend.** §10 previously
+suggested pointing the container at `host.docker.internal`. That cannot work
+here: the local Homebrew Postgres listens on `localhost` only, so the container
+is refused at the socket. The test used a throwaway `postgres:16-alpine` on a
+shared Docker network instead — which needs no change to the developer's Postgres
+config and is a **stronger** test, because the migration runs against an empty
+database and proves it works from zero rather than against one already migrated
+by hand.
