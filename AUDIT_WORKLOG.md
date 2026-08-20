@@ -111,3 +111,107 @@ Re-verified every claim above against the code. C-01…C-06, H-01, H-12, H-16, H
 **Verification:** `npm test` 20/20 · `npx tsc --noEmit` clean · `npm run lint` clean · `npm run build` complete · migration-vs-runtime schema compared column by column (name, type, nullability) across all 26 tables — zero differences.
 
 **Test coverage note:** every fix in this follow-up lives in D1-backed route/service code, and the suite is pure-domain only, so none of it is covered by an automated regression test. The duplicate-checkout path, the seed-idempotency guarantee and the clock-in race all still need the API/concurrency suite in the audit's Phase 3.
+
+### 2026-08-20 — R1.3 Clover replaces Stripe, and R1.6 route-level tests
+
+**Stripe is gone, not dormant.** `lib/clover.ts` now holds both halves of the
+payment contract — creating a hosted checkout session and verifying the webhook
+that reports its outcome — so the order service and the webhook route cannot
+drift apart on it. The Stripe route, the `createStripeCheckout` helper, the
+`STRIPE_*` reads, the payment-provider origins in the CSP, and the Stripe naming
+across the customer and staff UIs are all deleted. `createOrder` lost its
+`origin` parameter with them: it existed only to build Stripe's per-session
+`success_url`.
+
+Three properties of Clover forced design responses rather than renames.
+
+1. **The charge must equal `total_cents`.** The cart goes to Clover as a single
+   line item for the order's final total, with tips disabled and no tax rate.
+   Itemising it and declaring a tax rate would let Clover recompute tax and
+   charge whatever it arrived at, rather than the amount this application priced,
+   stored, and will reconcile and refund against; the tip is already inside that
+   total, so Clover's own tip screen would collect a second one no order row
+   knows about. The itemisation the customer needs goes in the line item's note,
+   where it cannot affect arithmetic.
+2. **No metadata passthrough.** Stripe carried our order id on the session and
+   handed it back; Clover does not. `payments.provider_reference` is written with
+   the checkout session id immediately after creation and is the only link the
+   webhook has back to the order.
+3. **No expiry event, and 15-minute sessions.** `scripts/reap-payments.ts`
+   cancels orders still in `awaiting_payment` after 20 minutes — the extra 5
+   covering clock skew and a webhook in flight — and `enable_payment_reaper` now
+   defaults to `true`. Without that job an abandoned checkout sits in the staff
+   queue looking live forever. This is the reconciliation the audit found
+   missing, moved from "a webhook we hope arrives" to "a timer we control".
+
+**Two guards could not be carried over as written.** The Clover event carries no
+amount, so the Stripe amount cross-check is not reproducible from the payload;
+what protects the amount instead is that it is never sent from the browser. And a
+`DECLINED` event records the decline but deliberately does not cancel the order —
+the session is still valid and the customer may retry on it — so the reaper
+decides, on the same timer as an abandonment. That decline writes status
+`declined`, not `failed`: `failed` is what drops a row out of the partial
+`payments_idempotency_uq` index and releases the checkout key (**H-17b**), which
+is right when no session could be created and wrong when the order exists and
+holds it.
+
+**Return URLs are configured per merchant, not per session**, so the success URL
+cannot carry `?order=&token=`. The browser stashes the tracking credentials
+before redirecting and `/order/return` recovers them, polling until the order
+leaves `awaiting_payment` so the customer is not told "no record of your payment"
+during the webhook's flight time. Same-device recovery only; the confirmation
+email stays the durable copy.
+
+**H-07 / H-25 (refunds) are still open, and are now blocked on information
+rather than on effort.** `computeRefund` validates the amount and the
+`issue_refunds` permission is declared and now test-covered as enforceable, but
+the researched Clover contract covers only checkout creation and the payment
+webhook — it documents no refund endpoint. Building one would mean guessing at an
+API, and a refund path that records a refund without moving money is worse than
+no path at all. It needs the Clover refund contract before it can be written.
+
+**R1.6 closes the Phase 3 gap this worklog flagged on 2026-07-26.** That note
+ended by observing that the duplicate-checkout path, the seed-idempotency
+guarantee and the clock-in race had no automated coverage because the suite was
+pure-domain only. Four new suites now exercise the routes themselves, with real
+`Request` objects through the exported handlers, so the rate limiter, the
+validation, the database writes and the error mapping are all the ones production
+runs:
+
+- `tests/clover.test.ts` — the payment contract, offline with `fetch` stubbed.
+  The checkout assertions are about the amount, the absent tax rate and tips
+  being off, not JSON shape. The signature assertions are mostly negative.
+- `tests/order-create.test.ts` — **C-07** end to end: a replayed key returns the
+  same order rather than a second one and does not re-issue the tracking token;
+  four concurrent submissions of one key create exactly one order; a rejected
+  order leaves its key free to retry. Plus server-side pricing, hours, and
+  per-caller throttling.
+- `tests/clover-webhook.test.ts` — the transition that takes the money, and the
+  reaper that covers the event Clover never sends. Orders are built through the
+  real `POST /api/orders` with `fetch` stubbed, so the session id under test is
+  the one the order service actually stored.
+- `tests/auth.test.ts` — the cookie guarding every staff surface: revocation and
+  deactivation taking effect on already-issued sessions, 401 kept distinct from
+  403, identical messages for a wrong password and an unknown account, and
+  bootstrap closed both once staff exist and when no setup secret is configured.
+
+**Verification.** Behaviour was checked against a running server on local
+Postgres, not only typechecked: pay-at-store unaffected; an online order with a
+rejected token cancels and releases its idempotency key, so the same key retried
+creates a fresh order rather than locking the customer out; a signed `APPROVED`
+event moves `awaiting_payment` → `received`/`paid`, captures the payment, writes
+one order event and releases the parked confirmation, and redelivering it is a
+no-op; bad signature, stale timestamp, absent header, a body tampered under a
+valid signature, and a foreign `merchantId` are all refused; the reaper cancels a
+25-minute-old unpaid order while leaving a 5-minute-old one and an already-paid
+one alone, and a second run does nothing.
+
+Gates: `npm test` 129/129 with 0 skipped against local Postgres, and 66 pass /
+63 skipped / 0 failed with no database reachable, so the suite stays hermetic and
+the skip count remains a reliable signal · `tsc` clean · `lint` clean · `build`
+carries `/api/payments/clover/webhook` and `/order/return` · `terraform validate`
+and `plan` clean at 38 resources, connection budget 32 against a 45 ceiling.
+
+**Still not done: the Docker image has never been built.** The daemon was not
+running during this session either. Everything in R1.2 — and now the payment
+reaper job added to it — still rests on an image that has never existed.
