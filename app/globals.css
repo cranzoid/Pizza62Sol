@@ -300,3 +300,86 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .record-filters input,.record-filters select{border:1px solid #d9ded9;border-radius:8px;padding:9px 11px;font-size:10px;background:white}
 .record-filters input{min-width:230px}
 .viz-table tbody th small{display:block;font-weight:400;color:#77807a;font-size:9px;margin-top:2px}
+
+/* ---------------------------------------------------------------------------
+   Kitchen ticket on paper (R2.2, step 1)
+   ---------------------------------------------------------------------------
+   The day-one printing path. The restaurant's Star TSP143IIILAN appears to the
+   OS as an ordinary printer, so this gets a real ticket out of it with no
+   agent, no raster pipeline and no printer IP address. R2.2's queue and output
+   adapters change how the bytes arrive, not what the ticket says.
+
+   Two constraints drive every rule here:
+
+   1. It is a *thermal receipt*, not a page. 80mm wide, continuous roll, and
+      monochrome — there is no ink, only heat, so background fills print as
+      nothing and light greys print as noise. Everything is black on white with
+      rules instead of blocks.
+   2. It is read at arm's length in a hot kitchen, in a hurry. The order number
+      is the largest thing on it; the preparation-critical flags shout.
+
+   The ticket is portalled to <body> so hiding its siblings is one rule. Hidden
+   with `display:none` rather than `visibility:hidden` because a hidden-but-laid-
+   out page still occupies space and prints as leading blank pages. -------- */
+
+.print-root { display: none; }
+
+@media print {
+  @page { size: 80mm auto; margin: 4mm; }
+
+  body > *:not(.print-root) { display: none !important; }
+
+  html, body {
+    background: #fff;
+    margin: 0;
+    padding: 0;
+  }
+
+  .print-root {
+    display: block;
+    width: 72mm;
+    color: #000;
+    background: #fff;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.35;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-root .pt-head { text-align: center; }
+  .print-root .pt-number { font-size: 30pt; font-weight: 900; line-height: 1.05; letter-spacing: -1px; }
+  .print-root .pt-type { font-size: 13pt; font-weight: 900; letter-spacing: 2px; }
+  .print-root .pt-when { text-align: center; font-size: 11pt; font-weight: 700; margin-top: 2mm; }
+
+  /* A rule, not a border on a filled block: thermal paper has no fills. */
+  .print-root .pt-rule { border-top: 1px dashed #000; margin: 2.5mm 0; }
+
+  .print-root .pt-customer { font-size: 11pt; }
+  .print-root .pt-customer strong { font-size: 12pt; }
+
+  .print-root .pt-item { margin-bottom: 3mm; }
+  .print-root .pt-item-head { font-size: 13pt; font-weight: 900; display: flex; gap: 2mm; }
+  .print-root .pt-qty { flex: 0 0 auto; }
+  /* Indented so a topping list can never be mistaken for another line item. */
+  .print-root .pt-sub { font-size: 10pt; padding-left: 6mm; }
+  .print-root .pt-flag { font-size: 11pt; font-weight: 900; padding-left: 6mm; }
+  .print-root .pt-note { font-size: 10pt; font-weight: 900; padding-left: 6mm; }
+
+  .print-root .pt-address { font-size: 11pt; }
+  .print-root .pt-address strong { display: block; font-size: 10pt; letter-spacing: 1px; }
+
+  .print-root .pt-total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14pt;
+    font-weight: 900;
+  }
+
+  .print-root .pt-footer { margin-top: 3mm; font-size: 8pt; text-align: center; }
+
+  /* Never split an item across the tear line — half a pizza's toppings on the
+     next ticket is worse than a slightly longer one. */
+  .print-root .pt-item,
+  .print-root .pt-address { break-inside: avoid; page-break-inside: avoid; }
+}

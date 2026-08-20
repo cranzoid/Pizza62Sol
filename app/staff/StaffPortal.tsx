@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
@@ -122,6 +123,94 @@ function SetupItem({ title, text }: { title: string; text: string }) { return <d
 // placement, extra cheese, halal, deal/wing modifier selections, per-item and order
 // notes, delivery address, and payment state. Contact fields honour C-03 (the API
 // only sends phone/email when the viewer has view_customer_contact).
+/**
+ * The kitchen ticket as it goes to paper.
+ *
+ * This is the day-one printing path, and it deliberately needs no hardware: the
+ * restaurant's Star TSP143IIILAN appears to the operating system as an ordinary
+ * printer, so `window.print()` against a receipt-shaped stylesheet gets a real
+ * ticket out of it today. The `print_jobs` queue and the raster/PassPRNT paths
+ * (R2.2) replace *how* the bytes arrive, not what the ticket says — so this is
+ * the thing that must never be blocked on the printer's IP address.
+ *
+ * It is a separate component from the on-screen `KitchenTicket` rather than the
+ * same one restyled, because the two are answering different questions. On
+ * screen the ticket sits inside a card that already shows the order number,
+ * customer and time, so it only lists items. On paper it is alone: it has to
+ * carry its own header, or the person holding it cannot tell which order it is.
+ *
+ * Rendered through a portal to `document.body` so the print stylesheet can hide
+ * every sibling with one rule. Without that it would be buried inside the app's
+ * root element and hiding its ancestors would hide it too.
+ */
+function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<string, unknown>; toppingNames: Map<string, string>; printedAt: number }) {
+  const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
+  const address = order.address as Record<string, string> | null;
+  const scheduled = order.schedule_type === "scheduled" && order.scheduled_for ? Number(order.scheduled_for) : null;
+  const time = (value: number) =>
+    new Date(value).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
+  const paid = String(order.payment_status ?? "") === "paid";
+
+  return <div className="print-root">
+    <div className="pt-head">
+      {/* The largest thing on the ticket. Everything else is detail; this is
+          what someone matches against a bag at the counter. */}
+      <div className="pt-number">{String(order.order_number ?? "").replace("P62-", "#")}</div>
+      <div className="pt-type">{String(order.fulfilment ?? "").toUpperCase()}</div>
+    </div>
+    <div className="pt-when">
+      {scheduled ? `SCHEDULED ${time(scheduled)}` : `ASAP — in by ${time(Number(order.created_at))}`}
+    </div>
+    <div className="pt-rule" />
+    <div className="pt-customer">
+      <strong>{String(order.customer_name ?? "")}</strong>
+      {order.customer_phone ? <div>{String(order.customer_phone)}</div> : null}
+    </div>
+    <div className="pt-rule" />
+    {items.map((item, index) => {
+      const snapshot = (item.snapshot as Record<string, unknown>) ?? {};
+      const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
+      const modifiers = (snapshot.modifiers as Array<{ label: string; group?: string; values: Array<{ label: string; placement?: string }> }> | undefined) ?? [];
+      return <div className="pt-item" key={String(item.id ?? index)}>
+        <div className="pt-item-head">
+          <span className="pt-qty">{String(item.quantity)}&times;</span>
+          <span>{String(item.productName)}{item.variationName ? ` · ${String(item.variationName)}` : ""}</span>
+        </div>
+        {/* Halal and extra cheese are preparation-critical, so they are called
+            out rather than left to blend into the modifier list. */}
+        {snapshot.halal ? <div className="pt-flag">** HALAL **</div> : null}
+        {snapshot.extraCheese ? <div className="pt-flag">** EXTRA CHEESE **</div> : null}
+        {toppings.length ? <div className="pt-sub">{toppings.map((topping) =>
+          `${toppingNames.get(topping.toppingId) ?? topping.toppingId}${topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}`,
+        ).join(", ")}</div> : null}
+        {modifiers.map((modifier, modifierIndex) => <div className="pt-sub" key={modifierIndex}>
+          {modifier.group ? `${modifier.group} · ${modifier.label}` : modifier.label}: {modifier.values.map((value) =>
+            `${value.label}${value.placement === "left" ? " (L)" : value.placement === "right" ? " (R)" : ""}`).join(", ")}
+        </div>)}
+        {item.instructions ? <div className="pt-note">NOTE: {String(item.instructions)}</div> : null}
+      </div>;
+    })}
+    <div className="pt-rule" />
+    {address ? <div className="pt-address">
+      <strong>DELIVER TO</strong>
+      <div>{address.line1}{address.unit ? `, Unit ${address.unit}` : ""}</div>
+      <div>{address.city} {address.postalCode}</div>
+      {address.instructions ? <div className="pt-note">{address.instructions}</div> : null}
+    </div> : null}
+    {order.instructions ? <div className="pt-note">ORDER NOTE: {String(order.instructions)}</div> : null}
+    <div className="pt-rule" />
+    {/* Whether to take money is the one thing a mistake on is expensive, so it
+        is stated in the imperative rather than as a status word. */}
+    <div className="pt-total">
+      <span>{paid ? "PAID ONLINE" : "COLLECT"}</span>
+      <span>{formatMoney(Number(order.total_cents ?? 0))}</span>
+    </div>
+    {/* Captured when the button was pressed, not read during render: the clock
+        is impure, and "when this was sent to print" is the honest meaning. */}
+    <div className="pt-footer">Pizza 62 · printed {time(printedAt)}</div>
+  </div>;
+}
+
 function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>; toppingNames: Map<string, string> }) {
   const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
   const address = order.address as Record<string, string> | null;
@@ -180,7 +269,35 @@ function AwaitingPaymentPanel({ dashboard }: { dashboard: Dashboard }) {
 function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void>; compact?: boolean; kitchen?: boolean }) {
   const orders = compact ? dashboard.orders.slice(0, 6) : dashboard.orders;
   const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
-  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions">{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}</section>;
+  // The order currently being sent to paper. Exactly one at a time: the print
+  // stylesheet hides everything except the ticket, so a second one on the page
+  // would come out on the same receipt.
+  const [printJob, setPrintJob] = useState<{ order: Record<string, unknown>; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!printJob) return;
+    const finished = () => setPrintJob(null);
+    window.addEventListener("afterprint", finished);
+    // Deferred a tick so React has painted the ticket before the print dialog
+    // reads the DOM — window.print() is synchronous and would otherwise capture
+    // the page as it was before this render.
+    const timer = window.setTimeout(() => window.print(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("afterprint", finished);
+    };
+  }, [printJob]);
+  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => setPrintJob({ order, at: Date.now() })}>Print ticket</button>{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
+    {/* Portalled to document.body so the print stylesheet can hide every sibling
+        with one rule; nested inside the app root, hiding its ancestors would
+        hide the ticket too. */}
+    {printJob && typeof document !== "undefined"
+      ? createPortal(
+          <PrintableTicket order={printJob.order} toppingNames={toppingNames} printedAt={printJob.at} />,
+          document.body,
+        )
+      : null}
+  </section>;
 }
 
 export function LegacySettingsPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
