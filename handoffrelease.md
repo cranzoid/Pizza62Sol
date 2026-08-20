@@ -387,7 +387,9 @@ documented contract and wired up afterwards.
 | 5 | **The Twilio number** | R1.4 wiring | Local Canadian number, not toll-free |
 | 6 | **Restaurant phone number to call**, and how many retries before giving up | R1.4 voice | Recommend 3 attempts, 2 min apart |
 | 7 | **SendGrid API key + a domain to authenticate** | Customer email | See the email/domain note below |
-| 8 | **What machine will be always-on in the store, and its OS** | R2.2 | The print agent has to live somewhere on the store LAN. This is *not* the Tera — see the correction below |
+| 8 | **What device is Loyverse running on today?** (Android tablet / iPad / SunMi or iMin terminal) | R2.2 | Loyverse is Android/iOS only, so it is a tablet or phone — not a PC. This tells us what already exists in the store |
+| 9 | **The printer's IP address** | R2.2 | Self-serve: hold the FEED button while powering the printer on and it prints a self-test showing its IP |
+| 10 | **Decision: dedicated mini-PC/Pi, or add a Windows PC?** | R2.2 | See §11 "Where the print agent runs". Recommend the dedicated box |
 
 ### Answered — do not re-ask
 
@@ -405,10 +407,14 @@ documented contract and wired up afterwards.
 ### Correction: "Tera" is the cash drawer, not the till
 
 An earlier version of this file called the Tera a till and asked what OS it runs.
-It has no OS — the **Tera 350R is the cash drawer**. The POS computer that will run
-this system is a separate, still-unidentified machine, and item 8 above is the real
-question: what box will be always-on in the store to host the print agent. It does
-not have to be a POS terminal; anything on the store LAN that stays awake works.
+It has no OS — the **Tera 350R is the cash drawer**, and it is wired to the printer,
+not to a computer.
+
+There is no store PC identified. **Loyverse — which runs on Android and iOS only —
+is currently the thing driving this printer**, and Loyverse explicitly supports the
+TSP143IIILAN over Ethernet. So today the chain is: tablet → LAN → printer → drawer,
+and it works. Since replacing Loyverse is a locked decision, that job becomes ours,
+which is what items 8–10 are really asking about. §11 explains the options.
 
 ### Two consequences worth reading before building R1.4
 
@@ -484,10 +490,10 @@ Then ask for §9 items 1–3 and run the sandbox end-to-end.
 
 - §9 item 7 — **SendGrid domain authentication**. It does *not* need the custom
   domain and is the thing that quietly breaks customer confirmations if skipped.
-- §9 item 8 — **which always-on machine in the store will host the print agent**,
-  and its OS. The printer being the LAN variant means this can be almost any box on
-  the store network, so it is a cheap question to answer — but nothing in R2.2 ships
-  without it.
+- §9 items 8–10 — **what device Loyverse runs on, the printer's IP, and whether the
+  store gets a dedicated print box or a Windows PC**. §11 explains why this exists
+  at all (Azure cannot reach a printer on the store LAN, and Loyverse is doing that
+  job today). It changes how much there is to build, but not when to start.
 
 ### When ready to deploy
 
@@ -534,6 +540,48 @@ Container App  ──(agent long-polls outbound HTTPS)──►  GET /api/print/
 Only outbound connections from the store — no inbound firewall rule, no port
 forward, no static IP needed. Give the printer a DHCP reservation so its address
 does not move.
+
+### Where the print agent runs — the open question
+
+**Why anything is needed at all.** The app runs in Azure. The printer sits on the
+restaurant's own network behind their router, with no public address, so Azure
+cannot reach it. Something *inside the restaurant* has to bridge the two. Today
+that bridge is **Loyverse** — the Loyverse app on the store's tablet is what talks
+to the printer. Replacing Loyverse is a locked decision, so that job becomes ours.
+
+Note what this means for the hardware work the owner is doing now: the **physical
+and network setup carries over** (printer on the LAN with a stable IP, drawer cabled
+to the DK port, drawer tested). The **Loyverse integration itself does not** — but it
+is not wasted, because the restaurant has to keep operating until we are ready.
+
+A tablet alone cannot do this job. Browsers cannot open raw TCP sockets, and the CSP
+blocks browser→LAN requests, so the kitchen board in a browser cannot drive the
+printer directly however convenient that would be.
+
+That leaves two real options:
+
+**A. A small dedicated box on the LAN — recommended.** A mini PC or Raspberry Pi
+(~$60–100) plugged into the router, running a small Node or Go program that
+long-polls our API and pushes raster bytes to port 9100.
+
+- Fully automatic: order lands → ticket prints → drawer kicks on cash.
+- Does not depend on anyone keeping a tablet awake, logged in, or on the right screen.
+- Survives staff closing an app, and restarts on its own after a power cut.
+- Cost is a one-off and small next to the risk of missed tickets.
+
+**B. A Windows PC with the Star futurePRNT driver.** If a Windows PC is going into
+the store anyway, the driver does the hard parts for us: it rasterizes, and it has a
+built-in **"Open Cash Drawer 1 before printing"** setting with a configurable pulse
+width. Our app would then just call `window.print()` from the kitchen board against a
+`@media print` stylesheet — **no custom agent, no raster code, no drawer command**.
+
+- Much less to build, and the drawer traps below stop being our problem.
+- But: needs a PC, needs the browser left open on the right page, and needs Chrome's
+  kiosk-printing mode for it to print without a dialog. More moving parts operationally,
+  fewer in the codebase.
+
+Either way the server-side work — `print_jobs`, the poll endpoint, the document model —
+is identical, so **this decision does not block starting R2.2.**
 
 ### The constraint: no onboard fonts, so everything is raster
 
@@ -599,8 +647,10 @@ not to every `customer_receipt`.
    address, payment state. Note `kitchen_label` exists on products and toppings and
    is **never copied into the order snapshot**; add it so tickets do not depend on
    live catalog joins.
-4. **The agent**, once the always-on machine is known (§9 item 8). Long-polls,
-   pushes to 9100, acks. Keep it small and dumb — all formatting happens server-side.
+4. **The output path**, once §9 item 10 is decided. Under option A, a small agent
+   that long-polls, pushes raster to 9100 and acks — keep it dumb, all formatting
+   stays server-side. Under option B, none of this exists: the Windows driver
+   rasterizes and kicks the drawer, and step 3 collapses into the print stylesheet.
 
 The CSP still blocks a browser→LAN `fetch`, so a browser-side bridge remains
 non-viable.
