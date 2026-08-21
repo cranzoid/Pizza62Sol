@@ -156,7 +156,13 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
             <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
             <td>{String(order.status).replaceAll("_", " ")}</td>
             <td>{String(order.payment_method).replaceAll("_", " ")} · {String(order.payment_status).replaceAll("_", " ")}</td>
-            <td>{formatMoney(Number(order.total_cents))}</td>
+            <td>{formatMoney(Number(order.total_cents))}
+              {/* A refund happens after the fact, so it belongs here rather than
+                  on the live board where orders are still being cooked. */}
+              {["paid", "pending_at_store", "refunded", "partially_refunded"].includes(String(order.payment_status))
+                ? <RefundControl order={order} onRecorded={load} />
+                : null}
+            </td>
           </tr>)}
           {!orders.length ? <tr><td colSpan={6} className="staff-empty">No orders match that search.</td></tr> : null}
         </tbody>
@@ -229,6 +235,15 @@ function PromotionEditor({ promotion, onSave }: { promotion?: Record<string, unk
   });
   const [active, setActive] = useState(Boolean(promotion?.active));
   const [combinable, setCombinable] = useState(promotion ? Boolean(promotion.combinable) : true);
+  // Eligibility. Dates are edited as local dates and stored as epoch ms.
+  const asDate = (value: unknown) => (value ? new Date(Number(value)).toISOString().slice(0, 10) : "");
+  const [startsAt, setStartsAt] = useState(asDate(promotion?.starts_at));
+  const [endsAt, setEndsAt] = useState(asDate(promotion?.ends_at));
+  const [minSpend, setMinSpend] = useState(String(Number(promotion?.min_subtotal_cents ?? 0) / 100));
+  const [promoFulfilment, setPromoFulfilment] = useState(String(promotion?.fulfilment ?? "any"));
+  const [usageLimit, setUsageLimit] = useState(promotion?.usage_limit != null ? String(promotion.usage_limit) : "");
+  const [perCustomerLimit, setPerCustomerLimit] = useState(promotion?.per_customer_limit != null ? String(promotion.per_customer_limit) : "");
+  const used = Number(promotion?.usage_count ?? 0);
   const amountCents = type === "percentage" ? Math.round(Number(amount) * 100) : Math.round(Number(amount) * 100);
   return <details className="product-admin-card" open={isNew}>
     <summary><span><strong>{name || "New offer"}</strong><small>{type === "percentage" ? `${amount}% off` : type === "fixed" ? `${amount} off` : "Free delivery"}{code ? ` · code ${code}` : " · automatic"}</small></span><span>{active ? "Live" : "Off"}</span></summary>
@@ -240,8 +255,145 @@ function PromotionEditor({ promotion, onSave }: { promotion?: Record<string, unk
         {type !== "free_delivery" ? <label>{type === "percentage" ? "Percent" : "Amount · C$"}<input type="number" step="0.01" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} /></label> : null}
         <label className="admin-check"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /><span>Live</span></label>
         <label className="admin-check"><input type="checkbox" checked={combinable} onChange={(event) => setCombinable(event.target.checked)} /><span>Can combine with other offers</span></label>
+        <label>Runs from<input type="date" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} /></label>
+        <label>Runs until<input type="date" value={endsAt} onChange={(event) => setEndsAt(event.target.value)} /></label>
+        <label>Minimum spend · C$<input type="number" step="0.01" min="0" value={minSpend} onChange={(event) => setMinSpend(event.target.value)} /></label>
+        <label>Applies to<select value={promoFulfilment} onChange={(event) => setPromoFulfilment(event.target.value)}>
+          <option value="any">Pickup &amp; delivery</option>
+          <option value="pickup">Pickup only</option>
+          <option value="delivery">Delivery only</option>
+        </select></label>
+        <label>Total uses · blank for unlimited<input type="number" min="1" value={usageLimit} onChange={(event) => setUsageLimit(event.target.value)} /></label>
+        <label>Uses per customer · blank for unlimited<input type="number" min="1" value={perCustomerLimit} onChange={(event) => setPerCustomerLimit(event.target.value)} /></label>
       </div>
-      <button className="staff-button" disabled={name.trim().length < 2} onClick={() => onSave({ id: promotion?.id, name, code: code || null, type, amount: type === "free_delivery" ? 0 : amountCents, active, combinable, priority: Number(promotion?.priority ?? 0) })}>{isNew ? "Create offer" : "Save offer"}</button>
+      {!isNew ? <p className="editor-hint">Used {used} time{used === 1 ? "" : "s"}{promotion?.usage_limit ? ` of ${String(promotion.usage_limit)}` : ""}.</p> : null}
+      <button className="staff-button" disabled={name.trim().length < 2} onClick={() => onSave({
+        id: promotion?.id, name, code: code || null, type,
+        amount: type === "free_delivery" ? 0 : amountCents,
+        active, combinable, priority: Number(promotion?.priority ?? 0),
+        // Midday rather than midnight so a date does not slip a day either way
+        // when it crosses the UTC boundary on the server.
+        startsAt: startsAt ? new Date(`${startsAt}T12:00:00`).getTime() : null,
+        endsAt: endsAt ? new Date(`${endsAt}T12:00:00`).getTime() : null,
+        minSubtotalCents: Math.round(Number(minSpend || 0) * 100),
+        fulfilment: promoFulfilment,
+        usageLimit: usageLimit ? Number(usageLimit) : null,
+        perCustomerLimit: perCustomerLimit ? Number(perCustomerLimit) : null,
+      })}>{isNew ? "Create offer" : "Save offer"}</button>
     </div>
   </details>;
+}
+
+
+/**
+ * Recording a refund against an order.
+ *
+ * The wording here is doing real work. This does **not** move money — Clover
+ * publishes no refund API, so the refund is issued in their dashboard and
+ * recorded here afterwards. A screen that implied otherwise would leave a
+ * customer out of pocket while the books said they had been paid back, which is
+ * worse than having no refund screen at all.
+ */
+function RefundControl({ order, onRecorded }: { order: OrderRow; onRecorded: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(String(Number(order.total_cents ?? 0) / 100));
+  const [reason, setReason] = useState("");
+  const [reference, setReference] = useState("");
+  const [existing, setExisting] = useState<Array<Record<string, unknown>>>([]);
+  const [refunded, setRefunded] = useState(0);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const isCard = String(order.payment_method) === "online";
+
+  const loadRefunds = useCallback(async () => {
+    const response = await fetch(`/api/admin/refunds?orderId=${encodeURIComponent(String(order.id))}`);
+    if (!response.ok) return;
+    const result = (await response.json()) as { refunds: Array<Record<string, unknown>>; refundedCents: number };
+    setExisting(result.refunds ?? []);
+    setRefunded(result.refundedCents ?? 0);
+  }, [order.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      const response = await fetch(`/api/admin/refunds?orderId=${encodeURIComponent(String(order.id))}`);
+      if (cancelled || !response.ok) return;
+      const result = (await response.json()) as { refunds: Array<Record<string, unknown>>; refundedCents: number };
+      setExisting(result.refunds ?? []);
+      setRefunded(result.refundedCents ?? 0);
+    })();
+    return () => { cancelled = true; };
+  }, [open, order.id]);
+
+  const record = async () => {
+    setBusy(true);
+    setMessage("");
+    const response = await fetch("/api/admin/refunds", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "refund.record",
+        orderId: order.id,
+        amountCents: Math.round(Number(amount) * 100),
+        reason,
+        providerReference: reference,
+      }),
+    });
+    const result = (await response.json()) as { error?: string };
+    setBusy(false);
+    if (!response.ok) { setMessage(result.error ?? "That could not be recorded."); return; }
+    setMessage("Recorded.");
+    setReason(""); setReference("");
+    await loadRefunds();
+    await onRecorded();
+  };
+
+  const voidRefund = async (refundId: string) => {
+    setBusy(true);
+    await fetch("/api/admin/refunds", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "refund.void", refundId, reason: "Entered in error" }),
+    });
+    setBusy(false);
+    await loadRefunds();
+    await onRecorded();
+  };
+
+  if (!open) {
+    return <button className="text-button refund-open" onClick={() => setOpen(true)}>
+      {refunded > 0 || String(order.payment_status).includes("refund") ? "Refunds" : "Refund"}
+    </button>;
+  }
+
+  return <div className="refund-panel">
+    <strong>Record a refund</strong>
+    <p className="editor-hint">
+      {isCard
+        ? "Issue the refund in the Clover dashboard first, then paste its reference here. This screen records it — it does not move any money."
+        : "This records a cash refund for your books. Hand the money back at the counter."}
+    </p>
+    {refunded > 0 ? <p className="editor-hint">{formatMoney(refunded)} already refunded of {formatMoney(Number(order.total_cents))}.</p> : null}
+    <label>Amount · C$<input type="number" step="0.01" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+    <label>Reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Wrong order sent" /></label>
+    {isCard ? <label>Clover reference<input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="From the Clover dashboard" /></label> : null}
+    <div className="refund-actions">
+      <button className="staff-button" disabled={busy || reason.trim().length < 2} onClick={() => void record()}>Record</button>
+      <button className="text-button" onClick={() => { setOpen(false); setMessage(""); }}>Close</button>
+    </div>
+    {existing.length ? <div className="refund-history">
+      {existing.map((refund) => <div key={String(refund.id)}>
+        <span className={String(refund.status) === "voided" ? "refund-voided" : ""}>
+          {formatMoney(Number(refund.amount_cents))} · {String(refund.reason)}
+          {refund.actor_name ? ` · ${String(refund.actor_name)}` : ""}
+          {String(refund.status) === "voided" ? " · voided" : ""}
+        </span>
+        {String(refund.status) === "recorded"
+          ? <button className="text-button danger-text" disabled={busy} onClick={() => void voidRefund(String(refund.id))}>Void</button>
+          : null}
+      </div>)}
+    </div> : null}
+    {message ? <p className="admin-message" role="status">{message}</p> : null}
+  </div>;
 }

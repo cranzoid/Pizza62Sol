@@ -111,6 +111,12 @@ type Body =
     }
   | {
       action: "promotion.upsert";
+      startsAt?: number | null;
+      endsAt?: number | null;
+      minSubtotalCents?: number;
+      fulfilment?: string;
+      usageLimit?: number | null;
+      perCustomerLimit?: number | null;
       id?: string;
       name?: string;
       code?: string | null;
@@ -512,17 +518,57 @@ export async function POST(request: Request) {
       const active = body.active !== undefined ? (body.active ? 1 : 0) : previous ? Number(previous.active ?? 0) : 0;
       const ruleJson = body.rule !== undefined ? JSON.stringify(body.rule) : previous ? String(previous.rule_json ?? "{}") : "{}";
 
+      // Eligibility the owner can set without a developer. Same patch-merge rule
+      // as everything above: `undefined` leaves the stored value alone, so a
+      // screen that does not send a field cannot blank it.
+      const startsAt = body.startsAt !== undefined ? (body.startsAt ?? null) : previous ? (previous.starts_at as number | null) : null;
+      const endsAt = body.endsAt !== undefined ? (body.endsAt ?? null) : previous ? (previous.ends_at as number | null) : null;
+      if (startsAt !== null && endsAt !== null && Number(endsAt) <= Number(startsAt)) {
+        return Response.json({ error: "The offer must end after it starts." }, { status: 400 });
+      }
+      const minSubtotal = keep(body.minSubtotalCents, previous?.min_subtotal_cents, 0);
+      if (!Number.isSafeInteger(minSubtotal) || minSubtotal < 0 || minSubtotal > 100_000) {
+        return Response.json({ error: "The minimum spend is outside the safe range." }, { status: 400 });
+      }
+      const promotionFulfilment = body.fulfilment !== undefined
+        ? (["any", "pickup", "delivery"].includes(String(body.fulfilment)) ? String(body.fulfilment) : "any")
+        : previous ? String(previous.fulfilment ?? "any") : "any";
+      // Null is unlimited. Zero would mean an offer nobody can ever use, which is
+      // never what someone means by typing it — so it is refused rather than saved.
+      const limit = (value: unknown, label: string): number | null => {
+        if (value === undefined) return null;
+        if (value === null || value === "") return null;
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${label} must be a whole number of at least 1, or blank for unlimited.`);
+        return parsed;
+      };
+      let usageLimit: number | null;
+      let perCustomerLimit: number | null;
+      try {
+        usageLimit = body.usageLimit !== undefined ? limit(body.usageLimit, "Total uses") : previous ? (previous.usage_limit as number | null) : null;
+        perCustomerLimit = body.perCustomerLimit !== undefined ? limit(body.perCustomerLimit, "Uses per customer") : previous ? (previous.per_customer_limit as number | null) : null;
+      } catch (error) {
+        return Response.json({ error: (error as Error).message }, { status: 400 });
+      }
+
       await getD1()
         .prepare(
           `INSERT INTO promotions
-           (id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, display_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           (id, name, code, type, amount, priority, combinable, exclusive, active, rule_json,
+            starts_at, ends_at, min_subtotal_cents, fulfilment, usage_limit, per_customer_limit,
+            display_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, code = excluded.code,
              type = excluded.type, amount = excluded.amount, priority = excluded.priority,
              combinable = excluded.combinable, exclusive = excluded.exclusive,
-             active = excluded.active, rule_json = excluded.rule_json, updated_at = excluded.updated_at`,
+             active = excluded.active, rule_json = excluded.rule_json,
+             starts_at = excluded.starts_at, ends_at = excluded.ends_at,
+             min_subtotal_cents = excluded.min_subtotal_cents, fulfilment = excluded.fulfilment,
+             usage_limit = excluded.usage_limit, per_customer_limit = excluded.per_customer_limit,
+             updated_at = excluded.updated_at`,
         )
-        .bind(id, name, code, type, amount, priority, combinable, exclusive, active, ruleJson, now, now)
+        .bind(id, name, code, type, amount, priority, combinable, exclusive, active, ruleJson,
+              startsAt, endsAt, minSubtotal, promotionFulfilment, usageLimit, perCustomerLimit, now, now)
         .run();
       await writeAudit({ actorId: user.id, action: previous ? "promotion.update" : "promotion.create", targetType: "promotion", targetId: id, previous, next: body });
       return Response.json({ ok: true, id });

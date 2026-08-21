@@ -111,7 +111,7 @@ export async function GET(request: Request) {
         ? getD1().prepare("SELECT id, email, name, role, permissions_json, active, last_login_at, created_at FROM staff_users ORDER BY active DESC, name").all<Record<string, unknown>>()
         : Promise.resolve({ results: [], success: true, meta: { changes: 0 } }),
       getD1()
-        .prepare("SELECT id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, display_order FROM promotions ORDER BY display_order, name")
+        .prepare("SELECT id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, starts_at, ends_at, min_subtotal_cents, fulfilment, usage_limit, per_customer_limit, usage_count, display_order FROM promotions ORDER BY display_order, name")
         .all(),
     ]);
     // C-05: kitchen cards must show what to make. Load the immutable item snapshots

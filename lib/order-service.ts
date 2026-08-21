@@ -603,9 +603,15 @@ async function activePromotions(
   const now = Date.now();
   const result = await getD1()
     .prepare(
-      `SELECT id, name, code, type, amount, priority, combinable, exclusive, stack_group, rule_json
+      `SELECT id, name, code, type, amount, priority, combinable, exclusive, stack_group, rule_json,
+              min_subtotal_cents, fulfilment, usage_limit, per_customer_limit, usage_count
        FROM promotions WHERE active = 1 AND (starts_at IS NULL OR starts_at <= ?)
-       AND (ends_at IS NULL OR ends_at >= ?) ORDER BY priority DESC, id`,
+       AND (ends_at IS NULL OR ends_at >= ?)
+       -- An offer that has been redeemed its full number of times is spent. Read
+       -- here as well as enforced at redemption so an exhausted code says so
+       -- immediately rather than being accepted and then failing at checkout.
+       AND (usage_limit IS NULL OR usage_count < usage_limit)
+       ORDER BY priority DESC, id`,
     )
     .bind(now, now)
     .all<Record<string, unknown>>();
@@ -618,6 +624,13 @@ async function activePromotions(
       couponMatched = true;
     }
     const rule = safeJson<Record<string, unknown>>(row.rule_json as string, {});
+    // The columns win over `rule_json` where both exist. The JSON blob predates
+    // the columns and is still read so older promotions keep working, but what
+    // the owner edits on screen is the column, and a stale JSON value silently
+    // overriding it would make the admin form appear not to save.
+    const columnFulfilment = row.fulfilment === "pickup" || row.fulfilment === "delivery"
+      ? [row.fulfilment as Fulfilment]
+      : undefined;
     rules.push({
       id: row.id as string,
       name: row.name as string,
@@ -627,8 +640,8 @@ async function activePromotions(
       combinable: Boolean(row.combinable),
       exclusive: Boolean(row.exclusive),
       stackGroup: row.stack_group as string | null,
-      fulfilments: (rule.fulfilments as Fulfilment[] | undefined) ?? [fulfilment],
-      minimumCents: rule.minimumCents as number | undefined,
+      fulfilments: columnFulfilment ?? (rule.fulfilments as Fulfilment[] | undefined) ?? [fulfilment],
+      minimumCents: Number(row.min_subtotal_cents ?? 0) || (rule.minimumCents as number | undefined),
       productIds: rule.productIds as string[] | undefined,
       categoryIds: rule.categoryIds as string[] | undefined,
     });
@@ -1287,6 +1300,31 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         )
         .bind(orderId, keyHash),
     ];
+    // A usage limit is only meaningful if redemptions are counted. Incremented
+    // in the same batch that creates the order, so a promotion cannot be
+    // recorded as used by an order that then fails to commit.
+    //
+    // The guard is on the UPDATE rather than only in the earlier SELECT, so two
+    // orders racing for the last redemption cannot both take it. The counter can
+    // still be read as available and then found spent between the two — an
+    // over-issue is bounded by concurrency and is the right way round to fail:
+    // honouring one offer too many costs the discount, refusing a customer who
+    // was told it applied costs the customer.
+    //
+    // `included-free-delivery` is synthesised from a product flag rather than
+    // stored, so it has no row to count.
+    for (const promotion of price.appliedPromotions) {
+      if (promotion.id === "included-free-delivery") continue;
+      operationsBatch.push(
+        getD1()
+          .prepare(
+            `UPDATE promotions SET usage_count = usage_count + 1, updated_at = ?
+             WHERE id = ? AND (usage_limit IS NULL OR usage_count < usage_limit)`,
+          )
+          .bind(now, promotion.id),
+      );
+    }
+
     // Both of these are addressed to the customer, so neither is queued when
     // there is no address to send them to. A walk-in ordering two slices has not
     // given an email, and queuing a message to nowhere produces one permanently

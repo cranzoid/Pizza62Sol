@@ -596,3 +596,32 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   cursor: pointer;
 }
 .till-quantity span { min-width: 18px; text-align: center; font-size: 12px; font-weight: 700; }
+
+/* --- Recording a refund -----------------------------------------------------
+   This screen does not move money: Clover publishes no refund API, so the
+   refund is issued in their dashboard and recorded here. The wording says so,
+   and the layout keeps it beside the order it belongs to. */
+.refund-open { display: block; margin-top: 6px; font-size: 9px; }
+.refund-panel {
+  margin-top: 8px;
+  padding: 11px;
+  border: 1px solid #e6e9e5;
+  border-radius: 9px;
+  background: #fbfcfb;
+  text-align: left;
+  min-width: 240px;
+}
+.refund-panel strong { font-size: 10px; }
+.refund-panel label { display: block; margin-top: 8px; font-size: 9px; }
+.refund-panel input {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid #d9ded9;
+  border-radius: 6px;
+  padding: 7px;
+  font-size: 10px;
+}
+.refund-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.refund-history { margin-top: 10px; border-top: 1px solid #eef1ee; padding-top: 8px; font-size: 9px; }
+.refund-history > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; }
+.refund-voided { text-decoration: line-through; opacity: .6; }
