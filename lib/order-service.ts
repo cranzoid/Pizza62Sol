@@ -880,6 +880,33 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
     });
   }
 
+  // The payment method, checked against the same rules `createOrder` applies.
+  //
+  // These were missed on the first pass and the quote said `ok: true` for a
+  // delivery order paying at the store, which the API refuses outright. Same
+  // class of bug as the schedule check: `ok` has to mean "this will be
+  // accepted", and every rule `createOrder` enforces has to be mirrored here or
+  // the review screen enables a button that cannot work.
+  //
+  // Only checked when a payment method was actually named — the cart is quoted
+  // long before the customer has chosen one.
+  if (body.paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "PAYMENT_METHOD_UNAVAILABLE",
+      message: "Pay at store is available for pickup orders only.",
+    });
+  }
+  if (body.paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "PAYMENT_SETUP_REQUIRED",
+      message: "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",
+    });
+  }
+
   const estimateMinutes =
     fulfilment === "delivery" ? ordering.deliveryEstimateMinutes ?? 30 : ordering.pickupEstimateMinutes;
 

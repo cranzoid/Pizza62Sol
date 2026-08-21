@@ -311,3 +311,41 @@ withDb("agrees with createOrder about a time the store is shut", async () => {
     "the quote must reach the same verdict as createOrder on an identical cart",
   );
 });
+
+withDb("agrees with createOrder about the payment method too", async () => {
+  // Found by driving the real flow: the quote said `ok: true` for a delivery
+  // order paying at the store, which createOrder refuses outright. Same shape as
+  // the schedule bug above — every rule createOrder enforces has to be mirrored
+  // here, or the review screen enables a button that cannot work.
+  const quote = await quoteOrder({
+    fulfilment: "delivery",
+    items: [{ productId: "poutine", quantity: 4 }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(quote.ok, false);
+  assert.ok(quote.issues.some((issue) => issue.code === "PAYMENT_METHOD_UNAVAILABLE"));
+});
+
+withDb("says so when online payment has no credentials behind it", async () => {
+  // The customer must not reach a pay button that 503s at the last step.
+  const previous = { id: process.env.CLOVER_MERCHANT_ID, token: process.env.CLOVER_API_TOKEN };
+  delete process.env.CLOVER_MERCHANT_ID;
+  delete process.env.CLOVER_API_TOKEN;
+  const { clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
+  clearIntegrationSecretCache();
+  try {
+    const quote = await quoteOrder({
+      fulfilment: "delivery",
+      items: [{ productId: "poutine", quantity: 4 }],
+      paymentMethod: "online",
+      schedule: openSchedule,
+    });
+    assert.equal(quote.ok, false);
+    assert.ok(quote.issues.some((issue) => issue.code === "PAYMENT_SETUP_REQUIRED"));
+  } finally {
+    if (previous.id) process.env.CLOVER_MERCHANT_ID = previous.id;
+    if (previous.token) process.env.CLOVER_API_TOKEN = previous.token;
+    clearIntegrationSecretCache();
+  }
+});

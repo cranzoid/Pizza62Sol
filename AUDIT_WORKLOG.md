@@ -45,15 +45,18 @@ Tracks implementation of the fixes called for in [PIZZA62_FULL_AUDIT.md](PIZZA62
 
 | ID | Title | Reason deferred |
 |---|---|---|
-| H-07 / H-25 | Online payment + refund lifecycle | Needs a real Stripe test account and refund-policy sign-off |
-| H-10 | Notification/email dispatcher | Needs an email provider + domain |
-| H-11 | Promotion/coupon owner UI | Large owner-UI build (Phase 2); engine hardened here |
-| H-08 | Scheduling exceptions/closures/capacity | Phase 2 operational redesign |
-| H-20 | Scheduled/history order queues + export | Phase 2 operational redesign |
-| H-15 | Token-in-URL exposure | Needs hosting/referrer + one-time-exchange design |
-| H-26 | Upload magic-byte/decoding validation | Needs an image-decode/re-encode pipeline choice |
-| H-03/H-04/H-05 | Recipe enforcement, half toppings UI, halal on deals | Customer-UI build (partially server-guarded here) |
-| H-09/H-18/H-14/H-22/H-23/H-24 | Feedback timing, event-race, FKs, menu content, cart revalidation, checkout review | Phase 2/3 scope |
+| H-07 / H-25 | Online payment + refund lifecycle | ✅ Closed 2026-08-21 — recorded-refund path; Clover publishes no refund API |
+| H-10 | Notification/email dispatcher | ✅ Closed by R1.4 |
+| H-11 | Promotion/coupon owner UI | ✅ Closed 2026-08-21 |
+| H-08 | Scheduling exceptions/closures/capacity | ✅ Closed 2026-08-21 — closures + last-order cutoff |
+| H-20 | Scheduled/history order queues + export | ✅ Closed 2026-08-21 |
+| H-15 | Token-in-URL exposure | ✅ Closed 2026-08-21 |
+| H-26 | Upload magic-byte/decoding validation | ✅ Closed 2026-08-21 — header inspection, not full decode |
+| H-03/H-04/H-05 | Recipe enforcement, half toppings UI, halal on deals | ✅ Closed — H-04 by R1.5, H-03/H-05 on 2026-08-21 |
+| H-14 | Relational integrity | ✅ Closed 2026-08-21 — 23 FKs, 51 checks |
+| H-23 / H-24 | Cart revalidation, checkout review | ✅ Closed 2026-08-21 |
+| H-09 | Feedback timing | ✅ Closed by R1.4 |
+| H-18 / H-22 | Event race, menu content | Open — see the note at the end of this file |
 
 ---
 
@@ -323,3 +326,147 @@ arithmetic re-checked rather than assumed.
 
 **Release 1 is now written in full.** What remains is credentials, one Clover
 sandbox run, one real notification, and the first apply.
+
+
+### 2026-08-21 — R2: the audit list closed out, and the host changed
+
+Everything the audit left open is now closed except H-18 and H-22, both noted at
+the end. What follows is why each one was resolved the way it was, because
+several were not the obvious answer.
+
+**H-14 — relational integrity.** 29 tables, zero foreign keys, zero check
+constraints. Now 23 foreign keys and 51 check constraints, generated from
+`db/schema.ts` so drizzle-kit stays the source of truth.
+
+The delete rules encode ownership rather than being uniformly `cascade`: rows
+that only exist as part of an order cascade with it; catalog rows an order
+*refers* to restrict, so a product that has ever been sold cannot be deleted out
+from under its own history; and payroll evidence restricts, because removing an
+employee must not remove the record of hours they are owed for.
+
+Two vocabularies were guessed wrong on the first pass and both were caught by
+tests rather than by review — which is the argument for having the constraints at
+all. Correction and time-off requests resolve to `declined`, not `rejected`. And
+`orders.payment_status` is not `orders.status`: an online order has status
+`awaiting_payment` while its payment status is `awaiting_checkout`.
+
+**H-24 — the checkout review, and the reason it needed a server endpoint.** The
+review screen added the cart up in the browser and called the result "estimated",
+because nothing on the server would tell it otherwise until the order was
+submitted. Two implementations of discount and tax arithmetic drift, and when
+they do a customer consents to one number and is charged another.
+
+`quoteOrder` is now the single pricing path, exported for both
+`POST /api/orders/quote` and `createOrder`, and the browser does no pricing at
+all. A test places a real order and asserts the quoted total equals the stored
+total.
+
+**`ok` has to mean "this will be accepted".** Twice during this work the quote
+said yes to an order `createOrder` refuses, and both were found by driving the
+real flow rather than by reading the code:
+
+- At 4am, with the store shut, because the schedule check ran only when a
+  schedule was supplied — and a quote that omitted one skipped a check
+  `createOrder` then applied anyway.
+- On a delivery order paying at the store, because the payment-method rules were
+  never mirrored into the quote.
+
+Both now have tests asserting the two paths reach the same verdict on identical
+input. The general lesson is recorded here because it will recur: every rule
+`createOrder` enforces has to exist in `quoteOrder` too, or the review screen
+enables a button that cannot work.
+
+**H-03 — set recipes.** The client could drop recipe toppings and the server
+priced whatever it was sent, so an "All Meat" could reach the kitchen with no meat
+on it, at the All Meat price, under the All Meat name.
+
+The fix is not to forbid omissions — "hold the mushrooms" is a normal request —
+but to make them explicit: named, checked against the recipe, and printed on the
+kitchen ticket as `NO HAM`. A recipe topping going *quietly* missing is what is
+now impossible. An omission never changes the price, because otherwise the same
+named product could be bought cheaper by removing an ingredient and adding it
+straight back as a paid extra.
+
+**H-08 — closures rather than another toggle.** The only control was an
+indefinite `paused` flag, which relies on somebody remembering to switch it back;
+the two ways that goes wrong are the store staying shut the day after the holiday
+and taking orders during it. A closure is a window with an end, scoped to pickup,
+delivery or both — closing delivery while the counter keeps selling is the
+ordinary case.
+
+Enforced against the time the order is *for*, not the time it is placed:
+otherwise a Christmas Day pickup ordered on the Monday is accepted and nothing
+objects until Christmas Day. The closure check runs *before* schedule validation,
+which is not cosmetic — on a holiday both fail, and the first attempt returned
+"that time is outside the restaurant's configured hours", which is true and
+useless.
+
+**H-15 / H-26 / C-09's follow-up.** Tokens are stripped from the address bar on
+load and travel to the API in a header, so they reach neither browser history nor
+an access log; `/track`, `/feedback` and `/order/return` send `no-referrer` and
+`no-store`. Uploads are identified by signature and dimension-bounded, and served
+under `nosniff` with a sandbox CSP on the assumption the check might one day be
+wrong. The kiosk roster — which published every member of staff's first name to
+anyone who found the URL — is behind a device token and fails closed when nothing
+is paired.
+
+**H-07 / H-25 — refunds, honestly.** The researched Clover contract documents no
+refund endpoint. Writing one would mean guessing at an API, and a refund path that
+records a refund without moving money is worse than none: the customer is out of
+pocket while the books say they were paid back. So the refund is issued in the
+Clover dashboard and recorded here, and every screen says so in those words. The
+guards are what make the record worth having — never more than was captured,
+never on money that was never taken, always attributed, and correctable by
+voiding rather than deleting.
+
+**The notification failsafe that was not one.** `pending_provider_setup` parks a
+row when no channel can deliver it, correctly. But nothing moved rows back out of
+it, so the intended rollout — take sample orders now, add Twilio and email
+afterwards — would have left every notification queued before the credentials
+arrived parked permanently. That is the exact silence R1.4 was written to
+eliminate, reintroduced at the moment it is most likely to happen. The dispatcher
+now releases parked rows once a provider exists, without spending an attempt.
+
+**Four un-awaited Promises, all one shape.** Moving credentials into an encrypted
+store made every config getter async, and surfaced four places where a Promise was
+used as a boolean. `if (!anyProviderConfigured())` negates a Promise, which is
+always falsy, so the dispatcher's no-provider guard had stopped guarding; the same
+mistake made online payment look configured to both the customer app and the admin
+dashboard, and disabled the order service's own Clover check. TypeScript flags
+`if (promise)` but not `if (!promise)` — only the tests caught these.
+
+**The host changed.** Container Apps → App Service Linux with a staging slot. Not
+for cost, which is within a few dollars: every deploy required building a
+linux/amd64 image on an arm64 laptop, and this is a zip of a built tree. The three
+Container Apps Jobs became one authenticated `POST /api/cron/tick` driven by a
+Logic App every minute, which is the pattern already running in this subscription
+for the CRM. The connection budget dropped from 36 of 45 to 16 of 50, because the
+sweeps now run in the app's own process rather than in three containers with three
+pools.
+
+**Still open, and deliberately so:**
+
+- **H-18 (event race)** — the order-event insert and the status update commit
+  together in a `batch()`, so the race the audit described is closed in practice,
+  but there is no test for the specific interleaving it named.
+- **H-22 (menu content)** — needs the owner and the physical flyer, not code. One
+  known discrepancy to settle on the call: the regular X-Large 3-topping price is
+  derived as base + 2 × extra = $17.69, while the flyer advertises $15.99 for the
+  X-Large 3-topping *pickup special*. Those are two different products and both
+  are in the menu; it needs confirming that is intended.
+- **Customer SMS** is built and off, pending a registered A2P number.
+- **The weekly logical dump** is a runbook step rather than infrastructure. See
+  `infra/backups.tf` for why.
+
+**Verification.** 261/261 tests with Postgres and 95 pass / 166 skipped / 0 failed
+without one, so the suite stays hermetic and the skip count remains a reliable
+signal · `tsc` clean · `lint` clean · `build` 38 routes · `terraform validate` and
+`plan` clean at 49 resources · migrations apply from an empty database and are
+idempotent · and the whole flow driven against a running server: a set-recipe
+pizza with an omission quoted, ordered and charged at exactly the quoted total,
+the omission on the kitchen ticket, tracking by header token, a duplicate
+submission returning the same order, a delivery-only closure blocking delivery
+while pickup stayed open, a counter order stored as `walk_in` while a public
+request claiming `walk_in` was stored as `online`, the cron endpoint refusing
+unauthenticated callers, a disguised HTML upload refused, and the kiosk roster
+returning 403 to an unpaired device.
