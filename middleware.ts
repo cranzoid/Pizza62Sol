@@ -1,45 +1,19 @@
 import { NextResponse } from "next/server";
+import { securityHeadersFor } from "@/lib/security-headers";
 
 /**
- * H-16 / H-26: baseline browser security headers on every response.
+ * Applies the security headers to every response.
  *
- * These previously lived in the Cloudflare Worker entry point, which applied
- * them at the edge. Expressing them as framework middleware instead keeps them
- * attached to the application rather than to one host, so they survive the move
- * to Azure and are exercised by `npm run dev` as well as production.
- *
- * CSP allows self-hosted assets plus the inline styles and scripts the framework
- * emits, and forbids framing. `nosniff` also hardens owner-uploaded images that
- * are served without an explicit safe content type.
+ * The policy itself lives in `lib/security-headers.ts`, not here. That module is
+ * importable by the test suite — this one is not, because `next/server` cannot
+ * be resolved by the plain Node loader the tests run under — and keeping the
+ * rules out of the framework's middleware API matters because that API is
+ * already deprecated in favour of `proxy.ts`. When that rename happens, only
+ * this file moves.
  */
-const SECURITY_HEADERS: Record<string, string> = {
-  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
-  "X-Content-Type-Options": "nosniff",
-  "X-Frame-Options": "DENY",
-  "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Cross-Origin-Opener-Policy": "same-origin",
-  "Content-Security-Policy": [
-    "default-src 'self'",
-    "base-uri 'self'",
-    "img-src 'self' data: blob:",
-    "style-src 'self' 'unsafe-inline'",
-    "script-src 'self' 'unsafe-inline'",
-    // Clover Hosted Checkout is never called from the browser — the session is
-    // created server-side and the customer is sent to Clover's own page by a
-    // top-level navigation, which no directive here restricts. So unlike the
-    // Stripe setup this replaces, neither connect-src nor form-action needs a
-    // payment-provider origin.
-    "connect-src 'self'",
-    "font-src 'self' data:",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-    "object-src 'none'",
-  ].join("; "),
-};
-
-export function middleware() {
+export function middleware(request: Request) {
   const response = NextResponse.next();
-  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+  for (const [name, value] of Object.entries(securityHeadersFor(new URL(request.url).pathname))) {
     response.headers.set(name, value);
   }
   return response;

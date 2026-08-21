@@ -275,7 +275,19 @@ export function TimeClockKiosk() {
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch("/api/timeclock/kiosk");
+        // Pairing: `/kiosk?pair=TOKEN`, opened once on the tablet. The token is
+        // kept on the device and removed from the URL immediately, so it does
+        // not sit in browser history, a bookmark, or a screenshot of the address
+        // bar taken during setup.
+        const url = new URL(window.location.href);
+        const pairing = url.searchParams.get("pair");
+        if (pairing) {
+          window.localStorage.setItem("p62_kiosk_token", pairing);
+          url.searchParams.delete("pair");
+          window.history.replaceState({}, "", url.toString());
+        }
+        const token = window.localStorage.getItem("p62_kiosk_token") ?? "";
+        const response = await fetch("/api/timeclock/kiosk", { headers: token ? { "x-kiosk-token": token } : {} });
         const payload = (await response.json()) as { employees?: { id: string; name: string }[]; error?: string };
         if (cancelled) return;
         if (!response.ok) setRosterError(payload.error ?? "The staff list could not be loaded.");

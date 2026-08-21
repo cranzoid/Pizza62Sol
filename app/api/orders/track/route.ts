@@ -8,7 +8,12 @@ export async function GET(request: Request) {
     await ensureDatabase();
     const url = new URL(request.url);
     const orderNumber = url.searchParams.get("order")?.trim().toUpperCase() ?? "";
-    const token = url.searchParams.get("token") ?? "";
+    // H-15: the header is what the app sends. A token in a query string is
+    // written to every access log it passes through, which is how it was found
+    // in the first place — the audit read full tokenised URLs out of the runtime
+    // log. The query parameter remains only so a link opened by something that
+    // does not run JavaScript still works.
+    const token = request.headers.get("x-tracking-token")?.trim() || url.searchParams.get("token") || "";
     if (!/^P62-[0-9]{1,10}$/.test(orderNumber) || token.length < 32) {
       return Response.json({ error: "Order not found." }, { status: 404 });
     }

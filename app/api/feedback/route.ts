@@ -18,7 +18,9 @@ export async function GET(request: Request) {
     await ensureDatabase();
     const url = new URL(request.url);
     const orderNumber = url.searchParams.get("order") ?? "";
-    const token = url.searchParams.get("token") ?? "";
+    // H-15: same as tracking — the app sends the token in a header so it never
+    // reaches an access log; the query parameter is the no-JavaScript fallback.
+    const token = request.headers.get("x-tracking-token")?.trim() || url.searchParams.get("token") || "";
     const order = token.length >= 32 ? await findOrder(orderNumber, token) : null;
     if (!order || order.status === "cancelled") {
       return Response.json({ error: "Feedback link is invalid or unavailable." }, { status: 404 });

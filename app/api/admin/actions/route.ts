@@ -1,6 +1,6 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, getSetting, writeAudit } from "@/db/runtime";
-import { canTransitionOrderStatus, type Fulfilment } from "@/lib/domain";
+import { canTransitionOrderStatus, generateOpaqueToken, hashOpaqueToken, type Fulfilment } from "@/lib/domain";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 
 type ActionBody =
@@ -17,13 +17,49 @@ type ActionBody =
       reason?: string;
       customerMessage?: string;
     }
-  | { action: "closure.remove"; id?: string };
+  | { action: "closure.remove"; id?: string }
+  | { action: "kiosk.pair" };
 
 export async function POST(request: Request) {
   try {
     await ensureDatabase();
     const body = (await request.json()) as ActionBody;
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+    // C-09 follow-up: pairing the time-clock tablet.
+    //
+    // The roster endpoint publishes staff first names, and rate limiting bounds
+    // how fast they can be scraped rather than stopping them being read. This
+    // mints the device token that gates it.
+    //
+    // The raw token is returned exactly once and only its hash is stored, so a
+    // database dump does not hand over the kiosk. Pairing again invalidates the
+    // previous tablet, which is also how a lost one is revoked.
+    if (body.action === "kiosk.pair") {
+      const user = await requireStaff(request, "manage_employees");
+      const token = generateOpaqueToken();
+      const now = Date.now();
+      await getD1()
+        .prepare(
+          `INSERT INTO settings (key, value_json, version, updated_by, updated_at)
+           VALUES ('kiosk', ?, 1, ?, ?)
+           ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json,
+             version = settings.version + 1, updated_by = excluded.updated_by,
+             updated_at = excluded.updated_at`,
+        )
+        .bind(JSON.stringify({ tokenHash: await hashOpaqueToken(token), pairedAt: now }), user.id, now)
+        .run();
+      await writeAudit({
+        actorId: user.id,
+        action: "kiosk.pair",
+        targetType: "settings",
+        targetId: "kiosk",
+        requestId,
+      });
+      // The URL is the whole setup: open it on the tablet once and it stores the
+      // token and forgets the URL.
+      return Response.json({ ok: true, pairingPath: `/kiosk?pair=${encodeURIComponent(token)}` });
+    }
+
     // H-08: holidays, one-off closures, and "back in an hour".
     //
     // Deliberately a window rather than a toggle. `ordering.paused` has no end,

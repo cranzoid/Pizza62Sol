@@ -1,5 +1,6 @@
-import { ensureDatabase, getD1 } from "@/db/runtime";
+import { ensureDatabase, getD1, getSetting } from "@/db/runtime";
 import { verifyPin } from "@/lib/auth";
+import { hashOpaqueToken } from "@/lib/domain";
 import { enforceRateLimit, RateLimitError } from "@/lib/security";
 import { type ClockAction } from "@/lib/domain";
 import { PunchError, currentClockState, recordPunch } from "@/lib/timeclock-punch";
@@ -7,18 +8,50 @@ import { PunchError, currentClockState, recordPunch } from "@/lib/timeclock-punc
 const PUNCHES = new Set(["clock_in", "break_start", "break_end", "clock_out"]);
 
 /**
+ * Whether this request came from a paired kiosk device.
+ *
+ * C-09 introduced this endpoint so the kiosk could show a name picker, and in
+ * doing so published the first names of every member of staff to the internet.
+ * Rate limiting bounds how fast they can be scraped; it does not stop them being
+ * read. So the tablet is paired once and presents a token afterwards.
+ *
+ * **Fails closed when nothing is paired.** The tempting alternative — stay open
+ * until a token is configured — means the roster is public on every deployment
+ * where somebody has not got round to it yet, which is exactly the state this is
+ * meant to end. Pairing is one tap in Admin → Team.
+ *
+ * Compared against a stored hash, so the settings row is not itself a credential.
+ */
+async function pairedKiosk(request: Request): Promise<boolean> {
+  const presented = request.headers.get("x-kiosk-token")?.trim();
+  if (!presented) return false;
+  const kiosk = await getSetting<{ tokenHash?: string }>("kiosk").catch(() => ({ tokenHash: undefined }));
+  if (!kiosk?.tokenHash) return false;
+  return (await hashOpaqueToken(presented)) === kiosk.tokenHash;
+}
+
+/**
  * The roster the kiosk shows so an employee can identify themselves before
  * typing a PIN.
  *
  * Only the id and display name of active staff who actually have a PIN — no
- * wage, role, contact details or employment terms. The kiosk is a tablet in the
- * store, but this route is reachable from the internet, so it is rate limited
- * and returns the minimum needed to render a list of buttons.
+ * wage, role, contact details or employment terms. Even that is behind the
+ * device token above: a list of who works here and when they are on shift is
+ * worth something to somebody, and it was readable by anyone who found the URL.
  */
 export async function GET(request: Request) {
   try {
     await enforceRateLimit(request, "timeclock-roster", 60, 10 * 60 * 1000);
     await ensureDatabase();
+    if (!(await pairedKiosk(request))) {
+      return Response.json(
+        {
+          error: "This tablet is not set up as a time clock yet. Ask the owner to pair it from Admin → Team.",
+          paired: false,
+        },
+        { status: 403 },
+      );
+    }
     const roster = await getD1()
       .prepare(
         `SELECT p.staff_user_id, u.name

@@ -494,11 +494,58 @@ function NewTopping({ onSave }: { onSave: (body: Record<string, unknown>) => voi
   return <div className="admin-create-row"><strong>Add topping</strong><input placeholder="Topping name" value={name} onChange={(event) => setName(event.target.value)} /><button className="staff-button" disabled={!name.trim()} onClick={() => { onSave({ action: "topping.upsert", name, kitchenLabel: name.toUpperCase(), isMeat: false, hasHalalVersion: false, halalAvailable: false, halalCostCents: 0, active: true }); setName(""); }}>Create</button></div>;
 }
 
+/**
+ * Pairing the time-clock tablet.
+ *
+ * C-09 gave the kiosk a name picker and, in doing so, published every member of
+ * staff's first name to anyone who found the URL. The roster now needs a device
+ * token, and this is where one is minted.
+ *
+ * The link is shown once and never again: only its hash is stored, so there is
+ * nothing to show a second time. Pairing again invalidates the previous tablet,
+ * which is also how a lost one is revoked.
+ */
+function KioskPairing() {
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const pair = async () => {
+    setBusy(true);
+    setError("");
+    const response = await fetch("/api/admin/actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "kiosk.pair" }),
+    });
+    const result = (await response.json()) as { pairingPath?: string; error?: string };
+    setBusy(false);
+    if (!response.ok || !result.pairingPath) { setError(result.error ?? "Pairing failed."); return; }
+    setLink(`${window.location.origin}${result.pairingPath}`);
+  };
+  return <section className="staff-panel">
+    <div className="staff-panel-head"><h2>Time clock tablet</h2></div>
+    <p className="editor-hint">
+      The staff list on the clock-in screen is only shown to a tablet you have paired. Generate a link, open it
+      once on the tablet, and it is set up for good. Generating a new link unpairs the old tablet — do that if
+      one is lost.
+    </p>
+    <button className="staff-button" disabled={busy} onClick={() => void pair()}>
+      {busy ? "Generating…" : link ? "Generate a new link" : "Generate pairing link"}
+    </button>
+    {link ? <div className="manual-punch">
+      <input readOnly value={link} aria-label="Kiosk pairing link" onFocus={(event) => event.target.select()} />
+      <button className="staff-button" onClick={() => void navigator.clipboard?.writeText(link)}>Copy</button>
+    </div> : null}
+    {link ? <p className="editor-hint">Open this on the tablet now — it is not shown again.</p> : null}
+    {error ? <p className="form-error" role="alert">{error}</p> : null}
+  </section>;
+}
+
 export function AdminTeamPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const [message, setMessage] = useState(""); const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [role, setRole] = useState<"manager" | "employee">("employee"); const [permissions, setPermissions] = useState<string[]>(["view_orders", "acknowledge_orders", "change_order_status"]);
   const complete = async (body: Record<string, unknown>, success: string) => { setMessage(""); try { await configRequest(body); setMessage(success); await onSaved(); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not save."); } };
   const submit = (event: FormEvent) => { event.preventDefault(); void complete({ action: "staff.create", name, email, password, role, permissions }, "Team access created."); setName(""); setEmail(""); setPassword(""); };
-  return <div className="admin-stack admin-controls"><section className="staff-panel"><div className="staff-panel-head"><h2>Current team</h2><span className="live-chip">Individual access</span></div><div className="product-admin-cards">{dashboard.staff.map((member) => <StaffEditor key={member.id} member={member} currentUserId={dashboard.user.id} onSave={(body) => complete(body, `${member.name} access saved.`)} />)}{!dashboard.staff.length ? <p className="staff-empty">You do not have permission to view team access.</p> : null}</div></section><form className="staff-panel employee-form" onSubmit={submit}><div className="staff-panel-head"><h2>Create team access</h2></div><div className="settings-form"><Field label="Name" value={name} onChange={setName} /><Field label="Email" type="email" value={email} onChange={setEmail} /><Field label="Temporary password · 12+ characters" type="password" value={password} onChange={setPassword} /><label>Role<select value={role} onChange={(event) => setRole(event.target.value as typeof role)}><option value="employee">Employee</option><option value="manager">Manager</option></select></label></div><PermissionGrid selected={permissions} onChange={setPermissions} /><button className="staff-button">Create access</button></form>{message ? <p className="admin-message" role="status">{message}</p> : null}</div>;
+  return <div className="admin-stack admin-controls"><section className="staff-panel"><div className="staff-panel-head"><h2>Current team</h2><span className="live-chip">Individual access</span></div><div className="product-admin-cards">{dashboard.staff.map((member) => <StaffEditor key={member.id} member={member} currentUserId={dashboard.user.id} onSave={(body) => complete(body, `${member.name} access saved.`)} />)}{!dashboard.staff.length ? <p className="staff-empty">You do not have permission to view team access.</p> : null}</div></section><form className="staff-panel employee-form" onSubmit={submit}><div className="staff-panel-head"><h2>Create team access</h2></div><div className="settings-form"><Field label="Name" value={name} onChange={setName} /><Field label="Email" type="email" value={email} onChange={setEmail} /><Field label="Temporary password · 12+ characters" type="password" value={password} onChange={setPassword} /><label>Role<select value={role} onChange={(event) => setRole(event.target.value as typeof role)}><option value="employee">Employee</option><option value="manager">Manager</option></select></label></div><PermissionGrid selected={permissions} onChange={setPermissions} /><button className="staff-button">Create access</button></form><KioskPairing />{message ? <p className="admin-message" role="status">{message}</p> : null}</div>;
 }
 
 function StaffEditor({ member, currentUserId, onSave }: { member: StaffMember; currentUserId: string; onSave: (body: Record<string, unknown>) => void }) {
