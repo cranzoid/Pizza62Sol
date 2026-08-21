@@ -75,6 +75,11 @@ locals {
       # the default hostname until a custom domain is configured.
       PUBLIC_BASE_URL = var.custom_domain != "" ? "https://${var.custom_domain}" : "https://${local.default_hostname}"
 
+      # Not secrets, and useful to read at a glance. The API key beside them
+      # is a Key Vault reference; these two are just configuration.
+      EMAIL_FROM     = var.email_from
+      EMAIL_PROVIDER = var.email_provider
+
       APPLICATIONINSIGHTS_CONNECTION_STRING      = azurerm_application_insights.main.connection_string
       ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
 
@@ -227,37 +232,54 @@ resource "azurerm_linux_web_app_slot" "staging" {
 # ---------------------------------------------------------------------------
 # Custom domain
 #
-# Added when the domain is ready. Both resources are gated on `custom_domain`
-# being set, and the managed certificate is free.
+# Both `pizza62.ca` and `www.pizza62.ca` are bound, because a customer types
+# whichever they remember and a certificate covers exactly the names it was
+# issued for. Each gets its own free managed certificate.
 #
-# Order matters and Terraform cannot fully express it: the CNAME and the domain
-# verification TXT record must exist in DNS *before* this applies, or Azure
-# refuses the binding. `terraform output custom_domain_dns_records` prints what
-# to create.
+# **The apex and the www record are not the same kind of record**, and this is
+# the part that catches people:
+#
+# - `www.pizza62.ca` is a **CNAME** to the App Service hostname. If the app's
+#   inbound IP ever changes — a tier change, a regional move — this keeps working.
+# - `pizza62.ca` cannot be a CNAME. DNS forbids one at a zone apex alongside the
+#   SOA and NS records, so it has to be an **A record** to the inbound IP. That
+#   address is stable in practice but is not contractually pinned, so it is worth
+#   knowing this is the record that would need updating if the app were rebuilt.
+#
+# Both also need an `asuid.<host>` TXT record proving ownership, and all of it
+# must resolve *before* this applies — Azure verifies at binding time and refuses
+# otherwise. `terraform output custom_domain_dns_records` prints exactly what to
+# create.
 # ---------------------------------------------------------------------------
 
+locals {
+  # The apex plus any aliases, as one set. Empty disables the whole block, so the
+  # infrastructure can be applied and running before DNS is ready to move.
+  custom_hostnames = var.custom_domain == "" ? toset([]) : toset(concat([var.custom_domain], var.custom_domain_aliases))
+}
+
 resource "azurerm_app_service_custom_hostname_binding" "main" {
-  count               = var.custom_domain == "" ? 0 : 1
-  hostname            = var.custom_domain
+  for_each            = local.custom_hostnames
+  hostname            = each.value
   app_service_name    = azurerm_linux_web_app.main.name
   resource_group_name = azurerm_resource_group.main.name
 
-  # The binding is replaced by the certificate association below once the
-  # certificate exists; without this, the two fight over the same field.
+  # The certificate binding below owns these two fields once it exists. Without
+  # ignoring them here the two resources fight, and every plan shows a diff.
   lifecycle {
     ignore_changes = [ssl_state, thumbprint]
   }
 }
 
 resource "azurerm_app_service_managed_certificate" "main" {
-  count                      = var.custom_domain == "" ? 0 : 1
-  custom_hostname_binding_id = azurerm_app_service_custom_hostname_binding.main[0].id
+  for_each                   = local.custom_hostnames
+  custom_hostname_binding_id = azurerm_app_service_custom_hostname_binding.main[each.value].id
 }
 
 resource "azurerm_app_service_certificate_binding" "main" {
-  count               = var.custom_domain == "" ? 0 : 1
-  hostname_binding_id = azurerm_app_service_custom_hostname_binding.main[0].id
-  certificate_id      = azurerm_app_service_managed_certificate.main[0].id
+  for_each            = local.custom_hostnames
+  hostname_binding_id = azurerm_app_service_custom_hostname_binding.main[each.value].id
+  certificate_id      = azurerm_app_service_managed_certificate.main[each.value].id
   ssl_state           = "SniEnabled"
 }
 

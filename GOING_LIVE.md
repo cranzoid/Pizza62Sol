@@ -194,17 +194,108 @@ so the two agree.
 
 ---
 
-## The custom domain
+## The custom domain: pizza62.ca
 
-Do this **before** step 3 if you can, so the Clover URLs never need changing.
+**Do this before step 3.** The Clover webhook and return URLs get baked into
+Clover's dashboard, and doing the domain afterwards means going back and changing
+both.
 
-1. Set `custom_domain` in `infra/terraform.tfvars` and run `terraform apply`. It
-   will fail, and print the two DNS records it needs.
-2. Create both at the registrar: a `CNAME` to the App Service hostname, and an
-   `asuid.<domain>` `TXT` record.
-3. Wait for them to resolve, then apply again. The TLS certificate is free and
-   renews itself.
-4. Update the Clover webhook and return URLs to the new domain.
+### What is there now
+
+`pizza62.ca` is a **Wix site**, and Wix's own nameservers are authoritative:
+
+```
+pizza62.ca.        NS   ns8.wixdns.net.
+                   NS   ns9.wixdns.net.
+pizza62.ca.        A    185.230.63.186 / .107 / .171   (Wix)
+www.pizza62.ca.    CNAME cdn1.wixdns.net.              (Wix)
+```
+
+So the records below cannot just be "added at the registrar" — the registrar is
+not answering for this domain. There are two ways round that, and the choice
+matters more than it looks.
+
+### Option A — move DNS off Wix (recommended)
+
+Point the nameservers at the registrar's own DNS, or at Azure DNS, and recreate
+the records there. More work up front, and the right answer if the Wix site is
+going away anyway: you stop paying Wix to answer DNS for a site that no longer
+exists, and you can use an **ALIAS record** for the apex, which tracks the App
+Service address automatically and removes the one fragile record in this setup.
+
+⚠️ **Recreate every record you still need before switching nameservers** — email
+especially. If Wix currently answers for MX, SPF or DKIM records, moving
+nameservers without copying them stops the restaurant's email dead, and that is a
+much worse outage than a website.
+
+```bash
+dig pizza62.ca MX +short
+dig pizza62.ca TXT +short          # SPF, and anything else
+dig google._domainkey.pizza62.ca TXT +short
+```
+
+Write down whatever comes back before touching anything.
+
+### Option B — edit the records inside Wix
+
+Wix allows DNS records to be edited while it holds the domain. Faster, and fine
+as a stepping stone, but you are still dependent on Wix for a site they no longer
+host, and the apex has to be an A record either way.
+
+### The records
+
+Run this after the first `terraform apply`:
+
+```bash
+cd infra
+terraform output custom_domain_dns_records
+terraform output apex_a_record_command | bash   # the apex IP
+```
+
+It prints, roughly:
+
+| Type | Name | Value |
+|---|---|---|
+| `A` | `pizza62.ca` | *(the inbound IP from the command above)* |
+| `TXT` | `asuid.pizza62.ca` | *(verification id)* |
+| `CNAME` | `www.pizza62.ca` | `app-pizza62-prod-XXXXXX.azurewebsites.net` |
+| `TXT` | `asuid.www.pizza62.ca` | *(verification id)* |
+
+**Why the apex is an A record and www is a CNAME:** DNS forbids a CNAME at a zone
+apex, because it would conflict with the SOA and NS records that have to live
+there. So `pizza62.ca` points at an IP address, and that IP is the one thing here
+that would need updating if the app were ever rebuilt in a different region. If
+you take Option A and use Azure DNS, use an **ALIAS** record instead and that
+problem disappears.
+
+### Then
+
+1. Create all four records.
+2. Wait for them to resolve — `dig pizza62.ca` and `dig asuid.pizza62.ca TXT`
+   should show your new values, not Wix's. Give it up to an hour.
+3. Uncomment `custom_domain` and `custom_domain_aliases` in
+   `infra/terraform.tfvars` and `terraform apply`.
+
+Azure verifies the records **at binding time** and refuses the apply if they do
+not resolve. That is why they are commented out to begin with: set early, and
+every apply fails, including ones that have nothing to do with the domain.
+
+The TLS certificates are free, one per hostname, and renew themselves.
+
+### Taking the Wix site down
+
+Do it last, and only once the new site answers on `pizza62.ca`. Until DNS moves,
+the Wix site keeps serving and this one lives on its `azurewebsites.net`
+hostname — the two do not conflict, so there is no rush and no window where the
+restaurant has no website at all.
+
+### Email on the same domain
+
+`orders@pizza62.ca` is the configured sender. It needs SPF and DKIM records from
+the email provider — Resend or SendGrid will give you the exact values. Add them
+in the same visit as the records above; a confirmation email from an
+unauthenticated domain lands in spam, which looks exactly like the software
+being broken.
 
 ---
 

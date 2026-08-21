@@ -56,30 +56,43 @@ output "pending_secrets" {
 
 output "custom_domain_dns_records" {
   description = <<-DESC
-    What to create at the registrar before setting custom_domain.
+    Every DNS record to create before setting custom_domain, ready to read out.
 
-    Azure refuses the hostname binding until both records resolve, so this is a
-    two-pass apply: create these, wait for propagation, then set custom_domain
-    and apply again.
+    Azure verifies these at binding time and refuses the apply if they do not
+    resolve, so this is a two-pass job: create the records, wait for propagation,
+    then apply.
+
+    The apex and the www record are different *kinds* of record. DNS forbids a
+    CNAME at a zone apex, so pizza62.ca has to be an A record while
+    www.pizza62.ca can be a CNAME to the app's hostname.
+
+    The apex A record needs the app's **inbound** IP, which the azurerm provider
+    does not expose on the web app resource — `apex_a_record_command` prints the
+    az command that reads it. Guessing it from the outbound addresses would be
+    wrong: they are a different set.
   DESC
-  value = var.custom_domain == "" ? {} : {
-    cname = "${var.custom_domain} CNAME ${azurerm_linux_web_app.main.default_hostname}"
-    txt   = "asuid.${var.custom_domain} TXT ${azurerm_linux_web_app.main.custom_domain_verification_id}"
-  }
+  value = var.custom_domain == "" ? [] : concat(
+    [
+      "A      ${var.custom_domain}          <inbound IP — see apex_a_record_command>",
+      "TXT    asuid.${var.custom_domain}    ${azurerm_linux_web_app.main.custom_domain_verification_id}",
+    ],
+    flatten([
+      for alias in var.custom_domain_aliases : [
+        "CNAME  ${alias}          ${azurerm_linux_web_app.main.default_hostname}",
+        "TXT    asuid.${alias}    ${azurerm_linux_web_app.main.custom_domain_verification_id}",
+      ]
+    ]),
+  )
 }
 
-output "deploy_command" {
-  description = "Publish a built tree to the staging slot and swap it in. The GitHub Actions workflow does this; this is the manual equivalent."
-  value       = "az webapp deploy --resource-group ${azurerm_resource_group.main.name} --name ${azurerm_linux_web_app.main.name} --slot staging --type zip --src-path build.zip && az webapp deployment slot swap --resource-group ${azurerm_resource_group.main.name} --name ${azurerm_linux_web_app.main.name} --slot staging --target-slot production"
-}
+output "apex_a_record_command" {
+  description = <<-DESC
+    Reads the inbound IP the apex A record must point at.
 
-output "github_actions_variables" {
-  description = "Repository variables the deploy workflow needs. None of these is a secret — the trust is the federated credential, not a value."
-  value = var.github_repository == "" ? {} : {
-    AZURE_CLIENT_ID       = azurerm_user_assigned_identity.github_actions[0].client_id
-    AZURE_TENANT_ID       = data.azurerm_client_config.current.tenant_id
-    AZURE_SUBSCRIPTION_ID = var.subscription_id
-    AZURE_RESOURCE_GROUP  = azurerm_resource_group.main.name
-    AZURE_APP_NAME        = azurerm_linux_web_app.main.name
-  }
+    This is the one record that breaks if the app is ever rebuilt or moved, so it
+    is worth knowing it exists. If DNS ends up in Azure DNS, prefer an ALIAS
+    record targeting the App Service instead — it tracks the address itself and
+    removes this failure mode entirely.
+  DESC
+  value       = "az webapp show -g ${azurerm_resource_group.main.name} -n ${azurerm_linux_web_app.main.name} --query inboundIpAddress -o tsv"
 }

@@ -58,10 +58,32 @@ variable "pg_pool_max" {
 
 
 variable "custom_domain" {
-  description = "Custom hostname to serve, e.g. order.pizza62.ca. Required when enable_front_door is true; enforced by a precondition in frontdoor.tf, because Terraform 1.5 cannot reference another variable from a validation block."
+  description = <<-DESC
+    The primary hostname, e.g. "pizza62.ca".
+
+    Leave empty until DNS is ready to move: Azure verifies the records at binding
+    time and refuses the apply if they do not resolve, so setting this early
+    fails every apply until the DNS is in place.
+  DESC
   type        = string
-  default     = ""
+  # Empty by default and set in terraform.tfvars, so a first apply succeeds
+  # before DNS has moved off Wix.
+  default = ""
 }
+
+variable "custom_domain_aliases" {
+  description = <<-DESC
+    Other hostnames to bind, e.g. ["www.pizza62.ca"].
+
+    Bound rather than redirected, because a TLS certificate covers exactly the
+    names it was issued for — a customer who types www and lands on a name the
+    certificate does not cover sees a browser warning, whatever redirect waits
+    behind it.
+  DESC
+  type        = list(string)
+  default     = ["www.pizza62.ca"]
+}
+
 
 # ---------------------------------------------------------------------------
 # Application configuration
@@ -79,9 +101,19 @@ variable "clover_environment" {
 }
 
 variable "email_from" {
-  description = "From address on transactional email. Must be on a SendGrid domain-authenticated sender."
+  description = <<-DESC
+    The From address on order confirmations.
+
+    Must be on a domain verified with the email provider (SPF and DKIM). That is
+    why it is orders@pizza62.ca and not one of the Gmail addresses on this
+    project: only Google can prove ownership of gmail.com, so mail claiming to be
+    from one is rejected or filed as spam. The Gmail addresses are recipients.
+
+    Until pizza62.ca is verified with the provider, override this with their
+    sandbox sender so confirmations at least go somewhere.
+  DESC
   type        = string
-  default     = ""
+  default     = "orders@pizza62.ca"
 }
 
 variable "tags" {

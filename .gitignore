@@ -45,3 +45,13 @@ next-env.d.ts
 
 # local worker secrets (never commit)
 .dev.vars
+
+# Terraform. State can hold generated passwords and connection strings in clear,
+# so it belongs in the remote backend and never in the repository — even the
+# local state a `-backend=local` override produces while verifying a plan.
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+*.tfplan
+backend.hcl
+backend_override.tf

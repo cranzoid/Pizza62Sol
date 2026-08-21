@@ -1,0 +1,33 @@
+# Environment-specific values for Pizza 62.
+#
+# Copy to terraform.tfvars, which is gitignored.
+#
+# Nothing here is a secret — every credential lives in Key Vault or in the
+# encrypted store the admin screen writes to. This file is committed as an
+# example so the domain and the sizing are reviewable in a diff rather than
+# living in one person's shell history, while the real file stays ignored so
+# nobody can accidentally commit a secret into it later.
+
+# ---------------------------------------------------------------------------
+# The domain
+#
+# ⚠️  Leave both of these commented out until DNS is ready to move.
+#
+# Azure verifies the records at binding time and refuses the apply if they do not
+# resolve — so with these set and DNS still at Wix, *every* apply fails, including
+# ones that have nothing to do with the domain.
+#
+# The order is: apply without them → read `terraform output
+# custom_domain_dns_records` and `apex_a_record_command` → create the records →
+# wait for propagation → uncomment → apply again.
+# ---------------------------------------------------------------------------
+# custom_domain         = "pizza62.ca"
+# custom_domain_aliases = ["www.pizza62.ca"]
+
+# The sender address. Needs SPF and DKIM on pizza62.ca at the email provider
+# before it will deliver; until then, override with the provider's sandbox sender.
+email_from     = "orders@pizza62.ca"
+email_provider = "resend"
+
+# Sandbox until a test order has been through end to end.
+clover_environment = "sandbox"
