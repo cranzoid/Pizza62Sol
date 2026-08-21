@@ -127,17 +127,23 @@ Currently set:
 
 | | |
 |---|---|
-| HST | 13%, charged on food **and** the delivery fee |
+| HST | 13%, charged on food **and** the delivery fee — matches the owner's prior receipts |
 | Delivery | $3.50, 10 km radius, **$20 minimum** before tax |
 | Estimates | Pickup 15 min, delivery 30 min |
 | Last orders | 20 minutes before closing |
 | Restaurant email | `info.pizza62@gmail.com` |
 
-Go through the pizza prices with the owner and the physical flyer in hand. One
-known discrepancy to settle: the regular X-Large 3-topping price is derived as
-base + 2 × extra = **$17.69**, while the flyer advertises **$15.99** for the
-X-Large 3-topping *pickup special*. Those are two different products and both are
-in the menu — confirm that is what the owner intends.
+Go through the pizza prices with the owner and the physical flyer in hand.
+
+One thing that looks like an error and is not, so nobody "fixes" it later: the
+regular X-Large 3-topping is **$17.69** (base + 2 × extra) while the flyer's
+X-Large 3-topping is **$15.99**. Those are two different products — the $15.99 is
+a **pickup-only special** — and both are in the menu deliberately. Confirmed by
+the owner, 2026-08-21.
+
+The tax rule is confirmed against a real receipt from the previous system:
+$30.99 food + $5.00 shipping + $4.68 HST = $40.67, which is 13% of food *plus*
+shipping. `tests/domain.test.ts` reproduces it exactly.
 
 ### 7. Pair the time-clock tablet
 

@@ -56,7 +56,8 @@ Tracks implementation of the fixes called for in [PIZZA62_FULL_AUDIT.md](PIZZA62
 | H-14 | Relational integrity | ✅ Closed 2026-08-21 — 23 FKs, 51 checks |
 | H-23 / H-24 | Cart revalidation, checkout review | ✅ Closed 2026-08-21 |
 | H-09 | Feedback timing | ✅ Closed by R1.4 |
-| H-18 / H-22 | Event race, menu content | Open — see the note at the end of this file |
+| H-18 | Event race | Closed in practice (one `batch()`); no test for the named interleaving |
+| H-22 | Menu content | Price question answered 2026-08-21; flyer read-through remains |
 
 ---
 
@@ -334,6 +335,17 @@ Everything the audit left open is now closed except H-18 and H-22, both noted at
 the end. What follows is why each one was resolved the way it was, because
 several were not the obvious answer.
 
+**The tax rule, confirmed against a real receipt.** HST at 13% applies to food
+*plus* the delivery charge, not to food alone. The owner supplied a receipt from
+the system this replaces — $30.99 food, $5.00 shipping, $4.68 tax, $40.67 total —
+and 13% of $35.99 is $4.6787, which rounds to exactly $4.68. `priceCart`
+reproduces the whole receipt to the cent, and `tests/domain.test.ts` pins it.
+
+That receipt is the only independent evidence of what the restaurant has actually
+been charging, which is why it is a test rather than a comment. On food alone the
+tax would have been $4.03 and the receipt would not reconcile. Both the rate and
+the "tax the delivery fee" switch remain editable in Admin → Settings.
+
 **H-14 — relational integrity.** 29 tables, zero foreign keys, zero check
 constraints. Now 23 foreign keys and 51 check constraints, generated from
 `db/schema.ts` so drizzle-kit stays the source of truth.
@@ -449,11 +461,12 @@ pools.
 - **H-18 (event race)** — the order-event insert and the status update commit
   together in a `batch()`, so the race the audit described is closed in practice,
   but there is no test for the specific interleaving it named.
-- **H-22 (menu content)** — needs the owner and the physical flyer, not code. One
-  known discrepancy to settle on the call: the regular X-Large 3-topping price is
-  derived as base + 2 × extra = $17.69, while the flyer advertises $15.99 for the
-  X-Large 3-topping *pickup special*. Those are two different products and both
-  are in the menu; it needs confirming that is intended.
+- **H-22 (menu content)** — the price question it turned on is **answered**
+  (owner, 2026-08-21): the regular X-Large 3-topping at $17.69 and the flyer's
+  $15.99 X-Large 3-topping are two different products, the latter being a
+  pickup-only special, and both belong in the menu. The remaining work is a
+  line-by-line read of the rest of the flyer with the owner, which is a
+  conversation rather than code.
 - **Customer SMS** is built and off, pending a registered A2P number.
 - **The weekly logical dump** is a runbook step rather than infrastructure. See
   `infra/backups.tf` for why.

@@ -198,6 +198,34 @@ test("taxes the delivery fee and bases tips on discounted food only", () => {
   assert.equal(total.totalCents, 1500 + 241 + 350 + 225);
 });
 
+/**
+ * The owner's own receipt, from the system this replaces.
+ *
+ * $30.99 of food, $5.00 shipping, $4.68 tax, $40.67 total. It is here as a test
+ * rather than a comment because it is the only independent evidence of what the
+ * restaurant has actually been charging: 13% on food *plus* shipping, not on
+ * food alone. Reproducing it exactly is what confirms the rule was read right.
+ *
+ * The $5.00 is that system's shipping, not this one's $3.50 delivery fee — the
+ * fee is a setting, the rule is not.
+ */
+test("reproduces the owner's real receipt exactly", () => {
+  const total = priceCart({
+    lines: [{ id: "1", productId: "pizza", categoryId: "pizza", quantity: 1, unitPriceCents: 3099, taxable: true, promotionEligible: true }],
+    fulfilment: "delivery",
+    deliveryFeeCents: 500,
+    taxRateBps: 1300,
+    deliveryFeeTaxable: true,
+    tip: { type: "none" },
+  });
+  assert.equal(total.menuSubtotalCents, 3099);
+  assert.equal(total.deliveryFeeCents, 500);
+  // 13% of (3099 + 500) = 467.87 -> 468. On food alone it would be 403, and the
+  // receipt would not match — which is the whole point of this test.
+  assert.equal(total.taxCents, 468);
+  assert.equal(total.totalCents, 4067);
+});
+
 // The flag is owner-editable in Admin → Settings, so both branches have to keep
 // working — not just today's default.
 test("honours delivery.feeTaxable in both directions", () => {
