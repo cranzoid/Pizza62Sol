@@ -84,9 +84,15 @@ resource "azurerm_key_vault_secret" "owner_setup_secret" {
 # --- Secrets filled in out of band -----------------------------------------
 
 locals {
-  # Created empty so the Container App can reference them from day one. A
-  # revision will not start if it references a secret that does not exist, so
-  # these must be present even while Clover and Twilio are still pending.
+  # Created holding "pending" so the app can reference them from day one. App
+  # Service fails to start an instance whose Key Vault reference cannot resolve,
+  # so these must exist even while Clover and Twilio are still unknown.
+  #
+  # Note that the *application* no longer depends on these being the source of
+  # truth: lib/integration-secrets.ts reads the encrypted database store first
+  # and falls back to the environment. They remain here so the credentials can
+  # be set either way — from the admin Integrations screen, or in Key Vault by
+  # someone who would rather not type a payment token into a web form.
   placeholder_secrets = [
     "clover-merchant-id",
     "clover-api-token",
@@ -111,6 +117,72 @@ resource "azurerm_key_vault_secret" "placeholders" {
     # The real value is set with `az keyvault secret set`. Without this, every
     # apply would reset live credentials back to "pending" and take the site
     # down at the next revision.
+    ignore_changes = [value]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# What the app sees
+#
+# Maps each Key Vault secret to the environment variable it populates. App
+# Service resolves these at start-up through the managed identity, so the value
+# never enters app configuration, Terraform state, or the portal.
+#
+# Versionless URIs (no trailing version segment) so rotating a secret takes
+# effect on the next restart without a Terraform apply — which is the whole point
+# of being able to rotate one at 9pm.
+# ---------------------------------------------------------------------------
+
+locals {
+  secret_ids = {
+    DATABASE_URL            = azurerm_key_vault_secret.database_url.versionless_id
+    OWNER_SETUP_SECRET      = azurerm_key_vault_secret.owner_setup_secret.versionless_id
+    SETTINGS_ENCRYPTION_KEY = azurerm_key_vault_secret.settings_encryption_key.versionless_id
+    CRON_SECRET             = azurerm_key_vault_secret.cron_secret.versionless_id
+    CLOVER_MERCHANT_ID      = azurerm_key_vault_secret.placeholders["clover-merchant-id"].versionless_id
+    CLOVER_API_TOKEN        = azurerm_key_vault_secret.placeholders["clover-api-token"].versionless_id
+    CLOVER_WEBHOOK_SECRET   = azurerm_key_vault_secret.placeholders["clover-webhook-secret"].versionless_id
+    EMAIL_API_KEY           = azurerm_key_vault_secret.placeholders["email-api-key"].versionless_id
+    TWILIO_ACCOUNT_SID      = azurerm_key_vault_secret.placeholders["twilio-account-sid"].versionless_id
+    TWILIO_AUTH_TOKEN       = azurerm_key_vault_secret.placeholders["twilio-auth-token"].versionless_id
+  }
+
+  # Reported by `terraform output pending_secrets` so it is obvious what still
+  # needs a real value before the site can take a payment.
+  placeholder_secret_names = local.placeholder_secrets
+}
+
+# ---------------------------------------------------------------------------
+# The key that encrypts owner-set credentials
+#
+# lib/integration-secrets.ts stores the Clover and Twilio credentials the owner
+# types into the admin screen as AES-256-GCM ciphertext under this key. It lives
+# here and never in the database, so a database dump on its own yields nothing —
+# an attacker needs both the dump and the app's identity.
+#
+# Generated rather than supplied: there is no reason for a human ever to see it,
+# and one that has been pasted into a terminal is one that is in a shell history.
+# ---------------------------------------------------------------------------
+
+resource "random_password" "settings_encryption_key" {
+  length  = 32
+  special = false
+}
+
+resource "azurerm_key_vault_secret" "settings_encryption_key" {
+  name = "settings-encryption-key"
+  # base64 of 32 bytes, which is what lib/integration-secrets.ts expects.
+  value        = base64encode(random_password.settings_encryption_key.result)
+  key_vault_id = azurerm_key_vault.main.id
+  content_type = "AES-256 key for owner-set integration credentials"
+
+  depends_on = [time_sleep.keyvault_rbac_propagation]
+
+  lifecycle {
+    # Rotating this makes every already-stored credential undecryptable, and the
+    # app treats an undecryptable secret as unset — so a rotation silently turns
+    # off payments until every credential is re-entered. If it must be rotated,
+    # re-enter the credentials in the same visit.
     ignore_changes = [value]
   }
 }

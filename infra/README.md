@@ -1,160 +1,190 @@
-# Pizza 62 — Azure infrastructure
+# Infrastructure
 
-Terraform for the target architecture in
-`~/.claude/plans/ancient-wishing-wadler.md`. Replaces the Cloudflare Workers
-deployment that R1.1 ported away from.
+Azure, as Terraform. **49 resources**, `canadacentral`, roughly **US$84/month**.
+
+## What this is and why
+
+App Service Linux running Node from source, with a staging slot, in front of a
+private Postgres Flexible Server.
+
+It replaced a Container Apps deployment, and **the reason was not cost** — the
+two are within a few dollars of each other at this size. It was that every deploy
+required building a `linux/amd64` image on an arm64 laptop (about five minutes,
+emulated), pushing it to a registry, and rolling a revision. Here a deploy is a
+zip of an already-built tree.
+
+It also matches the stack already running in this subscription for the CRM
+(`rg-ptcd-prod`) down to the Key Vault references and the Logic App timer, so
+there is one operational shape to learn rather than two.
+
+Gone with the containers: the registry (~$5/month), the Dockerfile deploy path,
+and Front Door (~$35/month). App Service terminates TLS on a custom domain with a
+free managed certificate, which is what Front Door was mostly buying.
 
 ```
-Container Apps environment (VNet-injected, canadacentral)
-├── ca-pizza62-<env>-web        Node 22 / vinext, 1..3 replicas, public ingress
-├── caj-…-migrate               manual   — schema + seed, runs before each deploy
-├── caj-…-outbox                */1      — R1.4, off until the script exists
-└── caj-…-reaper                */5      — R1.3, off until the script exists
-
-psql-pizza62-<env>   Postgres 16 Flexible Server, private (VNet-integrated), 7-day PITR
-st…                  Blob Storage — uploads
-kv-pizza62-<env>     Key Vault — every secret, read via managed identity
-acr…                 Container Registry (Basic)
-maps-pizza62-<env>   Azure Maps — delivery-address geocoding (H-06b)
-afd-pizza62-<env>    Front Door Standard — optional, off by default
+GitHub push → Actions: test, build, zip
+                 ↓
+       publish to the STAGING slot
+                 ↓  wait for /api/health to answer "ok"
+            slot swap  ← zero downtime
+                 ↓
+  App Service P0v3 (NODE|22-lts, Always On)
+     ├── VNet integration → Postgres Flexible Server (no public endpoint)
+     ├── Key Vault references for every secret
+     ├── Blob (uploads) via managed identity
+     └── App Insights → Log Analytics → alerts
+                 ↑
+  Logic App, every minute → POST /api/cron/tick
 ```
 
-## Decisions worth knowing before you change something
+## Monthly cost
 
-**Postgres has no public endpoint.** It is VNet-integrated through a delegated
-subnet, so it is unreachable from a laptop by design. Schema work goes through
-the `db-migrate` job. For a genuine break-glass `psql`, put a temporary jumpbox
-in `snet-apps` and delete it afterwards.
-
-**The connection budget is a real limit.** `B_Standard_B1ms` allows 50
-connections. `postgres.tf` computes worst-case demand as
-`web_max_replicas × pg_pool_max + jobs × job_pg_pool_max` and a `check` block
-fails `plan` if it gets within 5 of the cap. Raising `web_max_replicas` without
-raising the SKU is how you turn a busy Friday into failed checkouts.
-
-**Front Door is off.** Standard is ~$35/month flat and does nothing while the
-app is served on its generated `*.azurecontainerapps.io` hostname, which already
-has TLS. Turn it on with the domain (below).
-
-**Both cron jobs are off.** They are gated behind `enable_outbox_dispatcher` and
-`enable_payment_reaper` because `scripts/dispatch-outbox.ts` and
-`scripts/reap-payments.ts` do not exist yet. Turn each on with the release that
-writes it — R1.4 and R1.3 respectively.
-
-**No storage account key exists.** `shared_access_key_enabled = false`; the app
-uses its managed identity. This also means whoever runs `terraform apply` needs
-`Storage Blob Data Contributor`, which Terraform grants itself.
-
-## First-time setup
-
-```bash
-# 1. State backend (once per subscription)
-cd infra/bootstrap
-terraform init && terraform apply
-terraform output -raw backend_hcl > ../backend.hcl
-
-# 2. Main configuration
-cd ..
-terraform init -backend-config=backend.hcl
-terraform workspace new dev
-
-# 3. The registry must exist before an image can be pushed to it, and the
-#    Container App cannot start without an image to pull. So: registry first.
-terraform apply -target=azurerm_container_registry.main
-
-# 4. Build and push an initial image
-az acr login --name "$(terraform output -raw container_registry | cut -d. -f1)"
-docker build --platform linux/amd64 -t "$(terraform output -raw image_repository):latest" ..
-docker push "$(terraform output -raw image_repository):latest"
-
-# 5. Everything else
-terraform apply
-
-# 6. Schema + seed
-az containerapp job start \
-  --name "$(terraform output -raw migrate_job)" \
-  --resource-group "$(terraform output -raw resource_group)"
-
-# 7. Bootstrap the owner account
-terraform output -raw app_url
-az keyvault secret show --vault-name "$(terraform output -raw key_vault)" \
-  --name owner-setup-secret --query value -o tsv
-```
-
-`--platform linux/amd64` is not optional on an Apple Silicon machine. Without
-it the image is arm64, and it fails with an exec-format error only once it is
-in Azure.
-
-## Routine deploys
-
-```bash
-cd infra && ./deploy.sh
-```
-
-Builds the current git SHA, pushes, runs migrations, waits for them to succeed,
-then rolls the revision. It stops before deploying if the migration fails —
-new code against an old schema is worse than not deploying.
-
-## Third-party secrets
-
-Terraform creates these holding the literal value `pending`, with
-`ignore_changes = [value]` so an apply never reverts a real credential. Set each
-one as it arrives:
-
-```bash
-VAULT="$(terraform output -raw key_vault)"
-az keyvault secret set --vault-name "$VAULT" --name clover-merchant-id    --value '...'
-az keyvault secret set --vault-name "$VAULT" --name clover-api-token      --value '...'
-az keyvault secret set --vault-name "$VAULT" --name clover-webhook-secret --value '...'
-az keyvault secret set --vault-name "$VAULT" --name email-api-key         --value '...'
-az keyvault secret set --vault-name "$VAULT" --name twilio-account-sid    --value '...'
-az keyvault secret set --vault-name "$VAULT" --name twilio-auth-token     --value '...'
-```
-
-The Container App resolves secrets when a revision starts, so a new value needs
-a restart to take effect:
-
-```bash
-az containerapp revision restart --name ca-pizza62-dev-web \
-  --resource-group "$(terraform output -raw resource_group)" \
-  --revision "$(az containerapp show -n ca-pizza62-dev-web \
-      -g "$(terraform output -raw resource_group)" \
-      --query properties.latestRevisionName -o tsv)"
-```
-
-`terraform output pending_secrets` lists which are still placeholders.
-
-## Adding the custom domain
-
-```hcl
-enable_front_door = true
-custom_domain     = "order.pizza62.ca"
-```
-
-`terraform apply`, then read `terraform output front_door_dns_records` and add
-the CNAME and the `_dnsauth` TXT record at the registrar. Managed-certificate
-validation completes on its own once the TXT record resolves.
-
-## Environments
-
-`dev` and `prod` are Terraform workspaces over one backend; every resource name
-carries the workspace, so the two never collide.
-
-```bash
-terraform workspace select prod
-terraform apply -var="image_tag=$(git rev-parse --short HEAD)"
-```
-
-Pin `image_tag` to a SHA in prod. `latest` makes it impossible to tell what is
-actually running.
-
-## Rough monthly cost (lean defaults, canadacentral)
-
-| Item | ~USD/mo |
+| | |
 |---|---|
-| Postgres B1ms, 32 GB, 7-day PITR | 18 |
-| Container Apps, 1 always-on 0.5 vCPU / 1 GiB replica | 15 |
-| Container Registry Basic | 5 |
-| Blob Storage + Log Analytics + Key Vault + private DNS + Maps | 5 |
-| **Total** | **~43** |
-| *Front Door Standard, when enabled* | *+35* |
+| App Service P0v3 (Linux) | $61.32 |
+| Postgres B1ms + 32 GB Premium SSD | ~$18 |
+| Logic App (~43,000 runs) | ~$2 |
+| Blob, Key Vault, Log Analytics, Maps | ~$3 |
+| **Total** | **~$84** |
+
+Dropping to **B1** takes this to about **$36**, and is a one-line change to
+`app_service_sku` with no code change. What it costs is the staging slot —
+Basic has none, so every deploy becomes 30–60 seconds of downtime, which for a
+restaurant means during dinner. Remove the slot resources before switching, or
+the apply fails.
+
+## First bring-up
+
+```bash
+# 1. Remote state (once per subscription).
+cd infra/bootstrap && terraform init && terraform apply
+# Copy the printed values into infra/backend.hcl.
+
+# 2. Everything else.
+cd .. && terraform init -backend-config=backend.hcl
+terraform workspace new prod        # or use `default` for a single environment
+terraform apply
+```
+
+No `-target` step is needed any more. The container deployment required one,
+because a registry had to exist before an image could be pushed into it; there is
+no registry now.
+
+## After the first apply
+
+```bash
+# The one-time owner bootstrap secret. Use it at /admin, then it is spent.
+terraform output -raw owner_setup_secret_command | bash
+
+# What still needs real credentials.
+terraform output pending_secrets
+```
+
+Credentials can be set **either** in the admin Integrations screen (encrypted in
+the database under `SETTINGS_ENCRYPTION_KEY`, which stays in Key Vault) **or**
+directly in Key Vault:
+
+```bash
+az keyvault secret set --vault-name "$(terraform output -raw key_vault)" \
+  --name clover-api-token --value '…'
+```
+
+The application reads the database first and falls back to Key Vault, so both
+work. The admin screen exists so the owner can do it without an Azure login; Key
+Vault exists so a developer can, without typing a payment token into a web form.
+
+The placeholder secrets have `ignore_changes` on their value, so setting one out
+of band is safe and a later apply will not revert it.
+
+## Deploying
+
+Normally: push to `main`. To wire that up, set `github_repository`, apply, then
+paste `terraform output github_actions_variables` into the repository's Actions
+**variables** (not secrets — none of them is one; the trust is the federated
+credential).
+
+By hand: `./infra/deploy.sh`. Same steps, same order.
+
+Rolling back is a swap, not a rebuild — the previous build is still in the
+staging slot:
+
+```bash
+az webapp deployment slot swap -g "$(terraform output -raw resource_group)" \
+  -n "$(terraform output -raw app_name)" --slot staging --target-slot production
+```
+
+## The custom domain
+
+Two passes, because Azure will not accept the binding until DNS resolves.
+
+1. `terraform output custom_domain_dns_records` — but this is empty until
+   `custom_domain` is set, so set it first and read the records from the failed
+   plan, or construct them: `CNAME` to the default hostname, and
+   `asuid.<domain> TXT <custom_domain_verification_id>`.
+2. Create both records at the registrar, wait for propagation, then apply.
+
+The managed certificate is free and renews itself.
+
+Set the custom domain **before** giving Clover and Twilio their callback URLs, or
+they will point at `*.azurewebsites.net` and have to be changed again.
+
+## Reaching the database
+
+There is no public endpoint, by design. Schema changes apply themselves from
+`startup.sh` on every deploy. For a break-glass `psql`, the shortest route is the
+App Service SSH console:
+
+```bash
+az webapp ssh -g "$(terraform output -raw resource_group)" -n "$(terraform output -raw app_name)"
+# inside: the DATABASE_URL environment variable is already resolved
+```
+
+## Backups
+
+Three layers, and they fail differently. See `backups.tf` for the full note.
+
+- **Postgres PITR**, 35 days, on the server itself. Recovers a bad migration to
+  any second in the window. Does not survive the server being deleted.
+- **Blob versioning and soft delete**, 30 days, on the uploads account. Recovers
+  a menu photo the owner overwrote — PITR does not cover blobs at all.
+- **A weekly logical dump**, which is manual, and deliberately so. It needs
+  `pg_dump` with network access to a private database, which on Container Apps
+  was a scheduled job; adding a container platform back for one weekly dump is a
+  lot of parts. It is the layer that matters when the other two do not, because a
+  dump in a storage account is restorable without Azure's cooperation:
+
+```bash
+az webapp ssh -g "$RG" -n "$APP"           # inside the app, which can reach the database
+pg_dump "$DATABASE_URL" | gzip > /tmp/pizza62-$(date +%F).sql.gz
+# then download it and put it somewhere that is not this subscription
+```
+
+## Alerts
+
+`alert_emails` — the developer, not the restaurant. The owner cannot act on a
+failed health check, and an alert nobody can act on is one everybody learns to
+ignore.
+
+| Alert | Fires when | Why it is worth waking up for |
+|---|---|---|
+| health | `/api/health` failing for 5 min | Customers cannot order. Covers the app, the database, and a bad migration in one rule |
+| 5xx | more than 5 in 5 min | A single error is noise; a rate is an outage |
+| db-storage | above 80% | A full disk makes Postgres read-only, and the warning is visible days ahead |
+| db-connections | any refused connection | The budget is arithmetic; this catches an assumption being wrong |
+| notifications | a sweep logged a failure | Somebody was not told about an order — silent by nature, since nobody watches a table |
+
+## Notes that will save you time
+
+- **`vnet_route_all_enabled` is load-bearing.** Without it only RFC1918
+  destinations route through the VNet, the private DNS zone for Postgres is never
+  consulted, and the app cannot resolve its own database.
+- **The connection budget is a plan-time precondition, not a warning.** Worst
+  case is both slots warm during a swap: `2 × pg_pool_max`, currently 16 of 50.
+  Raising `pg_pool_max` without raising `postgres_sku` fails the plan on purpose —
+  exhausting connections turns every route into "too many clients", which is a
+  failed checkout rather than a tidy error page.
+- **`SETTINGS_ENCRYPTION_KEY` has `ignore_changes`.** Rotating it makes every
+  stored credential undecryptable, and the app treats undecryptable as unset — so
+  a rotation silently turns off payments until every credential is re-entered.
+- **Key Vault references are versionless**, so rotating a secret takes effect on
+  the next restart with no Terraform apply.

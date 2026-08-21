@@ -36,38 +36,14 @@ variable "postgres_storage_mb" {
 }
 
 variable "postgres_backup_retention_days" {
-  description = "Point-in-time restore window."
+  description = "Point-in-time restore window, in days. 35 is the maximum and costs a few cents a month at this data volume."
   type        = number
-  default     = 7
+  default     = 35
 
   validation {
     condition     = var.postgres_backup_retention_days >= 7
     error_message = "Keep at least 7 days of PITR: an order lost to a bad migration may not be noticed for days."
   }
-}
-
-variable "web_min_replicas" {
-  description = "Always-on replicas. Must be >= 1 so the first customer of the day does not pay a cold start."
-  type        = number
-  default     = 1
-}
-
-variable "web_max_replicas" {
-  description = "Scale ceiling. web_max_replicas * pg_pool_max must stay under the Postgres connection cap."
-  type        = number
-  default     = 3
-}
-
-variable "web_cpu" {
-  description = "vCPU per replica. Container Apps requires memory to be exactly 2 GiB per vCPU."
-  type        = number
-  default     = 0.5
-}
-
-variable "web_memory" {
-  description = "Memory per replica, as a Container Apps quantity string."
-  type        = string
-  default     = "1Gi"
 }
 
 variable "pg_pool_max" {
@@ -76,38 +52,10 @@ variable "pg_pool_max" {
   default     = 8
 }
 
-variable "job_pg_pool_max" {
-  description = "node-postgres pool size per job replica. Jobs are single-threaded sweepers and need far less."
-  type        = number
-  default     = 4
-}
-
 # ---------------------------------------------------------------------------
 # Application image
 # ---------------------------------------------------------------------------
 
-variable "image_tag" {
-  description = "Tag of the pizza62-web image in ACR. Set per deploy; `latest` is fine for dev but pin a digest or git SHA for prod."
-  type        = string
-  default     = "latest"
-}
-
-# ---------------------------------------------------------------------------
-# Front Door
-#
-# Off by default. Standard costs ~$35/month, which is most of a lean budget, and
-# it buys nothing until there is a custom domain to terminate. Container Apps
-# ingress already serves TLS on the generated *.azurecontainerapps.io hostname.
-#
-# When the domain arrives: set enable_front_door = true and custom_domain, apply,
-# then add the CNAME and TXT validation records the outputs print.
-# ---------------------------------------------------------------------------
-
-variable "enable_front_door" {
-  description = "Provision Front Door Standard for WAF and a custom domain."
-  type        = bool
-  default     = false
-}
 
 variable "custom_domain" {
   description = "Custom hostname to serve, e.g. order.pizza62.ca. Required when enable_front_door is true; enforced by a precondition in frontdoor.tf, because Terraform 1.5 cannot reference another variable from a validation block."
@@ -149,18 +97,6 @@ variable "tags" {
 # them off until then keeps a missing-entrypoint crash out of the logs every
 # minute, and keeps the connection budget honest.
 # ---------------------------------------------------------------------------
-
-variable "enable_outbox_dispatcher" {
-  description = "Create the outbox-dispatcher cron job. On by default since R1.4: scripts/dispatch-outbox.ts exists. The routes dispatch inline, so this job is the retry sweeper and the safety net — without it, anything that failed its first attempt is never tried again."
-  type        = bool
-  default     = true
-}
-
-variable "enable_payment_reaper" {
-  description = "Create the payment-reaper cron job. On by default since R1.3: scripts/reap-payments.ts exists, and Clover sends no session-expiry webhook, so without this job abandoned checkouts stay in the queue forever."
-  type        = bool
-  default     = true
-}
 
 variable "maps_sku" {
   description = "Azure Maps account SKU. G2 is the current generation; volume here is one geocode per delivery checkout."
@@ -214,4 +150,64 @@ variable "voice_retry_minutes" {
     condition     = var.voice_retry_minutes >= 1 && var.voice_retry_minutes <= 60
     error_message = "voice_retry_minutes must be between 1 and 60."
   }
+}
+
+# ---------------------------------------------------------------------------
+# App Service
+# ---------------------------------------------------------------------------
+
+variable "app_service_sku" {
+  description = <<-DESC
+    App Service plan tier.
+
+    P0v3 (1 vCPU / 4 GB, ~US$61/month) is the default because it is the cheapest
+    tier with deployment slots, and slots are what make a deploy zero-downtime.
+    Without them every deploy is 30-60 seconds of unavailability, which for a
+    restaurant means during dinner.
+
+    B1 (~US$13/month) is the same application with no slot: viable if deploys
+    only ever happen when the store is shut. Changing this is a one-line apply
+    and needs no code change, but dropping to Basic also drops the staging slot,
+    so remove the slot resources first or the apply fails.
+  DESC
+  type        = string
+  default     = "P0v3"
+}
+
+variable "cron_interval_minutes" {
+  description = <<-DESC
+    How often the Logic App calls /api/cron/tick.
+
+    One minute. This timer carries the customer's order confirmation and the call
+    that tells the kitchen an order exists — latency here is the failure this
+    release exists to eliminate. Consumption Logic Apps bill per action, so
+    ~43,000 runs a month is a couple of dollars.
+  DESC
+  type        = number
+  default     = 1
+}
+
+variable "alert_emails" {
+  description = "Who is told when the site is down. The developer, not the restaurant — the owner cannot act on a failed health check."
+  type        = list(string)
+  default     = ["deskofvisheshvaibhav@gmail.com", "visheshvaibhav10@gmail.com"]
+}
+
+variable "blob_retention_days" {
+  description = "How long a deleted or overwritten menu photo can be recovered."
+  type        = number
+  default     = 30
+}
+
+variable "github_repository" {
+  description = <<-DESC
+    "owner/repo" for the deploy pipeline, e.g. "cranzoid/Pizza62Sol".
+
+    Empty disables the federated identity entirely, so the infrastructure can be
+    applied before the repository exists. Set it, apply, and
+    `terraform output github_actions_variables` prints what to paste into the
+    repository's Actions variables.
+  DESC
+  type        = string
+  default     = ""
 }

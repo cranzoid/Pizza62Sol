@@ -11,20 +11,28 @@ locals {
   # allows 50. Azure reserves a handful for its own monitoring and for the
   # superuser, so treat ~45 as spendable.
   #
-  # Worst-case concurrent demand:
-  #   web  : web_max_replicas * pg_pool_max
-  #   jobs : (db-migrate, plus whichever cron jobs are enabled) * job_pg_pool_max
+  # The shape of the demand changed with the move to App Service. There is no
+  # longer a fleet of container replicas and three separate job containers, each
+  # with its own pool. There is one App Service plan running a production
+  # instance and, during a deploy, a staging instance — and the background sweeps
+  # now run *inside* those processes, on their existing pool, rather than in
+  # containers of their own.
   #
-  # With the defaults - 3 replicas and all three jobs (db-migrate, the payment
-  # reaper from R1.3, the outbox dispatcher from R1.4) - that is 3*8 + 3*4 = 36,
-  # against the 45 the precondition allows. That is now only 9 of headroom, so
-  # the next thing added here needs the arithmetic re-checked rather than
-  # assumed. Raising web_max_replicas or
-  # pg_pool_max without raising the SKU exhausts the server, and every route
-  # starts throwing "too many clients": a failed checkout, not a tidy error page.
-  job_count = 1 + (var.enable_outbox_dispatcher ? 1 : 0) + (var.enable_payment_reaper ? 1 : 0)
+  # Worst case is therefore both slots warm at once, which happens for the length
+  # of a swap:
+  #   (production + staging) * pg_pool_max
+  #
+  # With the defaults that is 2 * 8 = 16 against 45 — far more headroom than the
+  # 36 of 45 the container deployment ran at, because the jobs no longer bring
+  # pools of their own. Migrations run in startup.sh, before the server starts,
+  # and hold a single connection.
+  #
+  # Raising pg_pool_max without raising the SKU exhausts the server and every
+  # route starts throwing "too many clients": a failed checkout, not a tidy
+  # error page.
+  slot_count = 2
 
-  postgres_connection_budget = (var.web_max_replicas * var.pg_pool_max) + (local.job_count * var.job_pg_pool_max)
+  postgres_connection_budget = local.slot_count * var.pg_pool_max
 
   postgres_connection_cap = {
     "B_Standard_B1ms"     = 50
@@ -36,10 +44,10 @@ locals {
   postgres_max_connections = lookup(local.postgres_connection_cap, var.postgres_sku, 50)
 }
 
-# The budget is enforced as a precondition on the web app (container_app.tf)
-# rather than a `check` block: a check only emits a warning, and a warning does
-# not stop someone raising web_max_replicas straight into a connection
-# exhaustion. A precondition fails the plan.
+# The budget is enforced as a precondition on the web app (app_service.tf) rather
+# than a `check` block: a check only emits a warning, and a warning does not stop
+# someone raising pg_pool_max straight into connection exhaustion. A precondition
+# fails the plan.
 
 resource "random_password" "postgres_admin" {
   length = 32

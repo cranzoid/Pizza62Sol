@@ -53,16 +53,20 @@ resource "azurerm_virtual_network" "main" {
   tags                = local.tags
 }
 
+# App Service regional VNet integration. Delegated to Microsoft.Web/serverFarms
+# and sized /26: a Container Apps environment demanded a /23, but App Service
+# integration only needs one address per instance plus Azure's five reserved,
+# and an over-large subnet is address space that cannot be reused.
 resource "azurerm_subnet" "apps" {
   name                 = "snet-apps"
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
-  address_prefixes     = ["10.20.0.0/23"]
+  address_prefixes     = ["10.20.0.0/26"]
 
   delegation {
-    name = "container-apps"
+    name = "app-service"
     service_delegation {
-      name    = "Microsoft.App/environments"
+      name    = "Microsoft.Web/serverFarms"
       actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
     }
   }
@@ -95,37 +99,22 @@ resource "azurerm_log_analytics_workspace" "main" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   sku                 = "PerGB2018"
-  # Container Apps console and system logs are the only real source of debugging
-  # once the database is private. 30 days is the free-tier retention.
+  # Application stdout/stderr is the only real source of debugging once the
+  # database is private, and it is what the alert rules query. 30 days is the
+  # free-tier retention.
   retention_in_days = 30
   tags              = local.tags
 }
 
 # ---------------------------------------------------------------------------
-# Container registry
-#
-# Basic is $5/month and enough for one image with a handful of tags. The admin
-# account stays off: the Container App and the jobs pull with a managed identity
-# holding AcrPull, so there is no registry password anywhere.
-# ---------------------------------------------------------------------------
-
-resource "azurerm_container_registry" "main" {
-  name                = "acr${var.project}${local.env}${local.suffix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  sku                 = "Basic"
-  admin_enabled       = false
-  tags                = local.tags
-}
-
-# ---------------------------------------------------------------------------
 # Workload identity
 #
-# One user-assigned identity shared by the web app and all three jobs. It is
+# One user-assigned identity shared by the web app and its staging slot. It is
 # user-assigned rather than system-assigned so the role assignments below can be
 # created in the same apply as the resources that use it - a system-assigned
-# identity does not exist until its parent is created, which would force a
-# second apply before the app could pull its own image.
+# identity does not exist until its parent does, which would force a second
+# apply before the app could read its own secrets. It is also what makes the
+# staging slot and production share one set of grants rather than two.
 # ---------------------------------------------------------------------------
 
 resource "azurerm_user_assigned_identity" "app" {
@@ -133,12 +122,6 @@ resource "azurerm_user_assigned_identity" "app" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
-}
-
-resource "azurerm_role_assignment" "acr_pull" {
-  scope                = azurerm_container_registry.main.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
 resource "azurerm_role_assignment" "blob_contributor" {
@@ -153,22 +136,56 @@ resource "azurerm_role_assignment" "keyvault_secrets" {
   principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
+
 # ---------------------------------------------------------------------------
-# Container Apps environment
+# GitHub Actions deploy identity
 #
-# internal_load_balancer_enabled = false keeps the generated
-# *.azurecontainerapps.io hostname publicly resolvable while outbound traffic
-# still routes through the VNet and can reach the private database.
+# Federated credentials rather than a service principal secret: GitHub presents
+# a short-lived token whose subject claim Azure checks against the trust below.
+# There is no credential to leak, rotate, or find in a screenshot, and one that
+# was somehow captured is useless outside a workflow run on this repository.
+#
+# Scoped to the resource group, not the subscription, and to Website Contributor
+# rather than Contributor — the pipeline publishes code and swaps slots. It has
+# no business creating infrastructure, and Terraform is what does that.
 # ---------------------------------------------------------------------------
 
-resource "azurerm_container_app_environment" "main" {
-  name                       = "cae-${local.name}"
-  location                   = azurerm_resource_group.main.location
-  resource_group_name        = azurerm_resource_group.main.name
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+resource "azurerm_user_assigned_identity" "github_actions" {
+  count               = var.github_repository == "" ? 0 : 1
+  name                = "id-${local.name}-github"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.tags
+}
 
-  infrastructure_subnet_id       = azurerm_subnet.apps.id
-  internal_load_balancer_enabled = false
+resource "azurerm_federated_identity_credential" "github_main" {
+  count               = var.github_repository == "" ? 0 : 1
+  name                = "github-main"
+  resource_group_name = azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.github_actions[0].id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = "https://token.actions.githubusercontent.com"
+  # Pinned to the default branch. A pull request from a fork gets a different
+  # subject claim and is refused, so a stranger's PR cannot deploy.
+  subject = "repo:${var.github_repository}:ref:refs/heads/main"
+}
 
-  tags = local.tags
+# The workflow's `environment: production` produces its own subject claim, which
+# is what makes a manual approval gate meaningful — without this the run would
+# fail the moment someone enabled the gate.
+resource "azurerm_federated_identity_credential" "github_environment" {
+  count               = var.github_repository == "" ? 0 : 1
+  name                = "github-production"
+  resource_group_name = azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.github_actions[0].id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = "https://token.actions.githubusercontent.com"
+  subject             = "repo:${var.github_repository}:environment:production"
+}
+
+resource "azurerm_role_assignment" "github_website_contributor" {
+  count                = var.github_repository == "" ? 0 : 1
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = "Website Contributor"
+  principal_id         = azurerm_user_assigned_identity.github_actions[0].principal_id
 }

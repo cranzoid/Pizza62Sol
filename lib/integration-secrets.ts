@@ -54,6 +54,10 @@ export const INTEGRATION_SECRET_KEYS = [
   "VOICE_RETRY_LIMIT",
   "VOICE_RETRY_MINUTES",
   "PUBLIC_BASE_URL",
+  // Shared with the Logic App that drives /api/cron/tick. Not a third-party
+  // credential, but it belongs to the same "set once, rotate occasionally"
+  // lifecycle and there is no reason for a second storage mechanism.
+  "CRON_SECRET",
 ] as const;
 
 export type IntegrationSecretKey = (typeof INTEGRATION_SECRET_KEYS)[number];

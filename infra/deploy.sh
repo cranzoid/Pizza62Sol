@@ -1,75 +1,83 @@
 #!/usr/bin/env bash
 #
-# Build, push, migrate, deploy - in that order.
+# Manual deploy. The GitHub Actions workflow is the normal path — this is what
+# you run when the pipeline is unavailable, or the first time, before the
+# repository has been wired up.
 #
-# The order matters. The migration job must finish before the new revision takes
-# traffic, or a replica running new code against an old schema will serve errors
-# on every route that touches a changed table.
-#
-#   ./deploy.sh                 # deploy the current git SHA to the current workspace
-#   IMAGE_TAG=v1.2.3 ./deploy.sh
+# It does the same thing in the same order, and the order is the point: build,
+# test, publish to the *staging slot*, wait for it to answer correctly, and only
+# then swap. Production never serves a starting instance, and a build whose
+# migrations fail never becomes production at all.
 #
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
-IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
-WORKSPACE="$(terraform workspace show)"
+RESOURCE_GROUP="${RESOURCE_GROUP:-$(terraform -chdir=infra output -raw resource_group)}"
+APP_NAME="${APP_NAME:-$(terraform -chdir=infra output -raw app_name)}"
 
-echo "==> Deploying tag ${IMAGE_TAG} to workspace ${WORKSPACE}"
+echo "==> Verifying"
+# A deploy that skipped the tests is a deploy that might break checkout, and
+# this script exists precisely for the moments when someone is in a hurry.
+npx tsc --noEmit
+npm run lint
+npm test
+npm run build
 
-REGISTRY="$(terraform output -raw container_registry)"
-REPOSITORY="$(terraform output -raw image_repository)"
-RESOURCE_GROUP="$(terraform output -raw resource_group)"
-MIGRATE_JOB="$(terraform output -raw migrate_job)"
+echo "==> Packaging"
+rm -f build.zip
+# Production dependencies only: roughly a third of the size, and a smaller
+# artifact is a faster slot warm-up.
+npm ci --omit=dev
+zip -qr build.zip \
+  dist node_modules package.json package-lock.json \
+  drizzle scripts db lib startup.sh \
+  alias-hooks.mjs register-alias.mjs
+# Put the dev dependencies back, or the next local command fails confusingly.
+npm ci
 
-# --- build ------------------------------------------------------------------
-# --platform is explicit because Container Apps runs amd64 and a build from an
-# Apple Silicon machine would otherwise produce an arm64 image that fails to
-# start with an exec-format error - and does so only in Azure.
-echo "==> Building ${REPOSITORY}:${IMAGE_TAG}"
-docker build --platform linux/amd64 -t "${REPOSITORY}:${IMAGE_TAG}" ..
+echo "==> Publishing to the staging slot"
+az webapp deploy \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$APP_NAME" \
+  --slot staging \
+  --type zip \
+  --src-path build.zip
 
-echo "==> Pushing to ${REGISTRY}"
-az acr login --name "${REGISTRY%%.*}"
-docker push "${REPOSITORY}:${IMAGE_TAG}"
-
-# --- migrate ----------------------------------------------------------------
-# The job still points at the previous image until the apply below, so pass the
-# new one as an override. scripts/migrate.ts is idempotent and takes an advisory
-# lock, so a concurrent deploy queues rather than races.
-echo "==> Running migrations"
-az containerapp job start \
-  --name "${MIGRATE_JOB}" \
-  --resource-group "${RESOURCE_GROUP}" \
-  --image "${REPOSITORY}:${IMAGE_TAG}" \
-  --output none
-
-echo "==> Waiting for the migration job to finish"
-for _ in $(seq 1 60); do
-  STATUS="$(az containerapp job execution list \
-    --name "${MIGRATE_JOB}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --query "sort_by([], &properties.startTime)[-1].properties.status" -o tsv)"
-  case "${STATUS}" in
-    Succeeded) echo "    migrations applied"; break ;;
-    Failed|Degraded)
-      echo "    migration job ${STATUS} - not deploying. Logs:" >&2
-      az containerapp job logs show \
-        --name "${MIGRATE_JOB}" --resource-group "${RESOURCE_GROUP}" --tail 100 >&2 || true
-      exit 1
-      ;;
-    *) sleep 5 ;;
-  esac
+echo "==> Waiting for staging to be healthy"
+# /api/health touches the database, so this catches a failed migration on the
+# slot rather than after it is already serving customers.
+for attempt in $(seq 1 40); do
+  if curl -fsS --max-time 10 "https://${APP_NAME}-staging.azurewebsites.net/api/health" | grep -q '"status":"ok"'; then
+    echo "    healthy after ${attempt} attempts"
+    break
+  fi
+  if [ "$attempt" -eq 40 ]; then
+    echo "!!! Staging never became healthy. Production is untouched." >&2
+    echo "    Logs: az webapp log tail -g $RESOURCE_GROUP -n $APP_NAME --slot staging" >&2
+    exit 1
+  fi
+  sleep 15
 done
 
-if [ "${STATUS}" != "Succeeded" ]; then
-  echo "    migration job did not finish within 5 minutes - not deploying" >&2
-  exit 1
-fi
+echo "==> Swapping into production"
+az webapp deployment slot swap \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$APP_NAME" \
+  --slot staging \
+  --target-slot production
 
-# --- deploy -----------------------------------------------------------------
-echo "==> Rolling out the new revision"
-terraform apply -var="image_tag=${IMAGE_TAG}" -auto-approve
+echo "==> Confirming production"
+for attempt in $(seq 1 20); do
+  if curl -fsS --max-time 10 "https://${APP_NAME}.azurewebsites.net/api/health" | grep -q '"status":"ok"'; then
+    echo "    live"
+    exit 0
+  fi
+  sleep 10
+done
 
-echo "==> Deployed: $(terraform output -raw app_url)"
+# The previous build is now sitting in the staging slot, so rolling back is a
+# swap rather than a rebuild.
+echo "!!! Production is unhealthy after the swap. Roll back with:" >&2
+echo "    az webapp deployment slot swap -g $RESOURCE_GROUP -n $APP_NAME --slot staging --target-slot production" >&2
+exit 1

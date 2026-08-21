@@ -27,12 +27,21 @@ resource "azurerm_storage_account" "uploads" {
   # backdoor that no RBAC change can revoke.
   shared_access_key_enabled = false
 
+  # Recovering a menu photo. Postgres point-in-time restore covers the database
+  # and nothing else, and there is no other copy of these files — the machine
+  # they came from is the owner's phone.
+  #
+  # `versioning_enabled` is the one that matters: soft delete recovers a
+  # *deleted* blob, but the common accident is overwriting a good photo with a
+  # bad one, which is a write rather than a delete and leaves nothing to undelete.
   blob_properties {
+    versioning_enabled = true
+
     delete_retention_policy {
-      days = 7
+      days = var.blob_retention_days
     }
     container_delete_retention_policy {
-      days = 7
+      days = var.blob_retention_days
     }
   }
 
