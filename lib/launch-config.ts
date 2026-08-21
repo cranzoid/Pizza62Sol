@@ -9,6 +9,12 @@ export const LAUNCH_SETTINGS = {
     latitude: 43.23779,
     longitude: -79.79189,
     googleReviewUrl: "https://g.page/r/CYm26zxH0aO8EAE/review",
+    // Where the new-order alert and the low-rating alert are sent. This is a
+    // *recipient*, not the address mail is sent from — `EMAIL_FROM` is the
+    // sender and must be on a domain with SPF/DKIM, which a gmail.com address
+    // can never be. Leaving this unset meant restaurant alerts fell back to
+    // voice and SMS alone.
+    email: "info.pizza62@gmail.com",
   },
   ordering: {
     enabled: true,
@@ -26,8 +32,15 @@ export const LAUNCH_SETTINGS = {
   delivery: {
     radiusKm: 10,
     feeCents: 350,
-    minimumCents: 0,
-    feeTaxable: false,
+    // Owner decision, 2026-08-21. Checked against the pre-tax menu subtotal, so
+    // a customer cannot reach it with tip or with the delivery fee itself.
+    minimumCents: 2000,
+    // HST applies to a delivery charge when the goods being delivered are
+    // taxable, which for restaurant food they are — so the fee is inside the tax
+    // basis, not beside it. This was `false`, which understated HST owed on
+    // every delivery order. Both this and `taxAndTips.taxRateBps` stay editable
+    // in Admin → Settings, so a change in the rules is a settings change.
+    feeTaxable: true,
     outsideAreaMessage:
       "This address is outside our standard delivery area. Please call Pizza 62 to ask about an exception.",
   },
@@ -51,6 +64,24 @@ export const LAUNCH_SETTINGS = {
     halalSurchargeAmount: 0,
     halalNotice:
       "Halal meat options are available for selected toppings. Pizza 62 uses a shared kitchen, so please tell our team about allergies or preparation concerns before ordering.",
+  },
+  /**
+   * Who hears about it when the software itself is in trouble.
+   *
+   * Deliberately separate from `business.email`: the restaurant wants to know an
+   * order arrived, and the developer wants to know a notification could not be
+   * delivered at all. Sending both to one inbox means the operational signal is
+   * buried in the technical one, and the technical one is ignored.
+   *
+   * The same addresses back the Azure Monitor action group in `infra/`, so a
+   * failure that never reaches the application still reaches a person.
+   */
+  alerts: {
+    developerEmails: ["deskofvisheshvaibhav@gmail.com", "visheshvaibhav10@gmail.com"],
+    // A notification that exhausted its retries is silence the customer can see
+    // and nobody else can, which is the failure this whole release exists to end.
+    notifyOnFailedNotification: true,
+    notifyOnLowRating: true,
   },
   featureFlags: {
     savedCards: false,

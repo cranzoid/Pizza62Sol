@@ -177,21 +177,66 @@ test("applies stackable discounts deterministically and blocks incompatible ones
   assert.deepEqual(applied.applied.map((entry) => entry.id), ["ten", "five"]);
 });
 
-test("excludes delivery fee from HST and bases tips on discounted food", () => {
+// Owner decision, 2026-08-21: HST applies to the delivery fee. The tip basis is
+// deliberately NOT the tax basis — a tip is calculated on discounted food alone,
+// so it moves neither with the delivery fee nor with HST.
+test("taxes the delivery fee and bases tips on discounted food only", () => {
   const total = priceCart({
     lines: [{ id: "1", productId: "pizza", categoryId: "pizza", quantity: 1, unitPriceCents: 2000, taxable: true, promotionEligible: true }],
     promotions: [{ id: "coupon", name: "$5 off", type: "fixed", amount: 500, priority: 1, combinable: true, exclusive: false }],
     fulfilment: "delivery",
     deliveryFeeCents: 350,
     taxRateBps: 1300,
-    deliveryFeeTaxable: false,
+    deliveryFeeTaxable: true,
     tip: { type: "percentage", valueBps: 1500 },
   });
   assert.equal(total.discountedMenuSubtotalCents, 1500);
-  assert.equal(total.taxCents, 195);
+  // 13% of (1500 discounted food + 350 delivery) = 240.5 -> 241, not 195.
+  assert.equal(total.taxCents, 241);
   assert.equal(total.tipBasisCents, 1500);
   assert.equal(total.tipCents, 225);
-  assert.equal(total.totalCents, 2270);
+  assert.equal(total.totalCents, 1500 + 241 + 350 + 225);
+});
+
+// The flag is owner-editable in Admin → Settings, so both branches have to keep
+// working — not just today's default.
+test("honours delivery.feeTaxable in both directions", () => {
+  const base = {
+    lines: [{ id: "1", productId: "pizza", categoryId: "pizza", quantity: 1, unitPriceCents: 3999, taxable: true, promotionEligible: true }],
+    fulfilment: "delivery" as const,
+    deliveryFeeCents: 350,
+    taxRateBps: 1300,
+    tip: { type: "none" as const },
+  };
+  const taxed = priceCart({ ...base, deliveryFeeTaxable: true });
+  const untaxed = priceCart({ ...base, deliveryFeeTaxable: false });
+  // 13% of 4349 = 565.37 -> 565; 13% of 3999 = 519.87 -> 520.
+  assert.equal(taxed.taxCents, 565);
+  assert.equal(untaxed.taxCents, 520);
+  assert.equal(taxed.totalCents, 3999 + 565 + 350);
+  assert.equal(taxed.totalCents - untaxed.totalCents, 45);
+});
+
+// The minimum is measured against the pre-tax menu subtotal, so a customer
+// cannot reach it with the delivery fee or a tip.
+test("blocks delivery below the configured minimum (owner decision: $20)", () => {
+  const config = {
+    originLatitude: LAUNCH_SETTINGS.business.latitude,
+    originLongitude: LAUNCH_SETTINGS.business.longitude,
+    radiusKm: LAUNCH_SETTINGS.delivery.radiusKm,
+    feeCents: LAUNCH_SETTINGS.delivery.feeCents,
+    minimumCents: LAUNCH_SETTINGS.delivery.minimumCents,
+  };
+  assert.equal(LAUNCH_SETTINGS.delivery.minimumCents, 2000);
+  const nearby = { validated: true, latitude: 43.2557, longitude: -79.8711 };
+  const under = validateDelivery(nearby, config, 1999);
+  assert.equal(under.eligible, false);
+  assert.equal(under.reason, "below_minimum");
+  assert.equal(under.feeCents, 0);
+  // Exactly the minimum is inside it, not below it.
+  const exact = validateDelivery(nearby, config, 2000);
+  assert.equal(exact.eligible, true);
+  assert.equal(exact.feeCents, LAUNCH_SETTINGS.delivery.feeCents);
 });
 
 test("validates custom tip limits", () => {
@@ -221,17 +266,20 @@ test("resolves Hamilton delivery addresses and blocks out-of-area postal codes (
   const origin = LAUNCH_SETTINGS.business;
   const config = { originLatitude: origin.latitude, originLongitude: origin.longitude, radiusKm: LAUNCH_SETTINGS.delivery.radiusKm, feeCents: LAUNCH_SETTINGS.delivery.feeCents, minimumCents: LAUNCH_SETTINGS.delivery.minimumCents };
 
+  // Above the $20 minimum, so this test isolates geography rather than spend.
+  const overMinimum = LAUNCH_SETTINGS.delivery.minimumCents + 500;
+
   // A Hamilton postal code resolves and is inside the delivery radius.
   const local = resolveFsaCentroid("L8H 5W7");
   assert.ok(local, "Hamilton FSA should resolve to a point");
-  const eligible = validateDelivery({ validated: local !== null, latitude: local?.latitude ?? null, longitude: local?.longitude ?? null }, config, 0);
+  const eligible = validateDelivery({ validated: local !== null, latitude: local?.latitude ?? null, longitude: local?.longitude ?? null }, config, overMinimum);
   assert.equal(eligible.eligible, true);
   assert.equal(eligible.feeCents, LAUNCH_SETTINGS.delivery.feeCents);
 
   // An Ottawa postal code (K1A 0B1) is not in the delivery-area table -> unverified -> blocked.
   const ottawa = resolveFsaCentroid("K1A 0B1");
   assert.equal(ottawa, null);
-  const blocked = validateDelivery({ validated: false, latitude: null, longitude: null }, config, 0);
+  const blocked = validateDelivery({ validated: false, latitude: null, longitude: null }, config, overMinimum);
   assert.equal(blocked.eligible, false);
   assert.equal(blocked.reason, "address_unverified");
 });

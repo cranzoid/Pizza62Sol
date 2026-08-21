@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   // A validly-signed event for a different merchant is not ours to act on.
   // Signature verification alone does not establish this, because one signing
   // secret can cover several merchants under the same account.
-  const expectedMerchant = cloverMerchantId();
+  const expectedMerchant = await cloverMerchantId();
   if (expectedMerchant && event.merchantId && event.merchantId !== expectedMerchant) {
     return Response.json({ error: "Event is for a different merchant." }, { status: 409 });
   }
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
     // event cannot re-open an order the kitchen has since moved on, or resurrect
     // one the reaper cancelled.
     if (record.status !== "awaiting_payment") return Response.json({ received: true });
-    const releasedStatus = anyProviderConfigured() ? "pending" : "pending_provider_setup";
+    const releasedStatus = (await anyProviderConfigured()) ? "pending" : "pending_provider_setup";
     await getD1().batch([
       getD1()
         .prepare(

@@ -66,7 +66,7 @@ export async function POST(request: Request) {
                AND payload_json::jsonb->>'orderId' = ?`,
           )
           .bind(
-            anyProviderConfigured() ? "pending" : "pending_provider_setup",
+            (await anyProviderConfigured()) ? "pending" : "pending_provider_setup",
             now + (operations.feedbackDelayMinutes ?? 75) * 60_000,
             now,
             order.id,

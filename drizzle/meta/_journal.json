@@ -15,6 +15,13 @@
       "when": 1787104122223,
       "tag": "0001_payments_idempotency_partial",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787298766408,
+      "tag": "0002_integrity_channel_closures",
+      "breakpoints": true
     }
   ]
 }

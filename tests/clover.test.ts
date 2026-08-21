@@ -26,6 +26,7 @@ const {
   cloverCheckoutConfigured,
   CloverNotConfiguredError,
 } = await import("@/lib/clover");
+const { clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
 
 const SECRET = "test-webhook-signing-secret";
 
@@ -59,9 +60,14 @@ const stubClover = (body: unknown, status = 200): { calls: Captured[] } => {
   return { calls };
 };
 
+// Credentials now come from lib/integration-secrets, which caches for 30
+// seconds. Without dropping that cache a value set here would be invisible and a
+// value deleted here would linger — so every mutation of the environment in this
+// file is paired with a cache clear.
 const configure = () => {
   process.env.CLOVER_MERCHANT_ID = "TESTMERCHANT123";
   process.env.CLOVER_API_TOKEN = "test-private-token";
+  clearIntegrationSecretCache();
 };
 
 afterEach(() => {
@@ -69,6 +75,7 @@ afterEach(() => {
   delete process.env.CLOVER_MERCHANT_ID;
   delete process.env.CLOVER_API_TOKEN;
   delete process.env.CLOVER_ENVIRONMENT;
+  clearIntegrationSecretCache();
 });
 
 const OK_RESPONSE = {
@@ -80,31 +87,37 @@ const OK_RESPONSE = {
 
 // --- environment ------------------------------------------------------------
 
-test("defaults to the sandbox host, and only production opts out", () => {
+/** Sets an environment credential and makes it visible past the secret cache. */
+const setEnv = (name: string, value: string) => {
+  process.env[name] = value;
+  clearIntegrationSecretCache();
+};
+
+test("defaults to the sandbox host, and only production opts out", async () => {
   // Defaulting the safe way round: a missing or misspelled value must send test
   // traffic to the sandbox, never live traffic at a real merchant.
-  assert.equal(cloverApiBase(), "https://apisandbox.dev.clover.com");
-  process.env.CLOVER_ENVIRONMENT = "typo";
-  assert.equal(cloverApiBase(), "https://apisandbox.dev.clover.com");
-  process.env.CLOVER_ENVIRONMENT = "production";
-  assert.equal(cloverApiBase(), "https://api.clover.com");
+  assert.equal(await cloverApiBase(), "https://apisandbox.dev.clover.com");
+  setEnv("CLOVER_ENVIRONMENT", "typo");
+  assert.equal(await cloverApiBase(), "https://apisandbox.dev.clover.com");
+  setEnv("CLOVER_ENVIRONMENT", "production");
+  assert.equal(await cloverApiBase(), "https://api.clover.com");
 });
 
-test("reports itself unconfigured until both credentials are present", () => {
-  assert.equal(cloverCheckoutConfigured(), false);
-  process.env.CLOVER_MERCHANT_ID = "TESTMERCHANT123";
-  assert.equal(cloverCheckoutConfigured(), false, "merchant id alone is not enough");
-  process.env.CLOVER_API_TOKEN = "test-private-token";
-  assert.equal(cloverCheckoutConfigured(), true);
+test("reports itself unconfigured until both credentials are present", async () => {
+  assert.equal(await cloverCheckoutConfigured(), false);
+  setEnv("CLOVER_MERCHANT_ID", "TESTMERCHANT123");
+  assert.equal(await cloverCheckoutConfigured(), false, "merchant id alone is not enough");
+  setEnv("CLOVER_API_TOKEN", "test-private-token");
+  assert.equal(await cloverCheckoutConfigured(), true);
 });
 
-test("treats a blank credential as absent", () => {
+test("treats a blank credential as absent", async () => {
   // An unset Key Vault secret arrives as an empty string, not as undefined. If
   // that counted as configured, the customer would be offered online payment
   // and then handed a 502 at the last step.
-  process.env.CLOVER_MERCHANT_ID = "   ";
-  process.env.CLOVER_API_TOKEN = "test-private-token";
-  assert.equal(cloverCheckoutConfigured(), false);
+  setEnv("CLOVER_MERCHANT_ID", "   ");
+  setEnv("CLOVER_API_TOKEN", "test-private-token");
+  assert.equal(await cloverCheckoutConfigured(), false);
 });
 
 // --- creating a checkout session --------------------------------------------

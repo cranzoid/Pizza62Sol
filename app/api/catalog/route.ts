@@ -1,6 +1,6 @@
-import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 import { cloverCheckoutConfigured } from "@/lib/clover";
+import { readIntegrationSecret } from "@/lib/integration-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -49,9 +49,12 @@ export async function GET() {
       variations: variationResult.results,
       toppings: toppingResult.results,
       settings,
+      // These gate what the customer is offered — an un-awaited Promise here
+      // serialises to `{}`, which is truthy in the browser, so online payment
+      // would look available with no credentials behind it.
       integrations: {
-        clover: cloverCheckoutConfigured(),
-        email: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
+        clover: await cloverCheckoutConfigured(),
+        email: (await readIntegrationSecret("EMAIL_API_KEY")) !== null,
       },
     },
     {

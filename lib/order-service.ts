@@ -653,7 +653,7 @@ export async function createOrder(body: OrderRequest) {
     if (paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
       throw new OrderValidationError("Pay at store is available for pickup orders only.");
     }
-    if (paymentMethod === "online" && !cloverCheckoutConfigured()) {
+    if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
       throw new OrderValidationError(
         "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",
         503,
@@ -763,7 +763,7 @@ export async function createOrder(body: OrderRequest) {
     // until something can actually deliver.
     const outboxStatus = paymentMethod === "online"
       ? "waiting_payment"
-      : anyProviderConfigured()
+      : (await anyProviderConfigured())
         ? "pending"
         : "pending_provider_setup";
     const operationsBatch: D1PreparedStatement[] = [

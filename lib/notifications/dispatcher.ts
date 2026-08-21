@@ -170,14 +170,14 @@ async function deliver(row: OutboxRow): Promise<void> {
       // reaper already sets these to 'cancelled', but an inline dispatch racing
       // a cancellation could still arrive here.
       if (order.status === "cancelled") throw new PermanentFailure("order was cancelled");
-      const message = renderCustomerConfirmation(order, payload, await loadItemLines(orderId));
+      const message = await renderCustomerConfirmation(order, payload, await loadItemLines(orderId));
       const to = row.recipient ?? order.customer_email;
       if (!to) throw new PermanentFailure("no recipient address");
       await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
       // Additive only, and off by default — see config.ts on why an unregistered
       // local long code cannot be trusted to deliver. A failure here must not
       // undo the email that already went.
-      if (customerSmsEnabled() && order.customer_phone) {
+      if (order.customer_phone && (await customerSmsEnabled())) {
         await sendSms({ to: order.customer_phone, body: message.smsBody }).catch(() => undefined);
       }
       return;
@@ -189,7 +189,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
       if (order.status === "cancelled") throw new PermanentFailure("order was cancelled");
       const message = renderRestaurantNewOrder(order, await loadItemLines(orderId));
-      const alertNumber = restaurantAlertNumber();
+      const alertNumber = await restaurantAlertNumber();
 
       // Email and voice are the reliable pair (see §9's SMS caveat); SMS is a
       // best-effort extra and is never allowed to fail the row on its own.
@@ -202,7 +202,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       }
       if (alertNumber) {
         await sendSms({ to: alertNumber, body: message.smsBody }).catch(() => undefined);
-        const base = publicBaseUrl();
+        const base = await publicBaseUrl();
         // The call is what actually gets someone's attention, so it is the one
         // whose failure is allowed to retry the row.
         if (base && message.voiceSay && !order.acknowledged_at) {
@@ -233,7 +233,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
       // Asking someone how their cancelled order was is worse than saying nothing.
       if (order.status !== "completed") throw new PermanentFailure("order did not complete");
-      const message = renderFeedbackRequest(order, payload);
+      const message = await renderFeedbackRequest(order, payload);
       const to = row.recipient ?? order.customer_email;
       if (!to) throw new PermanentFailure("no recipient address");
       await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
@@ -313,7 +313,11 @@ async function park(row: OutboxRow, reason: string, now: number): Promise<void> 
 export async function dispatchOutbox(options: { limit?: number; now?: number } = {}): Promise<DispatchOutcome> {
   await ensureDatabase();
   const outcome: DispatchOutcome = { claimed: 0, sent: 0, retried: 0, failed: 0, parked: 0 };
-  if (!anyProviderConfigured()) return outcome;
+  // Note the `await`. Without it this negates a Promise, which is always falsy,
+  // so the guard silently stops guarding and every row is claimed and burned
+  // against providers that cannot deliver. TypeScript flags a bare `if (promise)`
+  // but not `if (!promise)`, so only the test caught this.
+  if (!(await anyProviderConfigured())) return outcome;
 
   const now = options.now ?? Date.now();
   const rows = await claimDue(options.limit ?? 25, now);
@@ -371,9 +375,15 @@ export function dispatchSoon(): void {
  */
 export async function requeueUnacknowledgedOrders(now: number = Date.now()): Promise<number> {
   await ensureDatabase();
-  if (!restaurantAlertNumber() || !publicBaseUrl()) return 0;
+  const [alertNumber, base, retryMinutes, retryLimit] = await Promise.all([
+    restaurantAlertNumber(),
+    publicBaseUrl(),
+    voiceRetryMinutes(),
+    voiceRetryLimit(),
+  ]);
+  if (!alertNumber || !base) return 0;
 
-  const stale = now - voiceRetryMinutes() * 60_000;
+  const stale = now - retryMinutes * 60_000;
   // Bounded to the last few hours: an order left unacknowledged overnight is an
   // operational problem, not something to keep phoning about forever.
   const horizon = now - 6 * 60 * 60 * 1000;
@@ -391,7 +401,7 @@ export async function requeueUnacknowledgedOrders(now: number = Date.now()): Pro
              AND created_at > ?
          )`,
     )
-    .bind(now, now, voiceRetryLimit(), stale, horizon)
+    .bind(now, now, retryLimit, stale, horizon)
     .run();
   return result.meta.changes ?? 0;
 }

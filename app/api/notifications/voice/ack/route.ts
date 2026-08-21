@@ -53,7 +53,7 @@ function say(message: string): Response {
 }
 
 export async function POST(request: Request) {
-  const config = twilioConfig();
+  const config = await twilioConfig();
   if (!config) return new Response("Voice is not configured.", { status: 503 });
 
   const raw = await request.text();

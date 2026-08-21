@@ -43,7 +43,7 @@ const withDb = (name: string, body: () => Promise<void>) =>
 const realFetch = globalThis.fetch;
 
 before(() => {
-  process.env.EMAIL_API_KEY = "test-sendgrid-key";
+  process.env.EMAIL_API_KEY = "test-email-key";
   process.env.EMAIL_FROM = "orders@pizza62.test";
   process.env.PUBLIC_BASE_URL = "https://pizza62.test";
 });
@@ -208,7 +208,9 @@ withDb("sends a due row and records it as sent", async () => {
 
   const outcome = await dispatchOutbox({ limit: 50 });
   assert.ok(outcome.sent >= 1);
-  assert.ok(calls.some((call) => call.url.includes("sendgrid")));
+  // Resend is the default provider (see channels.ts) — SendGrid no longer has
+  // a free tier, and one restaurant fits inside Resend's.
+  assert.ok(calls.some((call) => call.url.includes("api.resend.com")));
 
   const row = await readRow(outboxId);
   assert.equal(row.status, "sent");
@@ -336,7 +338,7 @@ withDb("sends exactly one message when two dispatchers race for one row", async 
     dispatchOutbox({ limit: 50 }),
   ]);
 
-  const sendsForThisRow = calls.filter((call) => call.url.includes("sendgrid"));
+  const sendsForThisRow = calls.filter((call) => call.url.includes("api.resend.com"));
   assert.equal((await readRow(outboxId)).status, "sent");
   // Other rows from other tests may be in flight, so assert on the total claimed
   // count rather than on this row alone being the only send.

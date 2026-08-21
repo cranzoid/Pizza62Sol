@@ -69,14 +69,14 @@ function clockTime(timestamp: number): string {
  * email is not a link, it is a dead string. Better to omit it and tell the
  * customer how to find the order by hand.
  */
-function trackingLink(orderNumber: string, token: string | undefined): string | null {
-  const base = publicBaseUrl();
+async function trackingLink(orderNumber: string, token: string | undefined): Promise<string | null> {
+  const base = await publicBaseUrl();
   if (!base || !token) return null;
   return `${base}/track?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(token)}`;
 }
 
-function feedbackLink(orderNumber: string, token: string | undefined): string | null {
-  const base = publicBaseUrl();
+async function feedbackLink(orderNumber: string, token: string | undefined): Promise<string | null> {
+  const base = await publicBaseUrl();
   if (!base || !token) return null;
   return `${base}/feedback?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(token)}`;
 }
@@ -88,12 +88,12 @@ function whenLine(order: OrderSnapshot): string {
     : `${verb} estimated around ${clockTime(order.estimated_for)}`;
 }
 
-export function renderCustomerConfirmation(
+export async function renderCustomerConfirmation(
   order: OrderSnapshot,
   payload: { trackingToken?: string },
   itemLines: string[],
-): RenderedMessage {
-  const link = trackingLink(order.order_number, payload.trackingToken);
+): Promise<RenderedMessage> {
+  const link = await trackingLink(order.order_number, payload.trackingToken);
   const paid = order.payment_status === "paid";
   const body = [
     `Hi ${order.customer_name.split(" ")[0] || "there"},`,
@@ -188,11 +188,11 @@ export function renderLowRatingAlert(payload: {
   };
 }
 
-export function renderFeedbackRequest(
+export async function renderFeedbackRequest(
   order: OrderSnapshot,
   payload: { feedbackToken?: string },
-): RenderedMessage {
-  const link = feedbackLink(order.order_number, payload.feedbackToken);
+): Promise<RenderedMessage> {
+  const link = await feedbackLink(order.order_number, payload.feedbackToken);
   const body = [
     `Hi ${order.customer_name.split(" ")[0] || "there"},`,
     "",

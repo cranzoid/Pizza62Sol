@@ -1,4 +1,5 @@
 import { createOrder, OrderValidationError } from "@/lib/order-service";
+import { logFailure } from "@/lib/log";
 import { enforceRateLimit, RateLimitError } from "@/lib/security";
 
 export async function POST(request: Request) {
@@ -14,8 +15,15 @@ export async function POST(request: Request) {
         { status: error.status },
       );
     }
+    // Opaque to the customer, specific in the logs. The message stays vague
+    // because a constraint name or a stack trace has no business reaching the
+    // internet — but the reference lets support tie a complaint to the log line.
+    const requestId = logFailure("orders.create", error);
     return Response.json(
-      { error: "We could not safely create the order. No confirmation was recorded." },
+      {
+        error: "We could not safely create the order. No confirmation was recorded.",
+        reference: requestId,
+      },
       { status: 500 },
     );
   }

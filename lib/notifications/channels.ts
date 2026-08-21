@@ -14,7 +14,12 @@
  * retrying; a malformed recipient address will never succeed no matter how many
  * times it is tried, and retrying it just delays every message behind it.
  */
-import { emailConfig, twilioConfig, type TwilioConfig } from "@/lib/notifications/config";
+import {
+  emailConfig,
+  twilioConfig,
+  type EmailConfig,
+  type TwilioConfig,
+} from "@/lib/notifications/config";
 
 export class ChannelError extends Error {
   readonly retryable: boolean;
@@ -40,16 +45,66 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-// --- email (SendGrid) -------------------------------------------------------
+// --- email (Resend or SendGrid) ---------------------------------------------
 
+/**
+ * Email is the durable channel — it is the copy that carries the customer's
+ * tracking link, and the one the restaurant can rely on when a call is missed.
+ * So it is the one place worth supporting two providers.
+ *
+ * **Resend is the default.** Its free tier (3,000/month, 100/day) covers a
+ * single restaurant outright; SendGrid no longer has a free tier for new
+ * accounts. Both adapters are below and `EMAIL_PROVIDER` picks between them, so
+ * moving is an admin setting rather than a deployment.
+ *
+ * ⚠️ **The From address must be on a domain you have authenticated** (SPF and
+ * DKIM in the provider's dashboard). A `@gmail.com` From address cannot be
+ * authenticated by anyone but Google, so it will be rejected outright or filed
+ * as spam — the Gmail addresses on this project are *recipients*, not senders.
+ * Until the custom domain is live, use the provider's sandbox sender.
+ */
 export async function sendEmail(input: {
   to: string;
   subject: string;
   text: string;
 }): Promise<{ provider: string; reference: string | null }> {
-  const config = emailConfig();
+  const config = await emailConfig();
   if (!config) throw new ChannelNotConfiguredError("Email");
+  return config.provider === "sendgrid" ? sendViaSendGrid(config, input) : sendViaResend(config, input);
+}
 
+async function sendViaResend(
+  config: EmailConfig,
+  input: { to: string; subject: string; text: string },
+): Promise<{ provider: string; reference: string | null }> {
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${config.apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from: `Pizza 62 <${config.from}>`,
+      to: [input.to],
+      subject: input.subject,
+      text: input.text,
+    }),
+  });
+  const body = (await response.json().catch(() => null)) as { id?: string; message?: string; name?: string } | null;
+  if (!response.ok) {
+    throw new ChannelError(
+      `Resend ${response.status}: ${(body?.message ?? body?.name ?? "").slice(0, 200)}`,
+      isRetryableStatus(response.status),
+    );
+  }
+  // Unlike SendGrid, Resend returns the id in the body rather than a header.
+  return { provider: "resend", reference: body?.id ?? null };
+}
+
+async function sendViaSendGrid(
+  config: EmailConfig,
+  input: { to: string; subject: string; text: string },
+): Promise<{ provider: string; reference: string | null }> {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
     headers: {
@@ -116,7 +171,7 @@ export async function sendSms(input: { to: string; body: string }): Promise<{
   provider: string;
   reference: string | null;
 }> {
-  const config = twilioConfig();
+  const config = await twilioConfig();
   if (!config) throw new ChannelNotConfiguredError("SMS");
   return postToTwilio(config, "Messages", {
     To: input.to,
@@ -144,7 +199,7 @@ export async function placeAcknowledgementCall(input: {
   say: string;
   ackCallbackUrl: string;
 }): Promise<{ provider: string; reference: string | null }> {
-  const config = twilioConfig();
+  const config = await twilioConfig();
   if (!config) throw new ChannelNotConfiguredError("Voice");
   return postToTwilio(config, "Calls", {
     To: input.to,

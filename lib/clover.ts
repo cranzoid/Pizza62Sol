@@ -22,7 +22,7 @@
  *    session.** So the success URL cannot carry `?order=…&token=…`; the browser
  *    stashes those before redirecting and recovers them at `/order/return`.
  */
-import { env } from "@/lib/runtime-env";
+import { readIntegrationSecret, readIntegrationSecrets } from "@/lib/integration-secrets";
 
 const SANDBOX_BASE = "https://apisandbox.dev.clover.com";
 const PRODUCTION_BASE = "https://api.clover.com";
@@ -30,9 +30,14 @@ const PRODUCTION_BASE = "https://api.clover.com";
 /** Webhook timestamps older than this are refused as replays. */
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 
-function secret(name: string): string | undefined {
-  const value = (env as unknown as Record<string, string | undefined>)[name];
-  return value && value.trim() ? value.trim() : undefined;
+/**
+ * Credentials come from the encrypted store, which reads the database first and
+ * the environment second — so the owner can paste them into the Integrations
+ * tab, and a Key-Vault-only deployment keeps working unchanged. That makes every
+ * getter below async; they were synchronous env reads before.
+ */
+async function secret(name: string): Promise<string | undefined> {
+  return (await readIntegrationSecret(name)) ?? undefined;
 }
 
 /**
@@ -41,21 +46,29 @@ function secret(name: string): string | undefined {
  * Defaulting the *safe* way round matters: an unset or misspelled value should
  * send test traffic to the sandbox, never live traffic to a real merchant.
  */
-export function cloverApiBase(): string {
-  return secret("CLOVER_ENVIRONMENT")?.toLowerCase() === "production" ? PRODUCTION_BASE : SANDBOX_BASE;
+export async function cloverApiBase(): Promise<string> {
+  return (await secret("CLOVER_ENVIRONMENT"))?.toLowerCase() === "production"
+    ? PRODUCTION_BASE
+    : SANDBOX_BASE;
 }
 
 /** True once both values Hosted Checkout needs to make a call are present. */
-export function cloverCheckoutConfigured(): boolean {
-  return Boolean(secret("CLOVER_MERCHANT_ID") && secret("CLOVER_API_TOKEN"));
+export async function cloverCheckoutConfigured(): Promise<boolean> {
+  const values = await readIntegrationSecrets(["CLOVER_MERCHANT_ID", "CLOVER_API_TOKEN"] as const);
+  return Boolean(values.CLOVER_MERCHANT_ID && values.CLOVER_API_TOKEN);
 }
 
-export function cloverWebhookConfigured(): boolean {
-  return Boolean(secret("CLOVER_WEBHOOK_SECRET"));
+export async function cloverWebhookConfigured(): Promise<boolean> {
+  return Boolean(await secret("CLOVER_WEBHOOK_SECRET"));
 }
 
-export function cloverMerchantId(): string | undefined {
+export async function cloverMerchantId(): Promise<string | undefined> {
   return secret("CLOVER_MERCHANT_ID");
+}
+
+/** The signing secret the webhook route authenticates deliveries against. */
+export async function cloverWebhookSecret(): Promise<string | undefined> {
+  return secret("CLOVER_WEBHOOK_SECRET");
 }
 
 export type CloverCheckoutSession = {
@@ -108,8 +121,10 @@ export async function createCloverCheckout(input: {
   totalCents: number;
   summary: string;
 }): Promise<CloverCheckoutSession> {
-  const merchantId = secret("CLOVER_MERCHANT_ID");
-  const apiToken = secret("CLOVER_API_TOKEN");
+  const { CLOVER_MERCHANT_ID: merchantId, CLOVER_API_TOKEN: apiToken } = await readIntegrationSecrets([
+    "CLOVER_MERCHANT_ID",
+    "CLOVER_API_TOKEN",
+  ] as const);
   if (!merchantId || !apiToken) {
     throw new CloverNotConfiguredError();
   }
@@ -117,7 +132,7 @@ export async function createCloverCheckout(input: {
     throw new Error(`Refusing to start a checkout for a non-positive total (${input.totalCents})`);
   }
   const { firstName, lastName } = splitName(input.customerName);
-  const response = await fetch(`${cloverApiBase()}/invoicingcheckoutservice/v1/checkouts`, {
+  const response = await fetch(`${await cloverApiBase()}/invoicingcheckoutservice/v1/checkouts`, {
     method: "POST",
     headers: {
       "X-Clover-Merchant-Id": merchantId,

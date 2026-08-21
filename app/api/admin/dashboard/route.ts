@@ -1,7 +1,8 @@
-import { env } from "@/lib/runtime-env";
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover";
+import { readIntegrationSecret } from "@/lib/integration-secrets";
+import { twilioConfig } from "@/lib/notifications/config";
 
 // Start of the current day in America/Toronto, returned as an epoch-ms timestamp.
 function torontoStartOfDay(nowMs: number): number {
@@ -186,10 +187,13 @@ export async function GET(request: Request) {
         rule_json: undefined,
       })),
       integrations: {
-        cloverCheckout: cloverCheckoutConfigured(),
-        cloverWebhook: cloverWebhookConfigured(),
-        emailApiKey: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
-        emailProvider: (env as unknown as Record<string, string | undefined>).EMAIL_PROVIDER ?? null,
+        cloverCheckout: await cloverCheckoutConfigured(),
+        cloverWebhook: await cloverWebhookConfigured(),
+        emailApiKey: (await readIntegrationSecret("EMAIL_API_KEY")) !== null,
+        emailProvider: await readIntegrationSecret("EMAIL_PROVIDER"),
+        twilio: (await twilioConfig()) !== null,
+        restaurantAlertPhone: (await readIntegrationSecret("RESTAURANT_ALERT_PHONE")) !== null,
+        publicBaseUrl: await readIntegrationSecret("PUBLIC_BASE_URL"),
       },
     });
   } catch (error) {

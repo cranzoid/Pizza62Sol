@@ -63,6 +63,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
     delivery: LAUNCH_SETTINGS.delivery,
     taxAndTips: LAUNCH_SETTINGS.taxAndTips,
     operations: LAUNCH_SETTINGS.operations,
+    alerts: LAUNCH_SETTINGS.alerts,
     featureFlags: LAUNCH_SETTINGS.featureFlags,
     content: LAUNCH_SETTINGS.content,
     hours: REGULAR_HOURS,
@@ -357,6 +358,55 @@ const DATA_MIGRATIONS: Array<{
       }
       return statements;
     },
+  },
+  {
+    // Owner decision, 2026-08-21: HST applies to the delivery fee, and delivery
+    // orders have a $20 minimum.
+    //
+    // Settings are seeded once and belong to the owner afterwards (C-08), so a
+    // database seeded before today keeps `feeTaxable: false` and `minimumCents:
+    // 0` no matter what the launch defaults say — hence a gated patch rather
+    // than a seed change alone. `jsonb_set` touches exactly these two keys and
+    // preserves the radius, the fee and the outside-area message, which the
+    // owner may already have tuned.
+    //
+    // Runs once. A later change of mind is an admin edit, not another migration.
+    id: "2026-08-21-delivery-tax-and-minimum",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE settings
+             SET value_json = jsonb_set(
+                   jsonb_set(value_json::jsonb, '{feeTaxable}', 'true'::jsonb),
+                   '{minimumCents}', '2000'::jsonb
+                 )::text,
+                 version = settings.version + 1, updated_at = ?
+           WHERE key = 'delivery'`,
+        )
+        .bind(now),
+    ],
+  },
+  {
+    // Populates `business.email`, which the dispatcher already sends the
+    // new-order and low-rating alerts to and which had never been set — so those
+    // alerts fell back to voice and SMS alone.
+    //
+    // Conditional on the key being absent: unlike the delivery change above,
+    // this is not a correction the owner asked for, so an address they have
+    // already entered must win. `-> 'email'` returns SQL NULL when the key is
+    // missing, which is the test we want; `->> 'email'` would also match an
+    // empty string, and treating "" as unset is a judgement this need not make.
+    id: "2026-08-21-restaurant-alert-email",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE settings
+             SET value_json = jsonb_set(value_json::jsonb, '{email}', ?::jsonb)::text,
+                 version = settings.version + 1, updated_at = ?
+           WHERE key = 'business' AND (value_json::jsonb -> 'email') IS NULL`,
+        )
+        .bind(JSON.stringify(LAUNCH_SETTINGS.business.email), now),
+    ],
   },
 ];
 
