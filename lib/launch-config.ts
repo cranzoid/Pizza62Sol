@@ -26,6 +26,11 @@ export const LAUNCH_SETTINGS = {
     deliveryEstimateMinutes: 30,
     reorderEnabled: false,
     capacityLimitsEnabled: false,
+    // H-08: how long before closing the kitchen stops accepting new orders. A
+    // store that closes at 22:00 cannot start a pizza at 21:59, so "open" and
+    // "still taking orders" are different questions and the customer is shown a
+    // live countdown to this one, not to the door closing.
+    lastOrderCutoffMinutes: 20,
     paused: false,
     pauseMessage: "Online ordering is temporarily paused. Please call us.",
   },

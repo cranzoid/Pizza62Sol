@@ -799,27 +799,106 @@ export function isStoreOpenAt(timestamp: number, hours: WeeklyHours, timeZone: s
   return isTimeWithinConfiguredHours(weekday, minute, hours);
 }
 
+/**
+ * H-08: a holiday, a one-off closure, or "stop taking orders for an hour".
+ *
+ * A window with an end, which is the property that makes it safe to set and
+ * forget. The only control that existed before was an indefinite `paused`
+ * toggle, which someone has to remember to turn back off — so the store either
+ * stayed shut after the holiday or took orders during it.
+ *
+ * Scope matters as much as the window: closing delivery while the driver is off
+ * and the counter keeps selling is the common case, not the exception.
+ */
+export type StoreClosure = {
+  id: string;
+  startsAt: number;
+  endsAt: number;
+  scope: "both" | "pickup" | "delivery";
+  reason: string;
+  customerMessage: string | null;
+};
+
+/** The closure covering `at` for this fulfilment, or null. Earliest end first. */
+export function activeClosure(
+  at: number,
+  closures: StoreClosure[],
+  fulfilment?: Fulfilment,
+): StoreClosure | null {
+  const matches = closures.filter(
+    (closure) =>
+      at >= closure.startsAt &&
+      at < closure.endsAt &&
+      (closure.scope === "both" || !fulfilment || closure.scope === fulfilment),
+  );
+  if (!matches.length) return null;
+  // The one that ends soonest, so "we reopen at" is the earliest truthful answer.
+  return matches.reduce((soonest, closure) => (closure.endsAt < soonest.endsAt ? closure : soonest));
+}
+
 export type StoreStatus = {
   open: boolean;
   /** When the restaurant next opens, or when it closes if it is open now. */
   changesAt: number | null;
   weekdayLabel: string;
+  /**
+   * The last moment a new order is accepted today.
+   *
+   * Distinct from `changesAt`, and the distinction is the point: a kitchen that
+   * closes at 22:00 cannot start a pizza at 21:59. Orders stop at the cutoff;
+   * the doors close later.
+   */
+  acceptingUntil: number | null;
+  /** Set when a closure — not the weekly schedule — is what is shutting the store. */
+  closure: StoreClosure | null;
 };
 
-export function storeStatus(now: number, hours: WeeklyHours, timeZone: string): StoreStatus {
-  if (!hours.length) return { open: true, changesAt: null, weekdayLabel: "" };
+export function storeStatus(
+  now: number,
+  hours: WeeklyHours,
+  timeZone: string,
+  options: { closures?: StoreClosure[]; fulfilment?: Fulfilment; lastOrderCutoffMinutes?: number } = {},
+): StoreStatus {
+  const closure = activeClosure(now, options.closures ?? [], options.fulfilment);
+  if (closure) {
+    // A closure overrides the weekly schedule outright, and `changesAt` becomes
+    // the end of the closure rather than the next scheduled opening — telling a
+    // customer the store opens at 11 when it is shut until Tuesday is worse than
+    // saying nothing.
+    return { open: false, changesAt: closure.endsAt, weekdayLabel: "", acceptingUntil: null, closure };
+  }
+  if (!hours.length) {
+    return { open: true, changesAt: null, weekdayLabel: "", acceptingUntil: null, closure: null };
+  }
+  const cutoff = Math.max(0, options.lastOrderCutoffMinutes ?? 0);
   const { weekday, minute } = zonedParts(now, timeZone);
   const today = hours.find((entry) => entry.weekday === weekday);
   if (today && minute >= today.openMinute && minute <= today.closeMinute) {
-    return { open: true, changesAt: zonedTimestamp(now, 0, today.closeMinute, timeZone), weekdayLabel: today.label ?? "" };
+    const acceptingUntil = zonedTimestamp(now, 0, Math.max(today.openMinute, today.closeMinute - cutoff), timeZone);
+    return {
+      // Past the cutoff the store is still open but no longer taking orders, so
+      // `open` reports what the customer can actually do rather than whether the
+      // lights are on.
+      open: cutoff === 0 || now <= acceptingUntil,
+      changesAt: zonedTimestamp(now, 0, today.closeMinute, timeZone),
+      weekdayLabel: today.label ?? "",
+      acceptingUntil,
+      closure: null,
+    };
   }
   for (let offset = 0; offset < 8; offset += 1) {
     const day = hours.find((entry) => entry.weekday === (weekday + offset) % 7);
     if (!day) continue;
     if (offset === 0 && minute > day.openMinute) continue;
-    return { open: false, changesAt: zonedTimestamp(now, offset, day.openMinute, timeZone), weekdayLabel: day.label ?? "" };
+    return {
+      open: false,
+      changesAt: zonedTimestamp(now, offset, day.openMinute, timeZone),
+      weekdayLabel: day.label ?? "",
+      acceptingUntil: null,
+      closure: null,
+    };
   }
-  return { open: false, changesAt: null, weekdayLabel: "" };
+  return { open: false, changesAt: null, weekdayLabel: "", acceptingUntil: null, closure: null };
 }
 
 /**

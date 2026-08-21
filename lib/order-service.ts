@@ -22,6 +22,7 @@ import {
   type WeeklyAvailability,
 } from "@/lib/domain";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
+import { closureFor, closureMessage, loadActiveClosures } from "@/lib/closures";
 import { createCloverCheckout, cloverCheckoutConfigured } from "@/lib/clover";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
@@ -36,6 +37,8 @@ type OrderRequest = {
     variationId?: string;
     quantity?: number;
     toppings?: ToppingSelection[];
+    /** H-03: recipe toppings the customer asked to leave off. Must be a subset. */
+    omitToppings?: string[];
     extraCheese?: boolean;
     halal?: boolean;
     modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
@@ -431,6 +434,48 @@ async function validateItems(
       if (toppings.length > 100 || toppings.some((entry) => !allowedToppings.has(entry.toppingId))) {
         throw new OrderValidationError("One or more selected toppings are unavailable.");
       }
+
+      // H-03: a specialty pizza has to arrive as its recipe. The client could
+      // previously drop recipe toppings and the server priced and accepted
+      // whatever it was sent, so a "Meat Lovers" could reach the kitchen with no
+      // meat on it — at the Meat Lovers price, under the Meat Lovers name.
+      //
+      // Omissions are still allowed, because "hold the mushrooms" is a normal
+      // request. They are just made explicit: named, checked against the recipe,
+      // and recorded on the snapshot so the kitchen ticket can print NO
+      // MUSHROOMS. What is not allowed is a recipe topping quietly going missing.
+      //
+      // The price does not move for an omission. Leaving an ingredient off is not
+      // a discount, and treating it as one would let a customer pay less for the
+      // same named product by removing something and adding it back as an extra.
+      const recipeOmissions: string[] = [];
+      if (productConfiguration.fixedRecipe) {
+        const recipe = Array.isArray(productConfiguration.recipeToppingIds)
+          ? productConfiguration.recipeToppingIds.map(String)
+          : [];
+        const omitted = new Set((input.omitToppings ?? []).map(String));
+        for (const toppingId of omitted) {
+          if (!recipe.includes(toppingId)) {
+            throw new OrderValidationError(
+              `${product.name} does not include that topping, so it cannot be left off.`,
+            );
+          }
+          recipeOmissions.push(toppingNames.get(toppingId) ?? toppingId);
+        }
+        const present = new Set(
+          toppings.filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
+        );
+        const missing = recipe.filter((toppingId) => !present.has(toppingId) && !omitted.has(toppingId));
+        if (missing.length) {
+          throw new OrderValidationError(
+            `${product.name} is made to a set recipe. ${missing
+              .map((toppingId) => toppingNames.get(toppingId) ?? toppingId)
+              .join(", ")} cannot be removed without asking us to leave it off.`,
+            422,
+            "RECIPE_INCOMPLETE",
+          );
+        }
+      }
       if (input.halal && !product.halal_capable) {
         throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
       }
@@ -467,11 +512,23 @@ async function validateItems(
         paidUnitsBps: pizza.paidUnitsBps,
         extraCheese: Boolean(input.extraCheese),
         halal: Boolean(input.halal),
+        // Only present when something was deliberately left off, so the kitchen
+        // ticket can print it and a reader can tell "no omissions" from "field
+        // not written by an older build".
+        ...(recipeOmissions.length ? { recipeOmissions } : {}),
         modifiers: validatedModifiers.snapshot,
       };
-    } else if (input.toppings?.length || input.extraCheese || input.halal) {
+    } else if (input.toppings?.length || input.extraCheese) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
     } else {
+      // H-05: deals are marked halal-capable but the generic customizer offered
+      // no halal control, and the server rejected the flag outright — so the
+      // advertised preference could not be ordered on the products that
+      // advertise it. Accepted here, gated on the same `halal_capable` flag the
+      // pizza branch uses, and carried into the snapshot the kitchen reads.
+      if (input.halal && !product.halal_capable) {
+        throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
+      }
       const validatedModifiers = validateModifiers(
         input.modifiers,
         orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
@@ -479,7 +536,12 @@ async function validateItems(
         operations.halfToppingUnitsBps,
       );
       unitPriceCents += validatedModifiers.extraCents;
-      snapshot = { ...snapshot, modifiers: validatedModifiers.snapshot, modifierExtraCents: validatedModifiers.extraCents };
+      snapshot = {
+        ...snapshot,
+        halal: Boolean(input.halal),
+        modifiers: validatedModifiers.snapshot,
+        modifierExtraCents: validatedModifiers.extraCents,
+      };
     }
     validated.push({
       id: crypto.randomUUID(),
@@ -796,16 +858,40 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
   // schedule was present, which meant a quote with none omitted the check that
   // `createOrder` would then apply anyway — and at 4am, with the store shut, the
   // quote said yes to an order the API refused.
+  // The time this order is *for*. For a scheduled order that is the chosen slot;
+  // for ASAP it is now plus the current lead time.
+  const wantedAt =
+    body.schedule?.type === "scheduled" && Number.isSafeInteger(body.schedule.scheduledFor)
+      ? Number(body.schedule.scheduledFor)
+      : Date.now() + estimateMinutes * 60_000;
+
+  // H-08, checked first and independently of the schedule.
+  //
+  // Order matters here. Both checks can fail at once — during a holiday the
+  // store is also outside its weekly hours — and "we are closed for Christmas"
+  // is a far more useful thing to be told than "that time is outside the
+  // restaurant's configured hours". Running the closure check inside the same
+  // try as `validateSchedule` meant the schedule error was thrown first and the
+  // closure was never looked at, so the customer got the unhelpful message.
+  const closure = closureFor(wantedAt, await loadActiveClosures(), fulfilment);
+  if (closure) {
+    issues.push({ index: null, productId: null, code: "STORE_CLOSED", message: closureMessage(closure) });
+  }
+
   try {
     const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
     validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
   } catch (error) {
-    issues.push({
-      index: null,
-      productId: null,
-      code: error instanceof OrderValidationError ? error.code : "SCHEDULE_INVALID",
-      message: error instanceof Error ? error.message : "That order time cannot be accepted.",
-    });
+    // Suppressed when a closure already explained it: two refusals for one cause
+    // reads as two separate problems to fix.
+    if (!closure) {
+      issues.push({
+        index: null,
+        productId: null,
+        code: error instanceof OrderValidationError ? error.code : "SCHEDULE_INVALID",
+        message: error instanceof Error ? error.message : "That order time cannot be accepted.",
+      });
+    }
   }
 
   return {
@@ -1012,6 +1098,19 @@ export async function createOrder(body: OrderRequest) {
     const estimateMinutes = fulfilment === "delivery"
       ? ordering.deliveryEstimateMinutes ?? 30
       : ordering.pickupEstimateMinutes;
+    // H-08, before the schedule check rather than after it. During a holiday both
+    // fail, and "we are closed for Christmas" is far more useful than "that time
+    // is outside the restaurant's configured hours". Judged against the time the
+    // order is *for*, so a Christmas Day pickup ordered on the Monday is caught
+    // on the Monday.
+    const wantedAt =
+      body.schedule?.type === "scheduled" && Number.isSafeInteger(body.schedule.scheduledFor)
+        ? Number(body.schedule.scheduledFor)
+        : Date.now() + estimateMinutes * 60_000;
+    const closure = closureFor(wantedAt, await loadActiveClosures(), fulfilment);
+    if (closure) {
+      throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
+    }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
     const sequence = await getD1()
       .prepare(

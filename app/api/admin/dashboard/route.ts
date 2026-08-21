@@ -2,6 +2,7 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
+import { loadActiveClosures } from "@/lib/closures";
 import { twilioConfig } from "@/lib/notifications/config";
 
 // Start of the current day in America/Toronto, returned as an epoch-ms timestamp.
@@ -186,6 +187,7 @@ export async function GET(request: Request) {
         rule: safeJson(String((promotion as Record<string, unknown>).rule_json ?? "{}"), {}),
         rule_json: undefined,
       })),
+      closures: await loadActiveClosures(),
       integrations: {
         cloverCheckout: await cloverCheckoutConfigured(),
         cloverWebhook: await cloverWebhookConfigured(),

@@ -61,7 +61,7 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   const initialHours = (settings.hours.value as unknown as Array<{ weekday: number; label: string; openMinute: number; closeMinute: number }>).map((row) => ({ ...row }));
   const [message, setMessage] = useState("");
   const [deliveryForm, setDeliveryForm] = useState({ radius: String(delivery.radiusKm), fee: String(Number(delivery.feeCents) / 100), minimum: String(Number(delivery.minimumCents) / 100), feeTaxable: Boolean(delivery.feeTaxable), outsideAreaMessage: String(delivery.outsideAreaMessage ?? "") });
-  const [orderingForm, setOrderingForm] = useState({ enabled: Boolean(ordering.enabled), pickupEnabled: Boolean(ordering.pickupEnabled), deliveryEnabled: Boolean(ordering.deliveryEnabled), payAtStorePickupEnabled: Boolean(ordering.payAtStorePickupEnabled), pickupEstimate: String(ordering.pickupEstimateMinutes), deliveryEstimate: String(ordering.deliveryEstimateMinutes), pauseMessage: String(ordering.pauseMessage ?? "") });
+  const [orderingForm, setOrderingForm] = useState({ enabled: Boolean(ordering.enabled), pickupEnabled: Boolean(ordering.pickupEnabled), deliveryEnabled: Boolean(ordering.deliveryEnabled), payAtStorePickupEnabled: Boolean(ordering.payAtStorePickupEnabled), pickupEstimate: String(ordering.pickupEstimateMinutes), deliveryEstimate: String(ordering.deliveryEstimateMinutes), lastOrderCutoff: String(ordering.lastOrderCutoffMinutes ?? 0), pauseMessage: String(ordering.pauseMessage ?? "") });
   const [businessForm, setBusinessForm] = useState({ name: String(business.name), phone: String(business.phone), address: String(business.address), latitude: String(business.latitude), longitude: String(business.longitude), reviewUrl: String(business.googleReviewUrl ?? ""), timeZone: String(business.timeZone ?? "America/Toronto") });
   const [taxForm, setTaxForm] = useState({ rate: String(Number(tax.taxRateBps) / 100), tippingEnabled: Boolean(tax.tippingEnabled), presets: (tax.tipPresetBps as number[]).map((entry) => entry / 100).join(", "), customTipEnabled: Boolean(tax.customTipEnabled) });
   const [operationsForm, setOperationsForm] = useState({ cancellation: String(operations.cancellationRequestWindowMinutes), feedbackDelay: String(operations.feedbackDelayMinutes), halalNotice: String(operations.halalNotice ?? ""), halfToppingUnitsBps: String(operations.halfToppingUnitsBps ?? 10_000) });
@@ -77,13 +77,14 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   };
   return <div className="admin-stack admin-controls">
     <div className="staff-grid">
-      <SettingsCard title="Ordering methods" onSave={() => save("ordering", { ...ordering, enabled: orderingForm.enabled, pickupEnabled: orderingForm.pickupEnabled, deliveryEnabled: orderingForm.deliveryEnabled, payAtStorePickupEnabled: orderingForm.payAtStorePickupEnabled, pickupEstimateMinutes: Number(orderingForm.pickupEstimate), deliveryEstimateMinutes: Number(orderingForm.deliveryEstimate), pauseMessage: orderingForm.pauseMessage })}>
+      <SettingsCard title="Ordering methods" onSave={() => save("ordering", { ...ordering, enabled: orderingForm.enabled, pickupEnabled: orderingForm.pickupEnabled, deliveryEnabled: orderingForm.deliveryEnabled, payAtStorePickupEnabled: orderingForm.payAtStorePickupEnabled, pickupEstimateMinutes: Number(orderingForm.pickupEstimate), deliveryEstimateMinutes: Number(orderingForm.deliveryEstimate), lastOrderCutoffMinutes: Number(orderingForm.lastOrderCutoff), pauseMessage: orderingForm.pauseMessage })}>
         <Check label="Online ordering enabled" checked={orderingForm.enabled} onChange={(enabled) => setOrderingForm({ ...orderingForm, enabled })} />
         <Check label="Pickup orders" checked={orderingForm.pickupEnabled} onChange={(pickupEnabled) => setOrderingForm({ ...orderingForm, pickupEnabled })} />
         <Check label="Delivery orders" checked={orderingForm.deliveryEnabled} onChange={(deliveryEnabled) => setOrderingForm({ ...orderingForm, deliveryEnabled })} />
         <Check label="Pay at store for pickup" checked={orderingForm.payAtStorePickupEnabled} onChange={(payAtStorePickupEnabled) => setOrderingForm({ ...orderingForm, payAtStorePickupEnabled })} />
         <Field label="Pickup estimate · minutes" type="number" value={orderingForm.pickupEstimate} onChange={(pickupEstimate) => setOrderingForm({ ...orderingForm, pickupEstimate })} />
         <Field label="Delivery estimate · minutes" type="number" value={orderingForm.deliveryEstimate} onChange={(deliveryEstimate) => setOrderingForm({ ...orderingForm, deliveryEstimate })} />
+        <Field label="Stop taking orders · minutes before closing" type="number" value={orderingForm.lastOrderCutoff} onChange={(lastOrderCutoff) => setOrderingForm({ ...orderingForm, lastOrderCutoff })} />
         <Field label="Paused-ordering message" wide value={orderingForm.pauseMessage} onChange={(pauseMessage) => setOrderingForm({ ...orderingForm, pauseMessage })} />
       </SettingsCard>
       <SettingsCard title="Delivery rules" onSave={() => save("delivery", { ...delivery, radiusKm: Number(deliveryForm.radius), feeCents: moneyToCents(deliveryForm.fee), minimumCents: moneyToCents(deliveryForm.minimum), feeTaxable: deliveryForm.feeTaxable, outsideAreaMessage: deliveryForm.outsideAreaMessage })}>
@@ -128,8 +129,114 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
     <SettingsCard title="Regular opening hours" onSave={() => save("hours", hours)}>
       <div className="hours-admin">{hours.map((row, index) => <div key={row.weekday}><strong>{row.label}</strong><input aria-label={`${row.label} opening time`} type="time" value={minuteToTime(row.openMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, openMinute: timeToMinute(event.target.value) } : entry))} /><span>to</span><select aria-label={`${row.label} closing time`} value={String(row.closeMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, closeMinute: Number(event.target.value) } : entry))}>{[...new Set([row.closeMinute, ...CLOSE_MINUTE_OPTIONS])].sort((a, b) => a - b).map((minute) => <option key={minute} value={minute}>{closeMinuteLabel(minute)}</option>)}</select></div>)}</div>
     </SettingsCard>
+    <ClosuresCard closures={dashboard.closures ?? []} onChanged={onSaved} />
     {message ? <p className="admin-message" role="status">{message}</p> : null}
   </div>;
+}
+
+/**
+ * H-08: holidays, one-off closures, and "back in an hour".
+ *
+ * Deliberately a window with an end rather than another toggle. The existing
+ * pause has no end, so it relies on somebody remembering to switch it back —
+ * and the two ways that goes wrong are the store staying shut the day after the
+ * holiday, or taking orders during it.
+ *
+ * The quick buttons exist because the common case is someone reaching for their
+ * phone mid-shift, not planning a holiday: closing for an hour should take one
+ * tap, not a date picker.
+ */
+function ClosuresCard({ closures, onChanged }: { closures: Dashboard["closures"]; onChanged: () => Promise<void> }) {
+  const [scope, setScope] = useState<"both" | "pickup" | "delivery">("both");
+  const [reason, setReason] = useState("");
+  const [customerMessage, setCustomerMessage] = useState("");
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+  const [message, setMessage] = useState("");
+
+  const send = async (body: Record<string, unknown>, success: string) => {
+    setMessage("");
+    const response = await fetch("/api/admin/actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const result = (await response.json()) as { error?: string };
+    if (!response.ok) { setMessage(result.error ?? "That could not be saved."); return; }
+    setMessage(success);
+    setReason(""); setCustomerMessage(""); setStartsAt(""); setEndsAt("");
+    await onChanged();
+  };
+
+  /** "Closed for the next N hours", from right now. */
+  const pauseFor = (hours: number) => send({
+    action: "closure.create",
+    startsAt: Date.now(),
+    endsAt: Date.now() + hours * 3_600_000,
+    scope,
+    reason: reason.trim() || `Closed for ${hours} hour${hours === 1 ? "" : "s"}`,
+    customerMessage: customerMessage.trim() || undefined,
+  }, `Ordering stops for the next ${hours} hour${hours === 1 ? "" : "s"}.`);
+
+  /** A whole day, midnight to midnight in the restaurant's own time zone. */
+  const closeDay = () => {
+    if (!startsAt) { setMessage("Choose the date to close."); return; }
+    const from = new Date(`${startsAt}T00:00:00`);
+    const to = new Date(`${(endsAt || startsAt)}T00:00:00`);
+    to.setDate(to.getDate() + 1);
+    return send({
+      action: "closure.create",
+      startsAt: from.getTime(),
+      endsAt: to.getTime(),
+      scope,
+      reason: reason.trim() || "Holiday",
+      customerMessage: customerMessage.trim() || undefined,
+    }, "Closure saved. The website will show it automatically.");
+  };
+
+  const when = (value: number) =>
+    new Date(value).toLocaleString("en-CA", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
+
+  return <section className="staff-panel">
+    <div className="staff-panel-head"><h2>Holidays &amp; closures</h2><span className="live-chip">{closures.length} upcoming</span></div>
+    <p className="editor-hint">Closing here stops new orders for the period you choose and puts a message on the website. Unlike pausing, it ends by itself — you do not have to remember to switch it back on.</p>
+
+    <div className="settings-form">
+      <label>What is closed<select value={scope} onChange={(event) => setScope(event.target.value as typeof scope)}>
+        <option value="both">Everything</option>
+        <option value="delivery">Delivery only — the counter stays open</option>
+        <option value="pickup">Pickup only</option>
+      </select></label>
+      <Field label="Reason · for your records" value={reason} onChange={setReason} />
+      <Field label="Message for customers · optional" wide value={customerMessage} onChange={setCustomerMessage} />
+    </div>
+
+    <div className="closure-quick">
+      <strong>Stop taking orders now</strong>
+      <button className="staff-button" onClick={() => void pauseFor(1)}>For 1 hour</button>
+      <button className="staff-button" onClick={() => void pauseFor(2)}>For 2 hours</button>
+      <button className="staff-button" onClick={() => void pauseFor(4)}>For the rest of today</button>
+    </div>
+
+    <div className="settings-form">
+      <Field label="Closed from · date" type="date" value={startsAt} onChange={setStartsAt} />
+      <Field label="Closed until · date, leave blank for one day" type="date" value={endsAt} onChange={setEndsAt} />
+    </div>
+    <button className="staff-button" disabled={!startsAt} onClick={() => void closeDay()}>Close these dates</button>
+
+    <div className="setup-list">
+      {closures.map((closure) => <div className="setup-item" key={closure.id}>
+        <b aria-hidden>✕</b>
+        <div>
+          <strong>{closure.reason}{closure.scope !== "both" ? ` · ${closure.scope} only` : ""}</strong>
+          <p>{when(closure.startsAt)} → {when(closure.endsAt)}</p>
+          <button className="text-button danger-text" onClick={() => void send({ action: "closure.remove", id: closure.id }, "Closure removed — ordering is open again.")}>Remove</button>
+        </div>
+      </div>)}
+      {!closures.length ? <div className="staff-empty">No closures scheduled.</div> : null}
+    </div>
+    {message ? <p className="admin-message" role="status">{message}</p> : null}
+  </section>;
 }
 
 function SettingsCard({ title, onSave, children }: { title: string; onSave: () => void | Promise<void>; children: React.ReactNode }) {

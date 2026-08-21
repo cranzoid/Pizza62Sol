@@ -1,6 +1,7 @@
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
 import { cloverCheckoutConfigured } from "@/lib/clover";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
+import { loadActiveClosures } from "@/lib/closures";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,10 @@ export async function GET() {
       variations: variationResult.results,
       toppings: toppingResult.results,
       settings,
+      // H-08: sent to the browser so the store banner can say *why* it is shut
+      // and when it reopens, rather than falling back to the weekly schedule and
+      // telling a customer the store opens at 11 on a day it is closed all day.
+      closures: await loadActiveClosures(),
       // These gate what the customer is offered — an un-awaited Promise here
       // serialises to `{}`, which is truthy in the browser, so online payment
       // would look available with no credentials behind it.

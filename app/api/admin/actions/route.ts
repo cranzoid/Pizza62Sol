@@ -8,13 +8,85 @@ type ActionBody =
   | { action: "order.acknowledge"; orderId?: string }
   | { action: "product.availability"; productId?: string; soldOut?: boolean; reason?: string }
   | { action: "ordering.pause"; paused?: boolean; message?: string; reason?: string }
-  | { action: "estimate.update"; fulfilment?: Fulfilment; minutes?: number; reason?: string };
+  | { action: "estimate.update"; fulfilment?: Fulfilment; minutes?: number; reason?: string }
+  | {
+      action: "closure.create";
+      startsAt?: number;
+      endsAt?: number;
+      scope?: string;
+      reason?: string;
+      customerMessage?: string;
+    }
+  | { action: "closure.remove"; id?: string };
 
 export async function POST(request: Request) {
   try {
     await ensureDatabase();
     const body = (await request.json()) as ActionBody;
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+    // H-08: holidays, one-off closures, and "back in an hour".
+    //
+    // Deliberately a window rather than a toggle. `ordering.paused` has no end,
+    // so it depends on somebody remembering to switch it back — and the two ways
+    // that goes wrong are the store staying shut after the holiday, or taking
+    // orders during it. A closure expires on its own.
+    if (body.action === "closure.create") {
+      const user = await requireStaff(request, "pause_online_ordering");
+      const startsAt = Number(body.startsAt);
+      const endsAt = Number(body.endsAt);
+      const scope = body.scope === "pickup" || body.scope === "delivery" ? body.scope : "both";
+      const reason = (body.reason ?? "").trim();
+      if (!Number.isSafeInteger(startsAt) || !Number.isSafeInteger(endsAt) || endsAt <= startsAt) {
+        return Response.json({ error: "Choose a start and an end, with the end after the start." }, { status: 400 });
+      }
+      // A year is not a closure, it is a decision to stop trading — and one
+      // mistyped year digit would silently take the store off the internet.
+      if (endsAt - startsAt > 366 * 86_400_000) {
+        return Response.json({ error: "A closure cannot run longer than a year." }, { status: 400 });
+      }
+      if (reason.length < 2 || reason.length > 200) {
+        return Response.json({ error: "Give the closure a short reason." }, { status: 400 });
+      }
+      const id = crypto.randomUUID();
+      const now = Date.now();
+      await getD1()
+        .prepare(
+          `INSERT INTO store_closures (id, starts_at, ends_at, scope, reason, customer_message, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(id, startsAt, endsAt, scope, reason, (body.customerMessage ?? "").trim() || null, user.id, now, now)
+        .run();
+      await writeAudit({
+        actorId: user.id,
+        action: "closure.create",
+        targetType: "store_closure",
+        targetId: id,
+        next: { startsAt, endsAt, scope, reason },
+        requestId,
+      });
+      return Response.json({ ok: true, id }, { status: 201 });
+    }
+
+    if (body.action === "closure.remove") {
+      const user = await requireStaff(request, "pause_online_ordering");
+      const id = String(body.id ?? "");
+      const previous = await getD1()
+        .prepare("SELECT id, starts_at, ends_at, scope, reason FROM store_closures WHERE id = ?")
+        .bind(id)
+        .first<Record<string, unknown>>();
+      if (!previous) return Response.json({ error: "That closure no longer exists." }, { status: 404 });
+      await getD1().prepare("DELETE FROM store_closures WHERE id = ?").bind(id).run();
+      await writeAudit({
+        actorId: user.id,
+        action: "closure.remove",
+        targetType: "store_closure",
+        targetId: id,
+        previous,
+        requestId,
+      });
+      return Response.json({ ok: true });
+    }
+
     if (body.action === "order.status") {
       const target = body.status ?? "";
       const user = await requireStaff(

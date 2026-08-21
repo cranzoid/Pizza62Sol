@@ -489,3 +489,32 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   line-height: 1.6;
 }
 .cart-discount b { color: #2f7d4f; }
+
+/* --- Set recipes (H-03) -----------------------------------------------------
+   A specialty pizza arrives as its recipe. The recipe toppings are not in the
+   ordinary picker any more — the server refuses an incomplete recipe — but
+   "hold the mushrooms" is a normal request, so it gets its own control. An
+   omission never changes the price. */
+.recipe-list { display: grid; gap: 6px; margin: 12px 0; }
+.recipe-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid #e6e9e5;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.recipe-item--omitted { opacity: .55; }
+.recipe-item--omitted > span { text-decoration: line-through; }
+.recipe-item button { font-size: 9px; }
+
+/* An omission is a negative instruction, so it must not read like the positive
+   tags beside it — the kitchen scans these, it does not read them. */
+.ticket-tag--warn { background: #fdf3f1; color: #8c3524; border-color: #e8c4bb; font-weight: 800; }
+
+/* Closing for an hour is something someone does mid-shift on their phone, so it
+   is one tap rather than a date picker. */
+.closure-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 14px 0; }
+.closure-quick strong { font-size: 10px; margin-right: 4px; }

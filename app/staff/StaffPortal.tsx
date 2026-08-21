@@ -29,6 +29,7 @@ export type Dashboard = {
   variations: Array<{ id: string; product_id: string; name: string; base_price_cents: number; extra_topping_price_cents: number; included_topping_units_bps: number; active: number; display_order: number }>;
   staff: Array<{ id: string; email: string; name: string; role: string; permissions: string[]; active: number; last_login_at: number | null; created_at: number }>;
   promotions: Array<Record<string, unknown>>;
+  closures: Array<{ id: string; startsAt: number; endsAt: number; scope: "both" | "pickup" | "delivery"; reason: string; customerMessage: string | null }>;
   integrations: { cloverCheckout: boolean; cloverWebhook: boolean; emailApiKey: boolean; emailProvider: string | null };
 };
 
@@ -181,6 +182,12 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
             out rather than left to blend into the modifier list. */}
         {snapshot.halal ? <div className="pt-flag">** HALAL **</div> : null}
         {snapshot.extraCheese ? <div className="pt-flag">** EXTRA CHEESE **</div> : null}
+        {/* H-03: what the customer asked us to leave off. Printed as loudly as
+            the flags above — an omission the kitchen cannot see will not happen,
+            which would make enforcing the recipe server-side pointless. */}
+        {Array.isArray(snapshot.recipeOmissions) && snapshot.recipeOmissions.length
+          ? <div className="pt-flag">** NO {(snapshot.recipeOmissions as string[]).join(", NO ").toUpperCase()} **</div>
+          : null}
         {toppings.length ? <div className="pt-sub">{toppings.map((topping) =>
           `${toppingNames.get(topping.toppingId) ?? topping.toppingId}${topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}`,
         ).join(", ")}</div> : null}
@@ -222,7 +229,7 @@ function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>
       const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
       const modifiers = (snapshot.modifiers as Array<{ label: string; group?: string; values: Array<{ label: string; placement?: string }> }> | undefined) ?? [];
       return <div className="ticket-line" key={String(item.id ?? index)}>
-        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{snapshot.halal ? <span className="ticket-tag">HALAL</span> : null}{snapshot.extraCheese ? <span className="ticket-tag">Extra cheese</span> : null}</div>
+        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{snapshot.halal ? <span className="ticket-tag">HALAL</span> : null}{snapshot.extraCheese ? <span className="ticket-tag">Extra cheese</span> : null}{Array.isArray(snapshot.recipeOmissions) && snapshot.recipeOmissions.length ? <span className="ticket-tag ticket-tag--warn">NO {(snapshot.recipeOmissions as string[]).join(", NO ")}</span> : null}</div>
         {toppings.length ? <div className="ticket-toppings">{toppings.map((topping, toppingIndex) => <span key={toppingIndex}>{toppingNames.get(topping.toppingId) ?? topping.toppingId}{topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}</span>)}</div> : null}
         {modifiers.map((modifier, modifierIndex) => <div className="ticket-modifier" key={modifierIndex}><em>{modifier.group ? `${modifier.group} · ${modifier.label}` : modifier.label}:</em> {modifier.values.map((value) => `${value.label}${value.placement === "left" ? " (L)" : value.placement === "right" ? " (R)" : ""}`).join(", ")}</div>)}
         {item.instructions ? <div className="ticket-note">Note: {String(item.instructions)}</div> : null}

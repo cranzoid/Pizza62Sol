@@ -24,6 +24,7 @@ import {
   type ModifierSection,
   type StoreStatus,
   type WeeklyHours,
+  type StoreClosure,
   type ToppingPlacement,
   type WeeklyAvailability,
 } from "@/lib/domain";
@@ -66,6 +67,7 @@ type Catalog = {
   variations: Variation[];
   toppings: Topping[];
   settings: Record<string, { value: Record<string, unknown>; version: number }>;
+  closures: StoreClosure[];
   integrations: { clover: boolean; email: boolean };
 };
 type ModifierSelection = {
@@ -89,6 +91,8 @@ type CartLine = {
   unitPriceCents: number;
   taxable: boolean;
   toppings?: SelectedTopping[];
+  /** H-03: recipe toppings the customer asked us to leave off. */
+  omitToppings?: string[];
   modifiers?: ModifierSelection[];
   extraCheese?: boolean;
   halal?: boolean;
@@ -141,6 +145,7 @@ function toOrderItems(cart: CartLine[]) {
     variationId: line.variationId,
     quantity: line.quantity,
     toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })),
+    omitToppings: line.omitToppings,
     modifiers: line.modifiers?.map((modifier) => ({
       id: modifier.id,
       values: modifier.values.map((value) => (value.placement ? { value: value.value, placement: value.placement } : value.value)),
@@ -377,7 +382,24 @@ export default function CustomerApp() {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const store = useMemo(() => storeStatus(now, hours, timeZone), [now, hours, timeZone]);
+  // H-08/H-10: the banner answers "can I order right now", which is not the same
+  // question as "are the lights on". A closure overrides the weekly schedule, and
+  // the last-order cutoff closes ordering before the door shuts — a kitchen that
+  // closes at 22:00 cannot start a pizza at 21:59.
+  // Memoised, not `catalog?.closures ?? []`: the fallback allocates a new array
+  // on every render, which would make the store-status memo below recompute
+  // continuously and re-render the whole page on each tick.
+  const closures = useMemo(() => catalog?.closures ?? [], [catalog]);
+  const lastOrderCutoffMinutes = Number(ordering.lastOrderCutoffMinutes ?? 0);
+  const store = useMemo(
+    () => storeStatus(now, hours, timeZone, { closures, fulfilment, lastOrderCutoffMinutes }),
+    [now, hours, timeZone, closures, fulfilment, lastOrderCutoffMinutes],
+  );
+  // Counts down to the cutoff, not to closing. Shown only inside the last hour,
+  // because a countdown that runs all day is wallpaper rather than information.
+  const orderingEndsIn = store.acceptingUntil && store.acceptingUntil > now && store.acceptingUntil - now < 60 * 60_000
+    ? countdown(store.acceptingUntil - now)
+    : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
   const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed;
   const opensIn = store.changesAt ? countdown(store.changesAt - now) : "";
@@ -575,7 +597,18 @@ export default function CustomerApp() {
                 <span className="method-icon">P</span><span><b>Pickup</b><small>About {String(ordering.pickupEstimateMinutes ?? 15)} min</small></span><ArrowIcon />
               </button>
             </div>
-            <div className="hero-note"><span className={`pulse-dot ${store.open ? "" : "pulse-dot--closed"}`} /> {ordering.paused ? "Online ordering is temporarily paused" : store.open ? `Open now${store.changesAt ? ` · until ${new Date(store.changesAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}` : ""}` : `Closed · opens ${opensAtLabel}${opensIn ? ` (in ${opensIn})` : ""}`}</div>
+            <div className="hero-note"><span className={`pulse-dot ${store.open ? "" : "pulse-dot--closed"}`} /> {
+              ordering.paused ? String(ordering.pauseMessage ?? "Online ordering is temporarily paused")
+              // A closure explains itself. Falling back to the weekly schedule
+              // here would tell a customer the store opens at 11 on a day it is
+              // shut all day, which is worse than saying nothing.
+              : store.closure ? `${store.closure.scope === "delivery" ? "Delivery closed" : store.closure.scope === "pickup" ? "Pickup closed" : "Closed"} · ${store.closure.reason}${store.changesAt ? ` · back ${new Date(store.changesAt).toLocaleString("en-CA", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone })}` : ""}`
+              : store.open ? `Open now${orderingEndsIn ? ` · last orders in ${orderingEndsIn}` : store.changesAt ? ` · until ${new Date(store.changesAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}` : ""}`
+              // Past the cutoff the doors are open but the kitchen has stopped.
+              // Saying "closed" would be a lie a customer standing outside can see.
+              : store.acceptingUntil ? "Last orders have gone in for tonight · order ahead for tomorrow"
+              : `Closed · opens ${opensAtLabel}${opensIn ? ` (in ${opensIn})` : ""}`
+            }</div>
           </div>
           <div className={`hero-art ${heroImageUrl ? "hero-art--photo" : ""}`} style={heroImageUrl ? { backgroundImage: `url(${heroImageUrl})` } : undefined} aria-label={heroImageUrl ? `${businessName} food photograph` : "A playful illustration of a fresh pizza"}>
             {heroImageUrl ? null : <div className="pizza-scene">
@@ -765,6 +798,19 @@ function PizzaCustomizer({
       name: toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId,
     })),
   );
+  // H-03: a specialty pizza is its recipe. The recipe toppings are not removable
+  // through the ordinary topping picker any more — the server rejects an order
+  // whose recipe is incomplete — but "hold the mushrooms" is a normal request, so
+  // it gets its own explicit control. Leaving something off never changes the
+  // price: it is not a discount, and treating it as one would let the same named
+  // product be bought cheaper by removing an ingredient and re-adding it.
+  const fixedRecipe = Boolean(configuration.fixedRecipe);
+  const [omitted, setOmitted] = useState<string[]>([]);
+  const recipeToppings = fixedRecipe
+    ? recipeToppingIds
+        .map((toppingId) => toppings.find((topping) => topping.id === toppingId))
+        .filter((topping): topping is Topping => Boolean(topping))
+    : [];
   const cheeseEnabled = configuration.cheeseEnabled !== false;
   const halalEnabled = Boolean(product.halal_capable);
   const crustOptions = stringList(configuration.crustOptions);
@@ -792,9 +838,13 @@ function PizzaCustomizer({
   const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000;
   const selectedUnits = (price?.toppingUnitsBps ?? 0) / 10_000;
   const selectionValid = Boolean(variation && (configuration.fixedRecipe || includedCount === 0 || selected.length >= 1));
-  const toggleTopping = (topping: Topping) => setSelected((current) => current.some((entry) => entry.toppingId === topping.id)
-    ? current.filter((entry) => entry.toppingId !== topping.id)
-    : [...current, { toppingId: topping.id, placement: "whole", name: topping.name }]);
+  const toggleTopping = (topping: Topping) => setSelected((current) => {
+    // A recipe topping cannot be toggled off here; use "Leave it off" instead.
+    if (fixedRecipe && recipeToppingIds.includes(topping.id)) return current;
+    return current.some((entry) => entry.toppingId === topping.id)
+      ? current.filter((entry) => entry.toppingId !== topping.id)
+      : [...current, { toppingId: topping.id, placement: "whole", name: topping.name }];
+  });
   const setPlacement = (toppingId: string, placement: ToppingPlacement) =>
     setSelected((current) => current.map((entry) => entry.toppingId === toppingId ? { ...entry, placement } : entry));
   const chooseHalal = (next: boolean) => {
@@ -824,8 +874,25 @@ function PizzaCustomizer({
   const bakePanel = <>{bakeSauceOptions.length ? <fieldset><legend><span>{stepNumber("bake")}</span> Bake &amp; sauce</legend><div className="topping-grid">{bakeSauceOptions.map((option) => { const active = bakeSauce.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setBakeSauce((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div><div className="allowance-meter"><span>Optional</span><b>Choose up to 2</b></div></fieldset> : null}</>;
   const legacyPanel = <>{legacyBaseOptions.length ? <fieldset><legend><span>{stepNumber("legacy")}</span> Crust, bake &amp; sauce</legend><div className="topping-grid">{legacyBaseOptions.map((option) => { const active = legacyBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setLegacyBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}</>;
   const toppingsPanel = <><fieldset><legend><span>{stepNumber("toppings")}</span> Choose toppings</legend>
-            {Boolean(configuration.fixedRecipe) ? <div className="setup-alert"><strong>Specialty recipe selected for you</strong><p>The highlighted recipe toppings are included. Any topping beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div> : <div className="setup-alert"><strong>{includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
-            <ToppingPicker toppings={toppings} selected={selected} halalOnly={halal} onToggle={toggleTopping} onPlacement={setPlacement} />
+            {fixedRecipe ? <>
+              <div className="setup-alert"><strong>This is a set recipe</strong><p>Everything below comes on it as standard, at the flyer price. Ask us to leave something off if you like — it does not change the price. Anything you add beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div>
+              <div className="recipe-list">
+                {recipeToppings.map((topping) => {
+                  const isOmitted = omitted.includes(topping.id);
+                  return <div className={`recipe-item${isOmitted ? " recipe-item--omitted" : ""}`} key={topping.id}>
+                    <span>{topping.name}</span>
+                    <button
+                      type="button"
+                      className="text-button"
+                      aria-pressed={isOmitted}
+                      onClick={() => setOmitted((current) => isOmitted ? current.filter((id) => id !== topping.id) : [...current, topping.id])}
+                    >{isOmitted ? "Put it back" : "Leave it off"}</button>
+                  </div>;
+                })}
+              </div>
+            </> : <div className="setup-alert"><strong>{includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
+            {fixedRecipe ? <p className="editor-hint">Add anything extra below.</p> : null}
+            <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} halalOnly={halal} onToggle={toggleTopping} onPlacement={setPlacement} />
             <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selected.length ? "Included in flyer price" : "Choose at least 1"}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
@@ -843,7 +910,7 @@ function PizzaCustomizer({
             : <>{crustPanel}{bakePanel}{legacyPanel}{toppingsPanel}</>}
           <label className="instructions-label">Special instructions <small>Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: cut into squares" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, modifiers, extraCheese, halal, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, halal, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
@@ -864,6 +931,12 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
     ),
     [product.configuration],
   );
+  // H-05: deals are flagged halal-capable but the generic customizer offered no
+  // halal control and the server rejected the flag outright, so the preference
+  // the menu advertises could not actually be ordered on the products that
+  // advertise it. The same one-line control the pizza customizer has.
+  const halalEnabled = Boolean(product.halal_capable);
+  const [halal, setHalal] = useState(false);
   const [selected, setSelected] = useState<Record<string, ModifierSelection["values"]>>(() => {
     const initial: Record<string, ModifierSelection["values"]> = {};
     for (const section of sections) {
@@ -942,6 +1015,7 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
       <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
+          {halalEnabled ? <fieldset><legend>Halal</legend><div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => setHalal(event.target.checked)} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div></fieldset> : null}
           {layout.map(({ section, step, groupHeading }) => {
             const values = valuesOf(section.id);
             const included = section.sharedGroup ? section.sharedIncluded ?? 0 : section.included ?? 0;
@@ -972,7 +1046,7 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
           })}
           <label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, halal, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
