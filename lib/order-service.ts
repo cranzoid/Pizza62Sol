@@ -569,6 +569,281 @@ export class OrderValidationError extends Error {
   }
 }
 
+// --- quoting ----------------------------------------------------------------
+
+export type QuoteIssue = {
+  /** Index into the submitted cart, or null for a problem with the order itself. */
+  index: number | null;
+  productId: string | null;
+  code: string;
+  message: string;
+};
+
+export type OrderQuote = {
+  /** False when something would stop this cart being ordered as submitted. */
+  ok: boolean;
+  fulfilment: Fulfilment;
+  currency: string;
+  lines: Array<{
+    index: number;
+    productId: string;
+    name: string;
+    variationName: string | null;
+    quantity: number;
+    unitPriceCents: number;
+    lineTotalCents: number;
+  }>;
+  totals: {
+    menuSubtotalCents: number;
+    discountCents: number;
+    discountedMenuSubtotalCents: number;
+    taxCents: number;
+    deliveryFeeCents: number;
+    tipCents: number;
+    totalCents: number;
+  };
+  taxRateBps: number;
+  deliveryFeeTaxable: boolean;
+  appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
+  coupon: { code: string; accepted: boolean; message: string | null } | null;
+  delivery: {
+    minimumCents: number;
+    /** How much more food is needed to reach the minimum. Zero once it is met. */
+    shortfallCents: number;
+    feeCents: number;
+    meetsMinimum: boolean;
+  } | null;
+  estimateMinutes: number;
+  issues: QuoteIssue[];
+};
+
+/**
+ * Prices a cart without creating anything.
+ *
+ * **The reason this exists as its own export.** The checkout page used to
+ * compute its own subtotal, HST and total in the browser and label them
+ * "estimated", because nothing on the server would tell it otherwise until the
+ * order was submitted. Two implementations of tax arithmetic drift — and when
+ * they do, the customer consents to one number and is charged another. This runs
+ * the *same* pricing path `createOrder` runs, so the figure on the review screen
+ * is the figure that will be charged, and there is no second implementation to
+ * keep in step.
+ *
+ * **It reports rather than throws.** `createOrder` must refuse a bad cart
+ * outright; a quote has to describe every problem at once so the cart can show
+ * all of them (H-23) instead of surfacing them one refusal at a time. So
+ * validation failures come back in `issues` with `ok: false`, and only genuinely
+ * unusable input (no cart at all) throws.
+ *
+ * Read-only: no order, no payment, no idempotency key, nothing persisted.
+ */
+export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
+  await ensureDatabase();
+  const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
+  const [ordering, delivery, taxTips, operations] = await Promise.all([
+    getSetting<OrderingSetting>("ordering"),
+    getSetting<DeliverySetting>("delivery"),
+    getSetting<TaxTipSetting>("taxAndTips"),
+    getSetting<OperationSetting>("operations"),
+  ]);
+
+  const issues: QuoteIssue[] = [];
+  const submitted = body.items ?? [];
+  if (!submitted.length) throw new OrderValidationError("Your cart is empty.");
+  if (submitted.length > 50) throw new OrderValidationError("Your cart is too large.");
+
+  // The happy path is one call. Only when it refuses do we pay for per-line
+  // validation to find out *which* lines are the problem — that is the rare
+  // case, and it keeps `validateItems` (the most safety-critical function here)
+  // completely unchanged rather than reworked to collect errors.
+  let items: ValidatedItem[] = [];
+  try {
+    items = await validateItems(submitted, fulfilment, operations);
+  } catch {
+    for (const [index, line] of submitted.entries()) {
+      try {
+        const [validated] = await validateItems([line], fulfilment, operations);
+        items.push(validated);
+      } catch (error) {
+        issues.push({
+          index,
+          productId: line.productId ?? null,
+          code: error instanceof OrderValidationError ? error.code : "ITEM_UNAVAILABLE",
+          message: error instanceof Error ? error.message : "This item cannot be ordered.",
+        });
+      }
+    }
+  }
+
+  const couponCode = normalizeCouponCode(body.couponCode);
+  let promotions: PromotionRule[] = [];
+  let coupon: OrderQuote["coupon"] = null;
+  try {
+    promotions = await activePromotions(fulfilment, couponCode);
+    if (couponCode) coupon = { code: couponCode, accepted: true, message: null };
+  } catch (error) {
+    // A bad code must not stop the rest of the cart being priced — the customer
+    // needs to see their total *and* that the code did not apply.
+    promotions = await activePromotions(fulfilment, null);
+    coupon = {
+      code: couponCode ?? "",
+      accepted: false,
+      message: error instanceof Error ? error.message : "That promo code isn't valid right now.",
+    };
+  }
+  if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
+    promotions.push({
+      id: "included-free-delivery",
+      name: "Included free delivery",
+      type: "free_delivery",
+      amount: 0,
+      priority: 10_000,
+      combinable: true,
+      exclusive: false,
+    });
+  }
+
+  const cartLines: CartLinePrice[] = items.map((item) => ({
+    id: item.id,
+    productId: item.productId,
+    categoryId: item.categoryId,
+    quantity: item.quantity,
+    unitPriceCents: item.unitPriceCents,
+    taxable: item.taxable,
+    promotionEligible: item.promotionEligible,
+  }));
+
+  let price;
+  try {
+    price = priceCart({
+      lines: cartLines,
+      promotions,
+      fulfilment,
+      deliveryFeeCents: delivery.feeCents,
+      taxRateBps: taxTips.taxRateBps,
+      deliveryFeeTaxable: delivery.feeTaxable,
+      tip: taxTips.tippingEnabled ? body.tip ?? { type: "none" } : { type: "none" },
+      customTipMaxCents: taxTips.customTipMaxCents,
+      customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
+    });
+  } catch (error) {
+    // Almost always the tip: a custom amount above the configured ceiling. Report
+    // it and price the cart without one rather than returning no total at all.
+    issues.push({
+      index: null,
+      productId: null,
+      code: "TIP_INVALID",
+      message: error instanceof Error ? error.message : "That tip could not be applied.",
+    });
+    price = priceCart({
+      lines: cartLines,
+      promotions,
+      fulfilment,
+      deliveryFeeCents: delivery.feeCents,
+      taxRateBps: taxTips.taxRateBps,
+      deliveryFeeTaxable: delivery.feeTaxable,
+      tip: { type: "none" },
+    });
+  }
+
+  // The delivery minimum is checked against the pre-tax menu subtotal, so a
+  // customer cannot reach it with the fee or a tip. Reported as a shortfall
+  // rather than a refusal: "add $4.01 more" is actionable, "not eligible" is not.
+  let deliveryQuote: OrderQuote["delivery"] = null;
+  if (fulfilment === "delivery") {
+    const shortfall = Math.max(0, (delivery.minimumCents ?? 0) - price.menuSubtotalCents);
+    deliveryQuote = {
+      minimumCents: delivery.minimumCents ?? 0,
+      shortfallCents: shortfall,
+      feeCents: price.deliveryFeeCents,
+      meetsMinimum: shortfall === 0,
+    };
+    if (shortfall > 0) {
+      issues.push({
+        index: null,
+        productId: null,
+        code: "DELIVERY_BELOW_MINIMUM",
+        message: `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax. Add ${formatDeliveryMinimum(shortfall)} more to your order.`,
+      });
+    }
+  }
+
+  if (!ordering.enabled || ordering.paused) {
+    issues.push({ index: null, productId: null, code: "ORDERING_PAUSED", message: ordering.pauseMessage });
+  }
+  if (
+    (fulfilment === "pickup" && !ordering.pickupEnabled) ||
+    (fulfilment === "delivery" && !ordering.deliveryEnabled)
+  ) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "FULFILMENT_UNAVAILABLE",
+      message: `${fulfilment === "delivery" ? "Delivery" : "Pickup"} ordering is currently unavailable.`,
+    });
+  }
+
+  const estimateMinutes =
+    fulfilment === "delivery" ? ordering.deliveryEstimateMinutes ?? 30 : ordering.pickupEstimateMinutes;
+
+  // `ok` has to mean "this will be accepted", not "the arithmetic worked". A
+  // quote that says yes to a time the store is shut leaves the review screen
+  // enabling a button guaranteed to fail — the same class of problem as quoting
+  // the wrong total, just further down the funnel.
+  //
+  // Checked unconditionally, and defaulting to ASAP exactly as `createOrder`
+  // does when no schedule is supplied. An earlier version only checked when a
+  // schedule was present, which meant a quote with none omitted the check that
+  // `createOrder` would then apply anyway — and at 4am, with the store shut, the
+  // quote said yes to an order the API refused.
+  try {
+    const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
+    validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+  } catch (error) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: error instanceof OrderValidationError ? error.code : "SCHEDULE_INVALID",
+      message: error instanceof Error ? error.message : "That order time cannot be accepted.",
+    });
+  }
+
+  return {
+    ok: issues.length === 0,
+    fulfilment,
+    currency: "CAD",
+    lines: items.map((item, index) => ({
+      index,
+      productId: item.productId,
+      name: item.productName,
+      variationName: item.variationName,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      lineTotalCents: item.unitPriceCents * item.quantity,
+    })),
+    totals: {
+      menuSubtotalCents: price.menuSubtotalCents,
+      discountCents: price.discountCents,
+      discountedMenuSubtotalCents: price.discountedMenuSubtotalCents,
+      taxCents: price.taxCents,
+      deliveryFeeCents: price.deliveryFeeCents,
+      tipCents: price.tipCents,
+      totalCents: price.totalCents,
+    },
+    taxRateBps: taxTips.taxRateBps,
+    deliveryFeeTaxable: Boolean(delivery.feeTaxable),
+    appliedPromotions: price.appliedPromotions.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      discountCents: entry.discountCents,
+    })),
+    coupon,
+    delivery: deliveryQuote,
+    estimateMinutes,
+    issues,
+  };
+}
+
 // `origin` used to be a parameter here: Stripe's success_url was built per
 // session and needed the caller's host. Clover's return URL is configured once
 // in its merchant dashboard and is the same for every order, so there is nothing

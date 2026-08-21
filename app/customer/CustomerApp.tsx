@@ -16,7 +16,6 @@ import {
   modifierUnitsBps,
   normalizeModifierValues,
   orderModifierSections,
-  priceCart,
   pricePizza,
   priceToppingUnits,
   nextOrderSlots,
@@ -96,6 +95,132 @@ type CartLine = {
   specialInstructions?: string;
   freeDelivery?: boolean;
 };
+
+/**
+ * The server's price for the current cart (H-24).
+ *
+ * Mirrors `OrderQuote` in lib/order-service.ts. The browser deliberately does no
+ * pricing of its own any more: it used to run its own copy of the discount and
+ * HST arithmetic and label the result "estimated", which is the shape of problem
+ * where a customer agrees to one number and is charged another.
+ */
+type Quote = {
+  ok: boolean;
+  totals: {
+    menuSubtotalCents: number;
+    discountCents: number;
+    discountedMenuSubtotalCents: number;
+    taxCents: number;
+    deliveryFeeCents: number;
+    tipCents: number;
+    totalCents: number;
+  };
+  taxRateBps: number;
+  deliveryFeeTaxable: boolean;
+  appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
+  coupon: { code: string; accepted: boolean; message: string | null } | null;
+  delivery: { minimumCents: number; shortfallCents: number; feeCents: number; meetsMinimum: boolean } | null;
+  estimateMinutes: number;
+  issues: Array<{ index: number | null; productId: string | null; code: string; message: string }>;
+};
+
+const EMPTY_TOTALS: Quote["totals"] = {
+  menuSubtotalCents: 0,
+  discountCents: 0,
+  discountedMenuSubtotalCents: 0,
+  taxCents: 0,
+  deliveryFeeCents: 0,
+  tipCents: 0,
+  totalCents: 0,
+};
+
+/** The cart, in the shape the orders API expects. Used for quoting and placing. */
+function toOrderItems(cart: CartLine[]) {
+  return cart.map((line) => ({
+    productId: line.productId,
+    variationId: line.variationId,
+    quantity: line.quantity,
+    toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })),
+    modifiers: line.modifiers?.map((modifier) => ({
+      id: modifier.id,
+      values: modifier.values.map((value) => (value.placement ? { value: value.value, placement: value.placement } : value.value)),
+    })),
+    extraCheese: line.extraCheese,
+    halal: line.halal,
+    specialInstructions: line.specialInstructions,
+  }));
+}
+
+/**
+ * Keeps a server quote in step with the cart.
+ *
+ * Debounced, because it re-runs on every tip tap and every keystroke of a promo
+ * code. Responses are sequenced so a slow earlier request cannot overwrite a
+ * newer answer — without that, changing the tip twice quickly can leave the
+ * screen showing the price for the first tip.
+ */
+function useOrderQuote(input: {
+  cart: CartLine[];
+  fulfilment: "pickup" | "delivery";
+  tip?: { type: "none" } | { type: "percentage"; valueBps: number } | { type: "custom"; amountCents: number };
+  couponCode?: string;
+  schedule?: { type: "asap" | "scheduled"; scheduledFor?: number };
+  enabled?: boolean;
+}): { quote: Quote | null; loading: boolean; failed: boolean } {
+  const { cart, fulfilment, tip, couponCode, schedule, enabled = true } = input;
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  // Serialised so the body is a stable dependency rather than a new object each
+  // render, which would re-fetch forever.
+  const body = JSON.stringify({ fulfilment, items: toOrderItems(cart), tip, couponCode, schedule });
+  const empty = cart.length === 0;
+
+  useEffect(() => {
+    // An empty or disabled cart is handled by *deriving* the result below rather
+    // than by resetting state here — clearing it in the effect body would be a
+    // synchronous setState on every such render, and a cascade of them.
+    if (!enabled || empty) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      // Flipped inside the debounce, not in the effect body: no synchronous
+      // setState on every keystroke, and "Updating…" appears only when a request
+      // is actually about to go out rather than flickering on every character.
+      setLoading(true);
+      void (async () => {
+        try {
+          const response = await fetch("/api/orders/quote", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+          });
+          const result = (await response.json()) as Quote & { error?: string };
+          if (cancelled) return;
+          if (!response.ok) {
+            setFailed(true);
+            setQuote(null);
+          } else {
+            setFailed(false);
+            setQuote(result);
+          }
+        } catch {
+          if (!cancelled) setFailed(true);
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [body, enabled, empty]);
+
+  // Derived, not stored: an empty cart has no quote by definition, and a stale
+  // one from before the last item was removed must never be shown as current.
+  if (!enabled || empty) return { quote: null, loading: false, failed: false };
+  return { quote, loading, failed };
+}
 
 const FALLBACK_PHONE = "(905) 547-5777";
 
@@ -264,28 +389,12 @@ export default function CustomerApp() {
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
   );
 
-  const totals = useMemo(
-    () => {
-      const taxTips = catalog?.settings.taxAndTips?.value ?? {};
-      return priceCart({
-        lines: cart.map((line) => ({
-          id: line.key,
-          productId: line.productId,
-          categoryId: line.categoryId,
-          quantity: line.quantity,
-          unitPriceCents: line.unitPriceCents,
-          taxable: line.taxable,
-          promotionEligible: true,
-        })),
-        fulfilment,
-        deliveryFeeCents: cart.some((line) => line.freeDelivery) ? 0 : Number(catalog?.settings.delivery?.value.feeCents ?? 350),
-        taxRateBps: Number(taxTips.taxRateBps ?? 1300),
-        deliveryFeeTaxable: Boolean(catalog?.settings.delivery?.value.feeTaxable),
-        tip: { type: "none" },
-      });
-    },
-    [cart, fulfilment, catalog],
-  );
+  // H-24: the cart's totals come from the server, priced by the same code that
+  // will charge the card. The browser used to run its own copy of the discount
+  // and HST arithmetic here and call the answer "estimated"; two implementations
+  // of tax drift, and when they do the customer is charged something they never
+  // agreed to. There is now one implementation, and it lives on the server.
+  const { quote: cartQuote, loading: cartQuoteLoading } = useOrderQuote({ cart, fulfilment });
 
   const chooseFulfilment = (next: "pickup" | "delivery") => {
     setFulfilment(next);
@@ -549,7 +658,8 @@ export default function CustomerApp() {
       {cartOpen ? (
         <CartDrawer
           cart={cart}
-          totals={totals}
+          quote={cartQuote}
+          loading={cartQuoteLoading}
           fulfilment={fulfilment}
           onClose={() => setCartOpen(false)}
           onRemove={(key) => { setCart((current) => current.filter((line) => line.key !== key)); analytics("remove_from_cart"); }}
@@ -868,17 +978,42 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
   );
 }
 
-function CartDrawer({ cart, totals, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; totals: ReturnType<typeof priceCart>; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
+/**
+ * The cart.
+ *
+ * H-23: switching pickup to delivery used to leave ineligible items sitting in
+ * the cart, priced as if nothing had changed, until the server rejected the
+ * whole order at the last step of checkout. The quote now reports per-line
+ * problems by cart position, so an item that cannot be ordered says so *here*,
+ * next to a button that removes it, rather than at the payment screen.
+ */
+function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; quote: Quote | null; loading: boolean; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
+  const totals = quote?.totals ?? EMPTY_TOTALS;
+  const lineIssue = (index: number) => quote?.issues.find((issue) => issue.index === index) ?? null;
+  const orderIssues = quote?.issues.filter((issue) => issue.index === null) ?? [];
+  const blocked = Boolean(quote && !quote.ok);
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside className="cart-drawer" aria-label="Your order" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2>Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
-    <div className="cart-lines">{cart.length ? cart.map((line, index) => <article className="cart-line" key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal meat toppings</small> : null}{line.toppings?.map((entry) => <small key={entry.toppingId}>{entry.name}{placementSuffix(entry.placement)}</small>)}{line.modifiers?.map((modifier) => <small key={modifier.id}>{modifier.label}: {modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}</small>)}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
-    <div className="cart-summary"><div><span>Menu subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div><div><span>Estimated HST</span><b>{formatMoney(totals.taxCents)}</b></div>{fulfilment === "delivery" ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}<div className="cart-total"><span>Estimated total<small>Revalidated at checkout</small></span><b>{formatMoney(totals.totalCents)}</b></div><button className="primary-button" disabled={!cart.length} onClick={onCheckout}>Go to checkout <ArrowIcon /></button><p className="secure-note">Prices, availability, taxes and eligibility are checked again by Pizza 62 before an order is accepted.</p></div>
+    <div className="cart-lines">{cart.length ? cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal meat toppings</small> : null}{line.toppings?.map((entry) => <small key={entry.toppingId}>{entry.name}{placementSuffix(entry.placement)}</small>)}{line.modifiers?.map((modifier) => <small key={modifier.id}>{modifier.label}: {modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}</small>)}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; }) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
+    <div className="cart-summary">
+      <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
+      {totals.discountCents > 0 ? <div className="cart-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
+      {fulfilment === "delivery" ? <div><span>Delivery</span><b>{totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
+      <div><span>HST{quote ? ` ${(quote.taxRateBps / 100).toFixed(0)}%` : ""}</span><b>{formatMoney(totals.taxCents)}</b></div>
+      <div className="cart-total"><span>Total{loading ? <small>Updating…</small> : <small>Priced by Pizza 62</small>}</span><b>{formatMoney(totals.totalCents)}</b></div>
+      {orderIssues.map((issue) => <p className="cart-blocker" role="status" key={issue.code}>{issue.message}</p>)}
+      <button className="primary-button" disabled={!cart.length || blocked} onClick={onCheckout}>Go to checkout <ArrowIcon /></button>
+      <p className="secure-note">Every price here is calculated by Pizza 62, not by your browser, so this is what you will be charged.</p>
+    </div>
   </aside></div>;
 }
 
 function Checkout({ cart, fulfilment, settings, integrations, store, hours, timeZone, now, onClose, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onConfirmed: (result: Record<string, unknown>) => void }) {
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
-  const [tip, setTip] = useState(0); const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">(store.open ? "asap" : "scheduled"); const [scheduledFor, setScheduledFor] = useState("");
+  const [tip, setTip] = useState(0); const [customTip, setCustomTip] = useState(""); const [tipMode, setTipMode] = useState<"preset" | "custom">("preset");
+  const [couponInput, setCouponInput] = useState(""); const [couponCode, setCouponCode] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">(store.open ? "asap" : "scheduled"); const [scheduledFor, setScheduledFor] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
   // C-07: one durable idempotency key per checkout attempt. It survives refreshes,
@@ -905,11 +1040,39 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
     [now, hours, timeZone, estimate],
   );
   const slotLabel = (timestamp: number) => new Date(timestamp).toLocaleString("en-CA", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone });
+
+  // The tip as the order API will receive it. A custom amount is entered in
+  // dollars and sent in cents; an unparseable entry means no tip rather than a
+  // guessed one.
+  const customTipCents = Math.round(Number(customTip.replace(/[^0-9.]/g, "")) * 100);
+  const tipRequest = tipMode === "custom"
+    ? Number.isFinite(customTipCents) && customTipCents > 0
+      ? ({ type: "custom", amountCents: customTipCents } as const)
+      : ({ type: "none" } as const)
+    : tip
+      ? ({ type: "percentage", valueBps: tip } as const)
+      : ({ type: "none" } as const);
+
+  // H-24: the review screen is priced by the server, on exactly the cart, tip,
+  // coupon and time that will be submitted. Whatever it shows is what will be
+  // charged — there is no browser-side arithmetic left to disagree with it.
+  const { quote, loading: quoting } = useOrderQuote({
+    cart,
+    fulfilment,
+    tip: tipRequest,
+    couponCode: couponCode || undefined,
+    schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" && scheduledFor ? Number(scheduledFor) : undefined },
+  });
+  const totals = quote?.totals ?? EMPTY_TOTALS;
+  const blockingIssues = quote?.issues ?? [];
+  const contactComplete = name.trim().length > 1 && phone.trim().length >= 10 && /\S+@\S+\.\S+/.test(email);
+  const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
+
   const submit = async () => {
     setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod });
     try {
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        idempotencyKey, fulfilment, customer: { name, phone, email }, items: cart.map((line) => ({ productId: line.productId, variationId: line.variationId, quantity: line.quantity, toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })), modifiers: line.modifiers?.map((modifier) => ({ id: modifier.id, values: modifier.values.map((value) => value.placement ? { value: value.value, placement: value.placement } : value.value) })), extraCheese: line.extraCheese, halal: line.halal, specialInstructions: line.specialInstructions })), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, tip: tip ? { type: "percentage", valueBps: tip } : { type: "none" }, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
       }) });
       const result = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
@@ -954,7 +1117,104 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
       <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? "Secure hosted checkout by Clover" : "Add Clover credentials to enable"}</small></span></label></fieldset></div>
-      <aside className="checkout-summary"><h3>Order summary</h3>{cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}<hr /><p>Tip</p><div className="tip-grid"><button type="button" className={tip === 0 ? "active" : ""} onClick={() => setTip(0)}>None</button>{tipPresets.map((preset) => <button type="button" className={tip === preset ? "active" : ""} key={preset} onClick={() => setTip(preset)}>{preset / 100}%</button>)}</div><p className="tip-note">Percentage tips use the discounted menu subtotal before HST and exclude delivery.</p>{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="primary-button" disabled={submitting || (paymentMethod === "online" && !integrations.clover) || (scheduleType === "scheduled" && !scheduledFor)} onClick={submit}>{submitting ? "Confirming…" : paymentMethod === "online" ? "Continue to payment" : "Place pickup order"} <ArrowIcon /></button><small>Prices and choices are checked again by Pizza 62 before the order is accepted. Online card details stay with Clover.</small></aside></div>
+      <aside className="checkout-summary">
+        <h3>Order summary</h3>
+        {cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}
+
+        <hr />
+        <p>Promo code</p>
+        <div className="coupon-row">
+          <input
+            value={couponInput}
+            onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
+            placeholder="Have a code?"
+            aria-label="Promo code"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {couponCode ? (
+            <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
+          ) : (
+            <button type="button" disabled={!couponInput.trim()} onClick={() => { setCouponCode(couponInput.trim()); analytics("coupon_used", { code: couponInput.trim() }); }}>Apply</button>
+          )}
+        </div>
+        {quote?.coupon ? (
+          <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">
+            {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
+          </p>
+        ) : null}
+
+        <hr />
+        <p>Tip</p>
+        <div className="tip-grid">
+          <button type="button" className={tipMode === "preset" && tip === 0 ? "active" : ""} onClick={() => { setTipMode("preset"); setTip(0); }}>None</button>
+          {tipPresets.map((preset) => <button type="button" className={tipMode === "preset" && tip === preset ? "active" : ""} key={preset} onClick={() => { setTipMode("preset"); setTip(preset); }}>{preset / 100}%</button>)}
+          <button type="button" className={tipMode === "custom" ? "active" : ""} onClick={() => setTipMode("custom")}>Other</button>
+        </div>
+        {tipMode === "custom" ? (
+          <label className="custom-tip">Tip amount · C$
+            <input inputMode="decimal" value={customTip} onChange={(event) => setCustomTip(event.target.value)} placeholder="0.00" />
+          </label>
+        ) : null}
+        <p className="tip-note">Percentage tips are calculated on the food total after any discount, before HST, and exclude delivery.</p>
+
+        {/*
+          H-24: the complete breakdown, every line of it, priced by the server.
+          The customer cannot give informed consent to a number they were shown
+          only as a single "estimated total".
+        */}
+        <hr />
+        <div className="checkout-totals">
+          <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
+          {totals.discountCents > 0 ? (
+            <div className="checkout-discount">
+              <span>Discount{quote?.appliedPromotions.length ? ` · ${quote.appliedPromotions.map((entry) => entry.name).join(", ")}` : ""}</span>
+              <b>−{formatMoney(totals.discountCents)}</b>
+            </div>
+          ) : null}
+          {fulfilment === "delivery" ? <div><span>Delivery fee</span><b>{totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
+          <div>
+            <span>HST {quote ? `${(quote.taxRateBps / 100).toFixed(0)}%` : ""}{quote?.deliveryFeeTaxable && fulfilment === "delivery" ? <small>on food and delivery</small> : null}</span>
+            <b>{formatMoney(totals.taxCents)}</b>
+          </div>
+          {totals.tipCents > 0 ? <div><span>Tip</span><b>{formatMoney(totals.tipCents)}</b></div> : null}
+          <div className="checkout-grand-total">
+            <span>Total to pay{quoting ? <small>Updating…</small> : null}</span>
+            <b>{formatMoney(totals.totalCents)}</b>
+          </div>
+        </div>
+
+        {blockingIssues.map((issue) => <p className="cart-blocker" role="status" key={`${issue.code}-${issue.index ?? "order"}`}>{issue.message}</p>)}
+
+        <label className="terms-accept">
+          <input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} />
+          <span>
+            I agree to the <Link href="/terms" target="_blank">terms</Link> and the{" "}
+            <Link href="/cancellation" target="_blank">cancellation &amp; refund policy</Link>, and confirm the order above is correct.
+          </span>
+        </label>
+
+        {error ? <div className="form-error" role="alert">{error}</div> : null}
+        <button
+          className="primary-button"
+          disabled={
+            submitting ||
+            quoting ||
+            !quote?.ok ||
+            !termsAccepted ||
+            !contactComplete ||
+            !addressComplete ||
+            (paymentMethod === "online" && !integrations.clover) ||
+            (scheduleType === "scheduled" && !scheduledFor)
+          }
+          onClick={submit}
+        >
+          {submitting ? "Confirming…" : paymentMethod === "online" ? `Pay ${formatMoney(totals.totalCents)}` : `Place order · ${formatMoney(totals.totalCents)}`} <ArrowIcon />
+        </button>
+        {!contactComplete ? <small className="checkout-hint">Add your name, phone and email above to continue.</small> : null}
+        {contactComplete && !addressComplete ? <small className="checkout-hint">Add your delivery address above to continue.</small> : null}
+        <small>This total is calculated by Pizza 62 and is what you will be charged. Card details are entered on Clover&apos;s secure page and never reach this site.</small>
+      </aside></div>
   </section></div>;
 }
 

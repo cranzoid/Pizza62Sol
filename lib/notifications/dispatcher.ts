@@ -85,6 +85,8 @@ export type DispatchOutcome = {
   retried: number;
   failed: number;
   parked: number;
+  /** Rows un-parked because credentials appeared since they were queued. */
+  released: number;
 };
 
 /**
@@ -307,12 +309,38 @@ async function park(row: OutboxRow, reason: string, now: number): Promise<void> 
 }
 
 /**
+ * Releases everything parked waiting for credentials that now exist.
+ *
+ * `pending_provider_setup` is not in `CLAIMABLE`, which is the whole point while
+ * there is nothing to deliver with — but it also meant a parked row was parked
+ * *forever*. Nothing anywhere moved it back. So the intended sequence — take
+ * sample orders now, add the Twilio and email credentials afterwards, watch the
+ * queue flush — did not work: every notification queued before the credentials
+ * arrived stayed invisible, which is precisely the silence this release exists
+ * to eliminate, reintroduced at the one moment it is most likely to happen.
+ *
+ * Cheap, idempotent, and matches nothing once the backlog is drained. Attempt
+ * counts are untouched: waiting for credentials was never an attempt.
+ */
+async function releaseParkedRows(now: number): Promise<number> {
+  const result = await getD1()
+    .prepare(
+      `UPDATE notification_outbox
+         SET status = 'pending', scheduled_for = ?, last_error = NULL, updated_at = ?
+       WHERE status = 'pending_provider_setup'`,
+    )
+    .bind(now, now)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/**
  * Drains due outbox rows. Safe to run concurrently with itself and with inline
  * dispatch; safe to run when nothing is configured (it claims nothing).
  */
 export async function dispatchOutbox(options: { limit?: number; now?: number } = {}): Promise<DispatchOutcome> {
   await ensureDatabase();
-  const outcome: DispatchOutcome = { claimed: 0, sent: 0, retried: 0, failed: 0, parked: 0 };
+  const outcome: DispatchOutcome = { claimed: 0, sent: 0, retried: 0, failed: 0, parked: 0, released: 0 };
   // Note the `await`. Without it this negates a Promise, which is always falsy,
   // so the guard silently stops guarding and every row is claimed and burned
   // against providers that cannot deliver. TypeScript flags a bare `if (promise)`
@@ -320,6 +348,8 @@ export async function dispatchOutbox(options: { limit?: number; now?: number } =
   if (!(await anyProviderConfigured())) return outcome;
 
   const now = options.now ?? Date.now();
+  // A provider exists, so anything parked for the lack of one is now deliverable.
+  outcome.released = await releaseParkedRows(now);
   const rows = await claimDue(options.limit ?? 25, now);
   outcome.claimed = rows.length;
 

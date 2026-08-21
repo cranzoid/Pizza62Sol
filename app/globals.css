@@ -430,3 +430,62 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   gap: 12px;
   margin-top: 10px;
 }
+
+/* --- Checkout review (H-24) -------------------------------------------------
+   Every line of the breakdown is shown because the customer cannot give
+   informed consent to a number they were only ever shown as one total. All of
+   these figures come from /api/orders/quote — the browser does no pricing. */
+.checkout-totals { display: grid; gap: 7px; margin: 12px 0; }
+.checkout-totals > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 11px; }
+.checkout-totals > div small { display: block; font-size: 8px; color: #77807a; letter-spacing: .3px; }
+.checkout-discount b { color: #2f7d4f; }
+
+.checkout-grand-total {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid #e6e9e5;
+  font-size: 13px !important;
+  font-weight: 800;
+}
+.checkout-grand-total b { font-size: 16px; }
+
+.coupon-row { display: flex; gap: 8px; margin: 8px 0; }
+.coupon-row input { flex: 1; min-width: 0; border: 1px solid #d9ded9; border-radius: 7px; padding: 9px; font-size: 11px; text-transform: uppercase; }
+.coupon-row button { border: 1px solid #d9ded9; border-radius: 7px; padding: 9px 14px; font-size: 10px; font-weight: 700; background: #fff; cursor: pointer; }
+.coupon-row button:disabled { opacity: .45; cursor: default; }
+.coupon-ok { font-size: 9px; color: #2f7d4f; margin: 0 0 6px; }
+.coupon-bad { font-size: 9px; color: #b4442f; margin: 0 0 6px; }
+
+.custom-tip { display: block; font-size: 10px; margin: 8px 0; }
+.custom-tip input { width: 100%; margin-top: 6px; border: 1px solid #d9ded9; border-radius: 7px; padding: 9px; font-size: 11px; }
+
+/* Consent is a deliberate act, so the button stays disabled until it is given. */
+.terms-accept { display: flex; gap: 9px; align-items: flex-start; margin: 14px 0; font-size: 10px; line-height: 1.6; }
+.terms-accept input { margin-top: 2px; flex: none; }
+.terms-accept a { text-decoration: underline; }
+
+.checkout-hint { display: block; margin-top: 8px; color: #b4442f; font-size: 9px; }
+
+/* --- Cart revalidation (H-23) -----------------------------------------------
+   A line that cannot be ordered says so next to its own Remove button, rather
+   than taking the whole order down at the payment step. */
+.cart-line--blocked { opacity: .72; }
+.cart-line-issue {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-left: 2px solid #b4442f;
+  background: #fdf3f1;
+  color: #8c3524;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.cart-blocker {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: #fdf3f1;
+  color: #8c3524;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.cart-discount b { color: #2f7d4f; }

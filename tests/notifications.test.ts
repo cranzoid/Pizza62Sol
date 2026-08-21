@@ -42,10 +42,34 @@ const withDb = (name: string, body: () => Promise<void>) =>
 
 const realFetch = globalThis.fetch;
 
-before(() => {
+before(async () => {
   process.env.EMAIL_API_KEY = "test-email-key";
   process.env.EMAIL_FROM = "orders@pizza62.test";
   process.env.PUBLIC_BASE_URL = "https://pizza62.test";
+
+  // Trap 8, in its sharpest form. `pizza62_test` is never reset, so outbox rows
+  // accumulate across every run this database has ever seen. `dispatchOutbox`
+  // claims across the whole table ordered by `scheduled_for` and takes at most
+  // `limit` rows — so once the backlog of old claimable rows exceeds the limit, a
+  // test's own freshly-seeded row (scheduled *now*, therefore last) is never
+  // claimed, and the assertion fails for a reason that has nothing to do with the
+  // code under test.
+  //
+  // Asserting on your own row by id is not enough on its own: claiming is a
+  // shared, bounded resource. So the queue is emptied of everything this run did
+  // not create. `cancelled` rather than `DELETE` because the outbox has foreign
+  // keys into orders now, and because leaving the rows visible keeps the history
+  // inspectable when a test does fail.
+  //
+  // This became load-bearing when the dispatcher started releasing
+  // `pending_provider_setup` rows: hundreds of rows parked by earlier runs all
+  // became claimable at once.
+  if (reachable) {
+    await getPool().query(
+      "UPDATE notification_outbox SET status = 'cancelled', updated_at = $1 WHERE status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')",
+      [Date.now()],
+    );
+  }
 });
 
 afterEach(() => {
@@ -81,7 +105,7 @@ async function seedOutbox(options: {
   orderStatus?: string;
   acknowledged?: boolean;
   payloadExtra?: Record<string, unknown>;
-}): Promise<{ orderId: string; outboxId: string; orderNumber: string }> {
+}): Promise<{ orderId: string; outboxId: string; orderNumber: string; recipient: string }> {
   const orderId = uniqueId();
   const outboxId = uniqueId();
   const orderNumber = `P62-T${RUN}-${(seq += 1)}`;
@@ -101,14 +125,22 @@ async function seedOutbox(options: {
      VALUES ($1,$2,'poutine','Poutine',NULL,1,899,899,1,'{}',NULL,$3)`,
     [uniqueId(), orderId, now],
   );
+  // Trap 8: a unique recipient per row. Test files run as separate processes and
+  // share one database, so `dispatchOutbox` routinely claims rows another file
+  // seeded — and `globalThis.fetch` is stubbed process-wide, so those deliveries
+  // land in this file's call log too. Asserting "nothing was sent" on the total
+  // call count therefore fails for reasons unrelated to the code under test.
+  // Addressing each row uniquely makes every such assertion answerable about
+  // *this* row.
+  const recipient = `ada+${outboxId}@example.test`;
   await getPool().query(
     `INSERT INTO notification_outbox (id,kind,recipient,payload_json,status,attempt_count,scheduled_for,created_at,updated_at)
-     VALUES ($1,$2,'ada@example.test',$3,$4,$5,$6,$7,$7)`,
+     VALUES ($1,$2,$8,$3,$4,$5,$6,$7,$7)`,
     [outboxId, options.kind,
      JSON.stringify({ orderId, orderNumber, trackingToken: "tok-" + orderId, ...options.payloadExtra }),
-     options.status, options.attemptCount ?? 0, options.scheduledFor ?? now, now],
+     options.status, options.attemptCount ?? 0, options.scheduledFor ?? now, now, recipient],
   );
-  return { orderId, outboxId, orderNumber };
+  return { orderId, outboxId, orderNumber, recipient };
 }
 
 const readRow = async (outboxId: string) =>
@@ -244,16 +276,21 @@ withDb("does not claim a row scheduled for the future", async () => {
   assert.equal((await readRow(outboxId)).status, "pending");
 });
 
-withDb("does not claim parked or terminal rows", async () => {
-  // pending_provider_setup, sent, failed and cancelled are all invisible to the
-  // dispatcher. A cancelled order's confirmation must never go out later.
-  const parked = await seedOutbox({ kind: "customer_order_confirmation", status: "pending_provider_setup" });
+withDb("does not claim terminal or still-parked rows", async () => {
+  // `cancelled` and `waiting_payment` are invisible to the dispatcher whatever
+  // is configured: a cancelled order's confirmation must never go out later, and
+  // an unpaid order must not be confirmed before Clover approves it.
+  //
+  // `pending_provider_setup` is deliberately NOT asserted here any more. It is
+  // conditional rather than terminal: parked while nothing can deliver, released
+  // the moment something can. Both halves of that are covered by their own tests
+  // below — asserting it stays parked in a test that configures a provider was
+  // asserting the failsafe stays broken.
   const cancelled = await seedOutbox({ kind: "customer_order_confirmation", status: "cancelled" });
   const waiting = await seedOutbox({ kind: "customer_order_confirmation", status: "waiting_payment" });
   stubProviders();
   await dispatchOutbox({ limit: 50 });
 
-  assert.equal((await readRow(parked.outboxId)).status, "pending_provider_setup");
   assert.equal((await readRow(cancelled.outboxId)).status, "cancelled");
   assert.equal((await readRow(waiting.outboxId)).status, "waiting_payment");
 });
@@ -300,7 +337,7 @@ withDb("fails an unknown kind rather than retrying it", async () => {
 });
 
 withDb("never confirms an order that was cancelled while queued", async () => {
-  const { outboxId } = await seedOutbox({
+  const { outboxId, recipient } = await seedOutbox({
     kind: "customer_order_confirmation",
     status: "pending",
     orderStatus: "cancelled",
@@ -309,11 +346,15 @@ withDb("never confirms an order that was cancelled while queued", async () => {
   await dispatchOutbox({ limit: 50 });
 
   assert.equal((await readRow(outboxId)).status, "failed");
-  assert.equal(calls.length, 0, "nothing should have been sent");
+  assert.equal(
+    calls.filter((call) => call.body.includes(recipient)).length,
+    0,
+    "nothing should have been sent to this order's customer",
+  );
 });
 
 withDb("does not ask for feedback on an order that never completed", async () => {
-  const { outboxId } = await seedOutbox({
+  const { outboxId, recipient } = await seedOutbox({
     kind: "feedback_request",
     status: "pending",
     orderStatus: "preparing",
@@ -321,7 +362,7 @@ withDb("does not ask for feedback on an order that never completed", async () =>
   const { calls } = stubProviders();
   await dispatchOutbox({ limit: 50 });
   assert.equal((await readRow(outboxId)).status, "failed");
-  assert.equal(calls.length, 0);
+  assert.equal(calls.filter((call) => call.body.includes(recipient)).length, 0);
 });
 
 withDb("sends exactly one message when two dispatchers race for one row", async () => {
@@ -458,5 +499,49 @@ withDb("does not chase a cancelled or completed order", async () => {
     assert.equal((await readRow(completed.outboxId)).status, "sent");
   } finally {
     delete process.env.RESTAURANT_ALERT_PHONE;
+  }
+});
+
+withDb("releases rows parked for missing credentials once a provider exists", async () => {
+  // The failsafe the whole staged rollout depends on: take sample orders now,
+  // add Twilio and email afterwards, and the queued notifications go out.
+  //
+  // `pending_provider_setup` is deliberately not claimable — that is what stops
+  // a credential-less deployment burning every row's retries. But nothing moved
+  // rows back out of it, so every notification queued before the credentials
+  // arrived stayed invisible forever: the exact silence this release exists to
+  // eliminate, at the one moment it is most likely to happen.
+  const { outboxId } = await seedOutbox({
+    kind: "customer_order_confirmation",
+    status: "pending_provider_setup",
+  });
+  // Parking never spends an attempt, so the row must still have its full budget.
+  await getPool().query("UPDATE notification_outbox SET attempt_count = 0 WHERE id = $1", [outboxId]);
+
+  const { calls } = stubProviders();
+  const outcome = await dispatchOutbox({ limit: 50 });
+
+  assert.ok(outcome.released >= 1, "the parked row should have been released");
+  assert.equal((await readRow(outboxId)).status, "sent");
+  assert.ok(calls.some((call) => call.url.includes("api.resend.com")));
+  // Released, not retried: the row is delivered on its first real attempt.
+  assert.equal(Number((await readRow(outboxId)).attempt_count), 1);
+});
+
+withDb("leaves parked rows alone while no provider is configured", async () => {
+  const previous = { key: process.env.EMAIL_API_KEY, from: process.env.EMAIL_FROM };
+  delete process.env.EMAIL_API_KEY;
+  delete process.env.EMAIL_FROM;
+  try {
+    const { outboxId } = await seedOutbox({
+      kind: "customer_order_confirmation",
+      status: "pending_provider_setup",
+    });
+    const outcome = await dispatchOutbox({ limit: 50 });
+    assert.equal(outcome.released, 0, "nothing may be released while nothing can deliver");
+    assert.equal((await readRow(outboxId)).status, "pending_provider_setup");
+  } finally {
+    if (previous.key) process.env.EMAIL_API_KEY = previous.key;
+    if (previous.from) process.env.EMAIL_FROM = previous.from;
   }
 });
