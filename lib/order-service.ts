@@ -28,7 +28,7 @@ import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
-type OrderRequest = {
+export type OrderRequest = {
   idempotencyKey?: string;
   fulfilment?: Fulfilment;
   customer?: { name?: string; phone?: string; email?: string };
@@ -173,11 +173,33 @@ function pizzaOptionSections(configuration: ProductConfiguration): ModifierSecti
   return sections;
 }
 
-function normalizeCustomer(customer: OrderRequest["customer"]) {
+/**
+ * Contact details, with different rules for a customer and for the counter.
+ *
+ * Online, all three are required: the email is how the confirmation and the
+ * tracking link reach the customer, and without it the order is unreachable.
+ *
+ * At the counter, a name is enough. Someone ordering two slices has not given an
+ * email address, and demanding one produces `x@x.com` typed by a member of staff
+ * to get past the form — a worse outcome than an empty field, because it looks
+ * like data. An order with no email simply gets no confirmation email.
+ */
+function normalizeCustomer(customer: OrderRequest["customer"], staffEntry = false) {
   const name = customer?.name?.trim() ?? "";
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
   const email = customer?.email?.trim().toLowerCase() ?? "";
-  if (name.length < 2 || name.length > 100) throw new OrderValidationError("Enter your full name.");
+  if (name.length < 2 || name.length > 100) {
+    throw new OrderValidationError(staffEntry ? "Give the order a name so staff can call it out." : "Enter your full name.");
+  }
+  if (staffEntry) {
+    if (phone && (phone.length < 10 || phone.length > 16)) {
+      throw new OrderValidationError("That phone number does not look right.");
+    }
+    if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
+      throw new OrderValidationError("That email address does not look right.");
+    }
+    return { name, phone, email };
+  }
   if (phone.length < 10 || phone.length > 16) throw new OrderValidationError("Enter a valid phone number.");
   if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) {
     throw new OrderValidationError("Enter a valid email address.");
@@ -935,7 +957,28 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
 // in its merchant dashboard and is the same for every order, so there is nothing
 // left for a request origin to influence — the browser stashes the tracking
 // credentials before redirecting instead (see /order/return).
-export async function createOrder(body: OrderRequest) {
+/**
+ * Options only a trusted caller may set.
+ *
+ * Deliberately a second argument rather than fields on `OrderRequest`: the
+ * public route hands the parsed request body straight to `createOrder`, so
+ * anything reachable from `body` is settable by whoever is on the internet.
+ * `channel: "walk_in"` from a stranger would make the owner's in-store figures a
+ * fiction, and `staffEntry` would let them skip having to give an email address.
+ */
+export type CreateOrderContext = {
+  /** Where the order was taken. Defaults to the customer web app. */
+  channel?: "online" | "phone" | "walk_in";
+  /**
+   * True when a member of staff is keying this in at the counter or on the
+   * phone. Relaxes the contact requirements — a walk-in customer has not given
+   * an email address and should not be invented one — and records who took it.
+   */
+  staffEntry?: boolean;
+  staffUserId?: string;
+};
+
+export async function createOrder(body: OrderRequest, context: CreateOrderContext = {}) {
   await ensureDatabase();
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
@@ -988,7 +1031,7 @@ export async function createOrder(body: OrderRequest) {
     };
   }
   try {
-    const customer = normalizeCustomer(body.customer);
+    const customer = normalizeCustomer(body.customer, context.staffEntry);
     const fulfilment = body.fulfilment;
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
       throw new OrderValidationError("Choose pickup or delivery.");
@@ -1124,6 +1167,9 @@ export async function createOrder(body: OrderRequest) {
     const feedbackToken = generateOpaqueToken();
     const trackingTokenHash = await hashOpaqueToken(trackingToken);
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
+    // Only a trusted caller can say this is anything but a website order — see
+    // CreateOrderContext on why it is not reachable from the request body.
+    const channel = context.channel ?? "online";
     const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
     const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
     const paymentProvider = paymentMethod === "online" ? "clover" : "store";
@@ -1145,10 +1191,10 @@ export async function createOrder(body: OrderRequest) {
         .prepare(
           `INSERT INTO orders
            (id, order_number, tracking_token_hash, feedback_token_hash, customer_name, customer_phone,
-            customer_email, fulfilment, status, payment_status, payment_method, schedule_type,
+            customer_email, fulfilment, channel, status, payment_status, payment_method, schedule_type,
             scheduled_for, estimated_for, address_json, instructions, pricing_json, subtotal_cents,
             discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -1159,6 +1205,7 @@ export async function createOrder(body: OrderRequest) {
           customer.phone,
           customer.email,
           fulfilment,
+          channel,
           orderStatus,
           paymentStatus,
           paymentMethod,
@@ -1209,25 +1256,6 @@ export async function createOrder(body: OrderRequest) {
             : "Order accepted after server validation",
           now,
         ),
-      getD1()
-        .prepare(
-          `INSERT INTO notification_outbox
-           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-           VALUES (?, 'customer_order_confirmation', ?, ?, ?, 0, ?, ?, ?)`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          customer.email,
-          // The tracking token is handed over here because it cannot be
-          // recovered later: `orders` keeps only its hash. The dispatcher
-          // scrubs it from the payload once the message is sent — see
-          // lib/notifications/messages.ts for the trade this makes.
-          JSON.stringify({ orderId, orderNumber, trackingToken }),
-          outboxStatus,
-          now,
-          now,
-          now,
-        ),
       // The alert that tells the restaurant an order exists at all. This is the
       // audit's central finding: the queue had no row for it and no consumer.
       getD1()
@@ -1255,24 +1283,62 @@ export async function createOrder(body: OrderRequest) {
       // never completes leaves an inert row that no dispatcher will ever claim.
       getD1()
         .prepare(
-          `INSERT INTO notification_outbox
-           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-           VALUES (?, 'feedback_request', ?, ?, 'waiting_completion', 0, ?, ?, ?)`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          customer.email,
-          JSON.stringify({ orderId, orderNumber, feedbackToken }),
-          now,
-          now,
-          now,
-        ),
-      getD1()
-        .prepare(
           "UPDATE idempotency_keys SET resource_id = ?, status = 'completed' WHERE key_hash = ?",
         )
         .bind(orderId, keyHash),
     ];
+    // Both of these are addressed to the customer, so neither is queued when
+    // there is no address to send them to. A walk-in ordering two slices has not
+    // given an email, and queuing a message to nowhere produces one permanently
+    // failed row per counter order — noise in the exact place someone has to look
+    // to find a real delivery failure.
+    if (customer.email) {
+      operationsBatch.push(
+        getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'customer_order_confirmation', ?, ?, ?, 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            customer.email,
+            // The tracking token is handed over here because it cannot be
+            // recovered later: `orders` keeps only its hash. The dispatcher
+            // scrubs it from the payload once the message is sent — see
+            // lib/notifications/messages.ts for the trade this makes.
+            JSON.stringify({ orderId, orderNumber, trackingToken }),
+            outboxStatus,
+            now,
+            now,
+            now,
+          ),
+        // H-09: the post-order feedback request. Queued here rather than when
+        // the order completes, for the same reason the tracking token is — the
+        // feedback token cannot be recovered later, `orders` keeps only its
+        // hash, and the link in the customer's confirmation has to keep working,
+        // so minting a fresh one at completion is not an option.
+        //
+        // It sits in `waiting_completion` until staff actually complete the
+        // order, at which point it is released with the configured delay. An
+        // order that never completes leaves an inert row nothing will claim.
+        getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'feedback_request', ?, ?, 'waiting_completion', 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            customer.email,
+            JSON.stringify({ orderId, orderNumber, feedbackToken }),
+            now,
+            now,
+            now,
+          ),
+      );
+    }
+
     for (const item of items) {
       operationsBatch.push(
         getD1()

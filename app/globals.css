@@ -518,3 +518,81 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
    is one tap rather than a date picker. */
 .closure-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 14px 0; }
 .closure-quick strong { font-size: 10px; margin-right: 4px; }
+
+/* --- Order history (H-20) ---------------------------------------------------
+   "How many were in store" answered for the whole filtered range, not the
+   visible page — a page sum answers a different question. */
+.channel-split { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 16px; }
+.channel-split-item {
+  flex: 1 1 140px;
+  padding: 11px 13px;
+  border: 1px solid #e6e9e5;
+  border-radius: 9px;
+}
+.channel-split-item strong { display: block; font-size: 9px; letter-spacing: .6px; text-transform: uppercase; color: #77807a; }
+.channel-split-item b { display: block; font-size: 20px; line-height: 1.3; }
+.channel-split-item small { font-size: 9px; color: #77807a; }
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; font-size: 10px; }
+
+/* --- Counter order entry ----------------------------------------------------
+   Built for someone at a till with a customer waiting: big targets, the total
+   always on screen, nothing behind a step. */
+.till-search {
+  width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid #d9ded9;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+}
+.till-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 8px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.till-button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 66px;
+  padding: 10px;
+  border: 1px solid #e6e9e5;
+  border-radius: 9px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.till-button:hover { border-color: #b9c2ba; }
+.till-button strong { font-size: 11px; line-height: 1.3; }
+.till-button span { font-size: 9px; color: #77807a; }
+.till-button b { margin-top: auto; font-size: 12px; }
+
+.till-lines { display: grid; gap: 6px; margin-bottom: 14px; }
+.till-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #eef1ee;
+  border-radius: 8px;
+}
+.till-line strong { display: block; font-size: 11px; }
+.till-line small { font-size: 9px; color: #77807a; }
+.till-quantity { display: flex; align-items: center; gap: 8px; }
+/* Deliberately large: these are pressed with a thumb, often in a hurry. */
+.till-quantity button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #d9ded9;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.till-quantity span { min-width: 18px; text-align: center; font-size: 12px; font-weight: 700; }

@@ -15,27 +15,78 @@ const when = (value: unknown) =>
   new Date(Number(value)).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
 
 /** Order history, the feedback inbox and coupons — the day-to-day owner records. */
+type Breakdown = { channel: string; fulfilment: string; count: number; totalCents: number };
+
+/** The label the owner would use, not the database value. */
+const CHANNEL_LABELS: Record<string, string> = {
+  online: "Website",
+  phone: "Phone",
+  walk_in: "Walk-in",
+};
+
 export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const [tab, setTab] = useState<"orders" | "feedback" | "promotions">("orders");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
+  const [channel, setChannel] = useState("all");
+  const [fulfilment, setFulfilment] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [page, setPage] = useState(0);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [summary, setSummary] = useState({ total: 0, totalCents: 0, paidCents: 0, pageSize: 100 });
+  const [breakdown, setBreakdown] = useState<Breakdown[]>([]);
   const [feedback, setFeedback] = useState<FeedbackRow[]>([]);
   const [message, setMessage] = useState("");
+
+  /** One place the filters are turned into a query, so the table and the export
+      can never disagree about what is being looked at. */
+  const filterParams = useCallback(() => {
+    const search = new URLSearchParams({ tab, query, status });
+    if (channel !== "all") search.set("channel", channel);
+    if (fulfilment !== "all") search.set("fulfilment", fulfilment);
+    if (from) search.set("from", from);
+    if (to) search.set("to", to);
+    return search;
+  }, [tab, query, status, channel, fulfilment, from, to]);
+
   const load = useCallback(async () => {
     if (tab === "promotions") return;
-    const search = new URLSearchParams({ tab, query, status });
+    const search = filterParams();
+    search.set("page", String(page));
     const response = await fetch(`/api/admin/records?${search}`);
     const result = await response.json();
     if (!response.ok) { setMessage(result.error ?? "Records could not be loaded."); return; }
-    if (tab === "orders") setOrders(result.orders ?? []);
-    else setFeedback(result.feedback ?? []);
+    if (tab === "orders") {
+      setOrders(result.orders ?? []);
+      setSummary({ total: result.total ?? 0, totalCents: result.totalCents ?? 0, paidCents: result.paidCents ?? 0, pageSize: result.pageSize ?? 100 });
+      setBreakdown(result.breakdown ?? []);
+    } else setFeedback(result.feedback ?? []);
     setMessage("");
-  }, [tab, query, status]);
+  }, [tab, page, filterParams]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 200);
     return () => window.clearTimeout(timer);
   }, [load]);
+  /**
+   * Changing a filter resets the page.
+   *
+   * Done in the setter rather than an effect: staying on page 4 of a result set
+   * that now has one page shows an empty table and reads as a bug, and doing the
+   * reset in an effect is a synchronous setState that cascades a render.
+   */
+  const changeFilter = <T,>(set: (value: T) => void) => (value: T) => {
+    set(value);
+    setPage(0);
+  };
+
+  const exportCsv = () => {
+    const search = filterParams();
+    search.set("format", "csv");
+    // A normal navigation rather than fetch + blob: the browser handles the
+    // download, the filename and the save dialog, and nothing is held in memory.
+    window.location.assign(`/api/admin/records?${search}`);
+  };
   const review = async (id: string, note: string) => {
     const response = await fetch("/api/admin/records", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "feedback.review", id, note }) });
     if (!response.ok) { setMessage("That could not be saved."); return; }
@@ -50,29 +101,72 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
           .map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
       </div>
       {tab === "orders" ? <div className="record-filters">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Order number, name or phone" aria-label="Search orders" />
-        <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="Filter by status">
+        <input value={query} onChange={(event) => changeFilter(setQuery)(event.target.value)} placeholder="Order number, name or phone" aria-label="Search orders" />
+        <select value={status} onChange={(event) => changeFilter(setStatus)(event.target.value)} aria-label="Filter by status">
           {STATUSES.map((entry) => <option key={entry} value={entry}>{entry === "all" ? "Every status" : entry.replaceAll("_", " ")}</option>)}
         </select>
+        <select value={channel} onChange={(event) => changeFilter(setChannel)(event.target.value)} aria-label="Filter by where the order came from">
+          <option value="all">Everywhere</option>
+          <option value="online">Website</option>
+          <option value="phone">Phone</option>
+          <option value="walk_in">Walk-in</option>
+        </select>
+        <select value={fulfilment} onChange={(event) => changeFilter(setFulfilment)(event.target.value)} aria-label="Filter by pickup or delivery">
+          <option value="all">Pickup &amp; delivery</option>
+          <option value="pickup">Pickup</option>
+          <option value="delivery">Delivery</option>
+        </select>
+        <input type="date" value={from} onChange={(event) => changeFilter(setFrom)(event.target.value)} aria-label="From date" />
+        <input type="date" value={to} onChange={(event) => changeFilter(setTo)(event.target.value)} aria-label="To date" />
+        <button className="staff-button" onClick={exportCsv} disabled={!summary.total}>Export CSV</button>
       </div> : null}
     </div>
     {message ? <p className="admin-message" role="status">{message}</p> : null}
 
     {tab === "orders" ? <section className="staff-panel">
-      <div className="staff-panel-head"><h2>Order history</h2><span className="live-chip">{orders.length} shown</span></div>
+      <div className="staff-panel-head">
+        <h2>Order history</h2>
+        <span className="live-chip">{summary.total} order{summary.total === 1 ? "" : "s"} · {formatMoney(summary.paidCents)} taken</span>
+      </div>
+
+      {/* The owner's actual question — "how many were in store" — answered for
+          the whole filtered range rather than the visible page. */}
+      {breakdown.length ? <div className="channel-split">
+        {["online", "phone", "walk_in"].map((key) => {
+          const rows = breakdown.filter((entry) => entry.channel === key);
+          if (!rows.length) return null;
+          const count = rows.reduce((sum, entry) => sum + entry.count, 0);
+          const cents = rows.reduce((sum, entry) => sum + entry.totalCents, 0);
+          const pickup = rows.find((entry) => entry.fulfilment === "pickup")?.count ?? 0;
+          const delivery = rows.find((entry) => entry.fulfilment === "delivery")?.count ?? 0;
+          return <div className="channel-split-item" key={key}>
+            <strong>{CHANNEL_LABELS[key] ?? key}</strong>
+            <b>{count}</b>
+            <small>{formatMoney(cents)} · {pickup} pickup · {delivery} delivery</small>
+          </div>;
+        })}
+      </div> : null}
+
       <table className="viz-table">
-        <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
+        <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Where from</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
         <tbody>
           {orders.map((order) => <tr key={String(order.id)}>
-            <th scope="row">{String(order.order_number)}<small>{String(order.customer_name)}{order.customer_phone ? ` · ${String(order.customer_phone)}` : ""} · {String(order.fulfilment)}</small></th>
+            <th scope="row">{String(order.order_number)}<small>{String(order.customer_name)}{order.customer_phone ? ` · ${String(order.customer_phone)}` : ""}</small></th>
             <td>{when(order.created_at)}{order.schedule_type === "scheduled" ? ` (for ${when(order.scheduled_for)})` : ""}</td>
+            <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
             <td>{String(order.status).replaceAll("_", " ")}</td>
             <td>{String(order.payment_method).replaceAll("_", " ")} · {String(order.payment_status).replaceAll("_", " ")}</td>
             <td>{formatMoney(Number(order.total_cents))}</td>
           </tr>)}
-          {!orders.length ? <tr><td colSpan={5} className="staff-empty">No orders match that search.</td></tr> : null}
+          {!orders.length ? <tr><td colSpan={6} className="staff-empty">No orders match that search.</td></tr> : null}
         </tbody>
       </table>
+
+      {summary.total > summary.pageSize ? <div className="pager">
+        <button className="staff-button" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>Previous</button>
+        <span>Page {page + 1} of {Math.ceil(summary.total / summary.pageSize)}</span>
+        <button className="staff-button" disabled={(page + 1) * summary.pageSize >= summary.total} onClick={() => setPage((current) => current + 1)}>Next</button>
+      </div> : null}
     </section> : null}
 
     {tab === "feedback" ? <section className="staff-panel">
