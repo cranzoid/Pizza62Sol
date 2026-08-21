@@ -383,3 +383,50 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .print-root .pt-item,
   .print-root .pt-address { break-inside: avoid; page-break-inside: avoid; }
 }
+
+/* --- Integrations screen ---------------------------------------------------
+   One credential per row: a label that says whether it is already set, an input
+   that is always empty (a stored secret is never rendered back), and its own
+   save button so one field cannot be changed by accident while editing another. */
+.integration-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.integration-field {
+  padding: 14px 0;
+  border-bottom: 1px solid #eef1ee;
+}
+.integration-field:last-child { border-bottom: 0; }
+.integration-field > label { display: block; }
+.integration-field input,
+.integration-field select {
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #d9ded9;
+  border-radius: 7px;
+  padding: 9px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.integration-field input:disabled,
+.integration-field select:disabled { background: #f6f7f5; color: #99a09a; }
+
+.integration-field-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .4px;
+}
+
+/* Green for "we have this", grey for "we do not" — deliberately not red: an
+   unset credential is a step not yet taken, not an error. */
+.integration-set { font-weight: 600; color: #2f7d4f; letter-spacing: 0; }
+.integration-unset { font-weight: 600; color: #99a09a; letter-spacing: 0; }
+
+.integration-field-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
