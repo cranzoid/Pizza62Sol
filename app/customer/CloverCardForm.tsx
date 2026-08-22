@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 /**
  * Clover's card fields, mounted inline on our own checkout.
@@ -23,7 +23,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *   a network blip. Those surface as a message on the form, not as a decline.
  */
 
-type CloverElement = { mount: (target: string | HTMLElement) => void; unmount?: () => void };
+/**
+ * `mount` takes a **CSS selector string**, not an element.
+ *
+ * Clover calls `document.querySelector(target)` on whatever it is handed, so
+ * passing the node itself throws "'[object HTMLDivElement]' is not a valid
+ * selector" — which surfaces as the card form being unavailable and a silent
+ * fall back to the hosted page. The signature is written narrowly here so the
+ * mistake cannot be made again.
+ */
+type CloverElement = { mount: (selector: string) => void; unmount?: () => void };
 type CloverElements = { create: (kind: string, options?: Record<string, unknown>) => CloverElement };
 type CloverInstance = {
   elements: () => CloverElements;
@@ -78,10 +87,15 @@ export function CloverCardForm({
   onReady: (handle: CloverCardFormHandle) => void;
   onUnavailable: (reason: string) => void;
 }) {
-  const numberRef = useRef<HTMLDivElement>(null);
-  const expiryRef = useRef<HTMLDivElement>(null);
-  const cvvRef = useRef<HTMLDivElement>(null);
-  const postalRef = useRef<HTMLDivElement>(null);
+  // Clover mounts by selector, so each container needs a stable, unique id
+  // rather than a ref. `useId` keeps it unique if this ever renders twice.
+  const fieldId = useId().replace(/:/g, "");
+  const ids = {
+    number: `${fieldId}-card-number`,
+    expiry: `${fieldId}-card-expiry`,
+    cvv: `${fieldId}-card-cvv`,
+    postal: `${fieldId}-card-postal`,
+  };
   const cloverRef = useRef<CloverInstance | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
   const [fieldError, setFieldError] = useState("");
@@ -126,16 +140,16 @@ export function CloverCardForm({
         cloverRef.current = clover;
         const factory = clover.elements();
 
-        const mounts: Array<[string, HTMLDivElement | null]> = [
-          ["CARD_NUMBER", numberRef.current],
-          ["CARD_DATE", expiryRef.current],
-          ["CARD_CVV", cvvRef.current],
-          ["CARD_POSTAL_CODE", postalRef.current],
+        const mounts: Array<[string, string]> = [
+          ["CARD_NUMBER", ids.number],
+          ["CARD_DATE", ids.expiry],
+          ["CARD_CVV", ids.cvv],
+          ["CARD_POSTAL_CODE", ids.postal],
         ];
-        for (const [kind, target] of mounts) {
-          if (!target) continue;
+        for (const [kind, elementId] of mounts) {
+          if (!document.getElementById(elementId)) continue;
           const element = factory.create(kind);
-          element.mount(target);
+          element.mount(`#${elementId}`);
           elements.push(element);
         }
 
@@ -156,7 +170,7 @@ export function CloverCardForm({
       for (const element of elements) element.unmount?.();
       cloverRef.current = null;
     };
-  }, [publicToken, merchantId, sandbox, tokenize]);
+  }, [publicToken, merchantId, sandbox, tokenize, ids.number, ids.expiry, ids.cvv, ids.postal]);
 
   return (
     <fieldset className="clover-card-fields">
@@ -170,20 +184,20 @@ export function CloverCardForm({
       <div className={status === "ready" ? undefined : "clover-fields-loading"}>
         <label>
           Card number
-          <div className="clover-field" ref={numberRef} />
+          <div className="clover-field" id={ids.number} />
         </label>
         <div className="clover-field-row">
           <label>
             Expiry
-            <div className="clover-field" ref={expiryRef} />
+            <div className="clover-field" id={ids.expiry} />
           </label>
           <label>
             Security code
-            <div className="clover-field" ref={cvvRef} />
+            <div className="clover-field" id={ids.cvv} />
           </label>
           <label>
             Postal code
-            <div className="clover-field" ref={postalRef} />
+            <div className="clover-field" id={ids.postal} />
           </label>
         </div>
         {fieldError ? (

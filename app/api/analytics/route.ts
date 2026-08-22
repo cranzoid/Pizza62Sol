@@ -17,6 +17,11 @@ const ALLOWED_EVENTS = new Set([
   "coupon_used",
   "feedback_submitted",
   "google_review_clicked",
+  // Inline card entry could not start and the checkout fell back to Clover's
+  // hosted page. Recorded because the fallback is deliberately invisible to the
+  // customer, which also makes it invisible to us — this is how a broken card
+  // form gets noticed without someone happening to have the console open.
+  "card_form_unavailable",
 ]);
 
 export async function POST(request: Request) {
