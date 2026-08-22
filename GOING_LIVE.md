@@ -69,12 +69,23 @@ shows under "Addresses to paste elsewhere":
 
 - **Webhook URL** → `<app_url>/api/payments/clover/webhook`
 
-> ⚠️ **Leave the Return URL fields in the Clover dashboard empty.** The app now
-> sends its own return URLs on every checkout session, built from
-> `PUBLIC_BASE_URL`. A URL entered in the dashboard **overrides** what the app
-> sends, for every order, and it cannot carry the session id the return page uses
-> to recognise which order was paid. Only fill these in as a fallback if
-> `PUBLIC_BASE_URL` cannot be set.
+Then set the **Redirect URLs**, in the same Clover screen — reach it via
+**View all settings → Ecommerce → Hosted Checkout → Redirect URLs**:
+
+- **Success** → `https://pizza62.ca/order/return?session_id={CHECKOUT_SESSION_ID}`
+- **Failure** → `https://pizza62.ca/order/return?status=failed`
+
+> ⚠️ **These must be set in the dashboard, not only in code.** The app sends the
+> same two URLs on every checkout session, and Clover documents the dashboard as
+> taking precedence over them — but in practice a session created with
+> `redirectUrls` and nothing in the dashboard did **not** redirect: the customer
+> paid and stayed on Clover's confirmation page. Treat the dashboard entry as the
+> one that actually works and the API value as the fallback. They are the same
+> two strings, so whichever wins behaves identically.
+
+> ⚠️ **`{CHECKOUT_SESSION_ID}` is Clover's own placeholder — type it literally.**
+> Clover expands it to the checkout session UUID, which is the value stored in
+> `payments.provider_reference`. Do not substitute a real id.
 
 > ⚠️ **`PUBLIC_BASE_URL` must be set before the first online order.** Without it
 > the app sends no return URL at all, and — with the dashboard fields empty too —

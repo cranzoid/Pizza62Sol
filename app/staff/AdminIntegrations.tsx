@@ -245,14 +245,19 @@ export function AdminIntegrationsPanel() {
               label="Clover → Settings → Ecommerce → Webhook URL"
               value={data.callbacks.cloverWebhook}
             />
-            {/* Not a "paste this" row any more. The app sends its own return URLs
-                on every checkout session, and a URL entered in Clover's dashboard
-                overrides them for every order — dropping the session id the return
-                page needs. Shown so the address is still discoverable, labelled so
-                nobody pastes it back in. */}
+            {/* The app also sends these on every checkout session, but sending them
+                alone was not enough: a live session created with `redirectUrls` and
+                nothing in Clover's dashboard did not redirect — the customer paid
+                and stayed on Clover's confirmation page. Clover documents the
+                dashboard as taking precedence, so it is the entry that actually
+                works. Same strings either way, so whichever wins behaves the same. */}
             <CopyRow
-              label="Clover → Return URL (sent automatically — leave blank in Clover)"
-              value={data.callbacks.cloverReturn}
+              label="Clover → View all settings → Ecommerce → Hosted Checkout → Success URL"
+              value={`${data.callbacks.cloverReturn}?session_id={CHECKOUT_SESSION_ID}`}
+            />
+            <CopyRow
+              label="Clover → View all settings → Ecommerce → Hosted Checkout → Failure URL"
+              value={`${data.callbacks.cloverReturn}?status=failed`}
             />
             <CopyRow label="Twilio → Voice callback (set automatically)" value={data.callbacks.twilioVoiceAck} />
           </div>
