@@ -91,6 +91,16 @@ const CLOVER_FIELDS: FieldSpec[] = [
     placeholder: "e.g. 1a2b3c4d5e6f...",
   },
   {
+    key: "CLOVER_IFRAME_ENABLED",
+    label: "Where customers enter their card",
+    type: "select",
+    options: [
+      { value: "false", label: "On Clover's page — the customer is redirected" },
+      { value: "true", label: "On our checkout — card and Apple Pay, no redirect" },
+    ],
+    hint: "Switching back takes effect within 30 seconds and needs no deploy. Use it if anything looks wrong during service.",
+  },
+  {
     key: "CLOVER_WEBHOOK_SECRET",
     label: "Webhook signing secret",
     type: "password",
