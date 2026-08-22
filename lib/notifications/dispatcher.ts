@@ -38,7 +38,9 @@ import {
   voiceRetryMinutes,
 } from "@/lib/notifications/config";
 import {
+  isCustomerNotifiableStatus,
   renderCustomerConfirmation,
+  renderCustomerStatusUpdate,
   renderFeedbackRequest,
   renderLowRatingAlert,
   renderRestaurantNewOrder,
@@ -129,28 +131,24 @@ async function claimDue(limit: number, now: number): Promise<OutboxRow[]> {
   }
 }
 
+/**
+ * The whole order, because the messages describe the whole order.
+ *
+ * The money columns and `instructions` were added when the emails stopped being
+ * one line of text: a confirmation that shows a total with no subtotal, HST or
+ * delivery fee is one the customer cannot check against their card statement.
+ */
 async function loadOrder(orderId: string): Promise<OrderSnapshot | null> {
   return getD1()
     .prepare(
       `SELECT id, order_number, customer_name, customer_email, customer_phone, fulfilment,
-              status, payment_status, payment_method, schedule_type, scheduled_for,
-              estimated_for, total_cents, address_json, acknowledged_at
+              channel, status, payment_status, payment_method, schedule_type, scheduled_for,
+              estimated_for, subtotal_cents, discount_cents, tax_cents, delivery_fee_cents,
+              tip_cents, total_cents, address_json, instructions, acknowledged_at
        FROM orders WHERE id = ?`,
     )
     .bind(orderId)
     .first<OrderSnapshot>();
-}
-
-async function loadItemLines(orderId: string): Promise<string[]> {
-  const items = await getD1()
-    .prepare(
-      "SELECT product_name, variation_name, quantity FROM order_items WHERE order_id = ? ORDER BY created_at",
-    )
-    .bind(orderId)
-    .all<{ product_name: string; variation_name: string | null; quantity: number }>();
-  return items.results.map(
-    (item) => `${item.quantity} x ${item.product_name}${item.variation_name ? ` (${item.variation_name})` : ""}`,
-  );
 }
 
 /** Thrown when a row can never succeed — bad kind, missing order, no recipient. */
@@ -172,10 +170,10 @@ async function deliver(row: OutboxRow): Promise<void> {
       // reaper already sets these to 'cancelled', but an inline dispatch racing
       // a cancellation could still arrive here.
       if (order.status === "cancelled") throw new PermanentFailure("order was cancelled");
-      const message = await renderCustomerConfirmation(order, payload, await loadItemLines(orderId));
+      const message = await renderCustomerConfirmation(order, payload);
       const to = row.recipient ?? order.customer_email;
       if (!to) throw new PermanentFailure("no recipient address");
-      await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
       // Additive only, and off by default — see config.ts on why an unregistered
       // local long code cannot be trusted to deliver. A failure here must not
       // undo the email that already went.
@@ -190,7 +188,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       const order = await loadOrder(orderId);
       if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
       if (order.status === "cancelled") throw new PermanentFailure("order was cancelled");
-      const message = renderRestaurantNewOrder(order, await loadItemLines(orderId));
+      const message = await renderRestaurantNewOrder(order);
       const alertNumber = await restaurantAlertNumber();
 
       // Email and voice are the reliable pair (see §9's SMS caveat); SMS is a
@@ -199,7 +197,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
       const to = row.recipient ?? business.email;
       if (to) {
-        await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
+        await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
         delivered = true;
       }
       if (alertNumber) {
@@ -221,11 +219,47 @@ async function deliver(row: OutboxRow): Promise<void> {
     }
 
     case "low_rating_alert": {
-      const message = renderLowRatingAlert(payload as Parameters<typeof renderLowRatingAlert>[0]);
+      const message = await renderLowRatingAlert(payload as Parameters<typeof renderLowRatingAlert>[0]);
       const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
       const to = row.recipient ?? business.email;
       if (!to) throw new ParkForSetup("no restaurant email configured for alerts");
-      await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
+    /**
+     * The kitchen moved the order and the customer is told.
+     *
+     * Queued by the staff dashboard when a status button is pressed, which is
+     * why the status travels in the payload rather than being read off the order:
+     * by the time a retry runs, the order may have moved on again, and the
+     * customer would be sent "ready for pickup" after they had collected it.
+     *
+     * A cancelled order is dropped rather than delivered — the cancellation is
+     * handled on its own path and a stale "on its way" behind it is worse than
+     * silence.
+     */
+    case "customer_status_update": {
+      if (!orderId) throw new PermanentFailure("status update payload has no orderId");
+      const order = await loadOrder(orderId);
+      if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
+      if (order.status === "cancelled") throw new PermanentFailure("order was cancelled");
+      const to = row.recipient ?? order.customer_email;
+      if (!to) throw new PermanentFailure("no recipient address");
+      // Checked before rendering so a payload naming a status we have no copy for
+      // fails once instead of being retried six times against a renderer that
+      // will throw identically every time.
+      const status = String(payload.status ?? order.status);
+      if (!isCustomerNotifiableStatus(status)) {
+        throw new PermanentFailure(`no customer copy for status "${status}"`);
+      }
+      const message = await renderCustomerStatusUpdate(order, payload as { status?: string });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      // Same rule as the confirmation: SMS is additive, off by default, and may
+      // never fail the row on its own.
+      if (order.customer_phone && (await customerSmsEnabled())) {
+        await sendSms({ to: order.customer_phone, body: message.smsBody }).catch(() => undefined);
+      }
       return;
     }
 
@@ -238,7 +272,7 @@ async function deliver(row: OutboxRow): Promise<void> {
       const message = await renderFeedbackRequest(order, payload);
       const to = row.recipient ?? order.customer_email;
       if (!to) throw new PermanentFailure("no recipient address");
-      await sendEmail({ to, subject: message.emailSubject, text: message.emailText });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
       return;
     }
 

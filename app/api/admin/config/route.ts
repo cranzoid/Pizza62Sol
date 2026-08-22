@@ -153,6 +153,13 @@ function settingValidation(key: string, value: Record<string, unknown>) {
     if (String(value.name ?? "").trim().length < 2 || String(value.phone ?? "").trim().length < 7) {
       throw new Error("Business name and phone are required.");
     }
+    // Optional — an owner may deliberately not want order alerts by mail — but a
+    // typo here is silent: the address is never replied to, so nothing bounces
+    // back to anyone who would notice. Checked when it is given.
+    const alertEmail = String(value.email ?? "").trim();
+    if (alertEmail && (!/^\S+@\S+\.\S+$/.test(alertEmail) || alertEmail.length > 254)) {
+      throw new Error("That order-alert email address does not look right.");
+    }
   } else if (key === "operations") {
     const feedbackDelay = Number(value.feedbackDelayMinutes);
     if (!Number.isInteger(feedbackDelay) || feedbackDelay < 1 || feedbackDelay > 1440) {

@@ -729,6 +729,16 @@ export default function CustomerApp() {
           timeZone={timeZone}
           now={now}
           onClose={() => setCheckoutOpen(false)}
+          onRemove={(key) => {
+            setCart((current) => {
+              const next = current.filter((line) => line.key !== key);
+              // An empty bag has nothing to check out. Staying on a review screen
+              // with no items and a disabled pay button is a dead end.
+              if (!next.length) setCheckoutOpen(false);
+              return next;
+            });
+            analytics("remove_from_cart");
+          }}
           onConfirmed={(result) => { setCheckoutOpen(false); setCart([]); setConfirmation(result); if (result.duplicate !== true) analytics("purchase_completed", { orderNumber: result.orderNumber }); }}
         />
       ) : null}
@@ -894,7 +904,7 @@ function PizzaCustomizer({
   const legacyPanel = <>{legacyBaseOptions.length ? <fieldset><legend><span>{stepNumber("legacy")}</span> Crust, bake &amp; sauce</legend><div className="topping-grid">{legacyBaseOptions.map((option) => { const active = legacyBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setLegacyBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}</>;
   const toppingsPanel = <><fieldset><legend><span>{stepNumber("toppings")}</span> Choose toppings</legend>
             {fixedRecipe ? <>
-              <div className="setup-alert"><strong>This is a set recipe</strong><p>Everything below comes on it as standard, at the flyer price. Ask us to leave something off if you like — it does not change the price. Anything you add beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div>
+              <div className="setup-alert"><strong>This is a set recipe</strong><p>Everything below comes on it as standard, at the price shown. Ask us to leave something off if you like — it does not change the price. Anything you add beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div>
               <div className="recipe-list">
                 {recipeToppings.map((topping) => {
                   const isOmitted = omitted.includes(topping.id);
@@ -912,7 +922,7 @@ function PizzaCustomizer({
             </> : <div className="setup-alert"><strong>{includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
             {fixedRecipe ? <p className="editor-hint">Add anything extra below.</p> : null}
             <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} halalOnly={halal} onToggle={toggleTopping} onPlacement={setPlacement} />
-            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selected.length ? "Included in flyer price" : "Choose at least 1"}</b></div>
+            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selected.length ? "Included in the price" : "Choose at least 1"}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
   if (crust) modifiers.push({ id: "pizza-crust", label: "Crust", values: [{ value: crust, label: crust }] });
@@ -1102,7 +1112,7 @@ function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onChe
   </aside></div>;
 }
 
-function Checkout({ cart, fulfilment, settings, integrations, store, hours, timeZone, now, onClose, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onConfirmed: (result: Record<string, unknown>) => void }) {
+function Checkout({ cart, fulfilment, settings, integrations, store, hours, timeZone, now, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
@@ -1255,7 +1265,11 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         : null}</div>
       <aside className="checkout-summary">
         <h3>Order summary</h3>
-        {cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}
+        {/* Removable here as well as in the bag. The review screen is where a
+            customer actually re-reads what they are about to pay for, and being
+            sent back to the bag to take one thing out is the point people
+            abandon a checkout rather than fix it. */}
+        {cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b><button type="button" className="summary-remove" onClick={() => onRemove(line.key)} aria-label={`Remove ${line.name} from your order`}>Remove</button></div>)}
 
         <hr />
         <p>Promo code</p>
@@ -1366,9 +1380,12 @@ function Confirmation({ result, onClose }: { result: Record<string, unknown>; on
   const trackingUrl = result.trackingToken
     ? `/track?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.trackingToken))}`
     : null;
-  const feedbackUrl = result.feedbackToken
-    ? `/feedback?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.feedbackToken))}`
-    : null;
+  // No feedback link here, deliberately. This screen appears seconds after the
+  // order is placed — before the pizza is made, let alone eaten — and asking
+  // "how did we do?" at that moment reads as a review farm rather than a
+  // question. The feedback request is queued at order time and released a set
+  // delay after staff mark the order completed; see the outbox's
+  // `waiting_completion` state and operations.feedbackDelayMinutes.
   const estimateAt = Number(result.estimateAt);
-  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}{feedbackUrl ? <Link className="text-button" href={feedbackUrl}>Open secure feedback link</Link> : null}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
+  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
 }

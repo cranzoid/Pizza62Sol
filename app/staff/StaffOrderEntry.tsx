@@ -18,6 +18,14 @@
  * till screen produces orders the kitchen cannot read. Those go through the
  * website or get called through as they do today; this covers the counter's
  * actual traffic — slices, wings, drinks, fixed-recipe pizzas.
+ *
+ * **A phone order can be a delivery.** It was pickup-only, which meant the one
+ * thing the phone is actually used for — "can you bring it round" — had to be
+ * written on paper and kept out of the system entirely, taking the address, the
+ * delivery fee and the HST on it with it. The address goes through exactly the
+ * same validation as a website order: same Hamilton/postal-code check, same
+ * radius test against the store origin, same fee. An address the website would
+ * refuse is refused here too, and the counter is told why.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -34,9 +42,14 @@ type Quote = {
 
 export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard; onPlaced: () => Promise<void> }) {
   const [channel, setChannel] = useState<"walk_in" | "phone">("walk_in");
+  const [fulfilment, setFulfilment] = useState<"pickup" | "delivery">("pickup");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [line1, setLine1] = useState("");
+  const [unit, setUnit] = useState("");
+  const [postalCode, setPostalCode] = useState("");
+  const [deliveryInstructions, setDeliveryInstructions] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -52,7 +65,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
    */
   const sellable = dashboard.products.filter((product) => {
     if (!product.active || product.sold_out || product.setup_required) return false;
-    if (!product.pickup_eligible) return false;
+    // Some items are counter-only. Offering one on a delivery ticket produces an
+    // order the server rejects after it has already been keyed in.
+    if (!(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible)) return false;
     const configuration = product.configuration ?? {};
     const sections = Array.isArray(configuration.sections) ? configuration.sections : [];
     const needsChoices = sections.some((section) => Number((section as { min?: number }).min ?? 0) > 0);
@@ -70,7 +85,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const body = useCallback(
     (extra: Record<string, unknown> = {}) => ({
       channel,
-      fulfilment: "pickup" as const,
+      fulfilment,
       customer: { name: name.trim() || "Counter", phone: phone.trim(), email: email.trim() },
       items: lines.map((line) => ({
         productId: line.productId,
@@ -80,9 +95,25 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       schedule: { type: "asap" as const },
       paymentMethod: "pay_at_store" as const,
       tip: { type: "none" as const },
+      // City and province are fixed rather than asked for: the delivery area is
+      // a radius around one Hamilton store, so any other answer is an address
+      // the radius check would reject anyway, and two more fields to mistype
+      // while a customer is on the phone.
+      ...(fulfilment === "delivery"
+        ? {
+            address: {
+              line1: line1.trim(),
+              unit: unit.trim(),
+              city: "Hamilton",
+              province: "ON",
+              postalCode: postalCode.trim(),
+              instructions: deliveryInstructions.trim(),
+            },
+          }
+        : {}),
       ...extra,
     }),
-    [channel, name, phone, email, lines],
+    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines],
   );
 
   // Re-priced by the server on every change. Sequenced so a slow earlier reply
@@ -140,6 +171,11 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         .filter((line) => line.quantity > 0),
     );
 
+  // Its own control rather than "press − until it disappears". Taking a wrong
+  // item off a six-quantity line meant six taps, and a till that makes undoing a
+  // mistake slower than making it is a till people work around.
+  const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
+
   const place = async () => {
     setSubmitting(true);
     setMessage(null);
@@ -159,6 +195,10 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     setName("");
     setPhone("");
     setEmail("");
+    setLine1("");
+    setUnit("");
+    setPostalCode("");
+    setDeliveryInstructions("");
     setQuote(null);
     await onPlaced();
   };
@@ -175,13 +215,32 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         </div>
         <p className="editor-hint">
           Rung in here, an order is priced and taxed exactly like a website order and goes straight to the kitchen
-          board. Only a name is needed — add a phone number or email if the customer wants a confirmation.
+          board. Only a name is needed — add an email if the customer wants a confirmation and the updates that
+          follow it. A delivery needs a phone number and an address inside the delivery area.
         </p>
+        <div className="segmented-range till-fulfilment" role="group" aria-label="Pickup or delivery">
+          <button className={fulfilment === "pickup" ? "active" : ""} aria-pressed={fulfilment === "pickup"} onClick={() => setFulfilment("pickup")}>Pickup</button>
+          <button className={fulfilment === "delivery" ? "active" : ""} aria-pressed={fulfilment === "delivery"} onClick={() => setFulfilment("delivery")}>Delivery</button>
+        </div>
         <div className="settings-form">
           <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" /></label>
-          <label>Phone · optional<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
+          <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
           <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
         </div>
+        {/* The delivery fee, the radius check and the minimum all key off this,
+            and all three are enforced on the server — the same code path a
+            website delivery goes through. Nothing here is trusted. */}
+        {fulfilment === "delivery" ? (
+          <>
+            <div className="settings-form">
+              <label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} placeholder="123 King St E" autoComplete="off" /></label>
+              <label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="off" /></label>
+              <label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value.toUpperCase())} placeholder="L8N 1B2" autoComplete="off" spellCheck={false} /></label>
+              <label>Buzzer or directions · optional<input value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} autoComplete="off" /></label>
+            </div>
+            <p className="editor-hint">Hamilton, ON only — that is the whole delivery area, so the city is filled in for you. The address is checked against the delivery radius when the order is placed.</p>
+          </>
+        ) : null}
       </section>
 
       <div className="staff-grid">
@@ -224,6 +283,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                   <button onClick={() => setQuantity(line.key, -1)} aria-label={`One fewer ${line.name}`}>−</button>
                   <span>{line.quantity}</span>
                   <button onClick={() => setQuantity(line.key, 1)} aria-label={`One more ${line.name}`}>+</button>
+                  <button className="till-remove" onClick={() => removeLine(line.key)} aria-label={`Remove ${line.name} from this order`}>Remove</button>
                 </div>
               </div>
             ))}
@@ -233,6 +293,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           <div className="checkout-totals">
             <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
             {totals.discountCents > 0 ? <div className="checkout-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
+            {totals.deliveryFeeCents > 0 ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}
             <div><span>HST</span><b>{formatMoney(totals.taxCents)}</b></div>
             <div className="checkout-grand-total"><span>Total</span><b>{formatMoney(totals.totalCents)}</b></div>
           </div>
@@ -242,9 +303,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           ))}
 
           <button className="primary-button" disabled={!lines.length || submitting || (quote !== null && !quote.ok)} onClick={() => void place()}>
-            {submitting ? "Sending to the kitchen…" : `Take payment · ${formatMoney(totals.totalCents)}`}
+            {submitting ? "Sending to the kitchen…" : `${fulfilment === "delivery" ? "Send for delivery" : "Take payment"} · ${formatMoney(totals.totalCents)}`}
           </button>
-          <small className="secure-note">Marked paid at the store. Ring it through the card machine or take cash as usual.</small>
+          <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
         </aside>
       </div>

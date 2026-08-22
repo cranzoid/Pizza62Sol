@@ -105,6 +105,8 @@ async function seedOutbox(options: {
   orderStatus?: string;
   acknowledged?: boolean;
   payloadExtra?: Record<string, unknown>;
+  /** Written to the single order item, so a message can be asserted on its detail. */
+  itemSnapshot?: Record<string, unknown>;
 }): Promise<{ orderId: string; outboxId: string; orderNumber: string; recipient: string }> {
   const orderId = uniqueId();
   const outboxId = uniqueId();
@@ -122,8 +124,8 @@ async function seedOutbox(options: {
   await getPool().query(
     `INSERT INTO order_items (id,order_id,product_id,product_name,variation_name,quantity,unit_price_cents,
        line_total_cents,taxable,snapshot_json,instructions,created_at)
-     VALUES ($1,$2,'poutine','Poutine',NULL,1,899,899,1,'{}',NULL,$3)`,
-    [uniqueId(), orderId, now],
+     VALUES ($1,$2,'poutine','Poutine',NULL,1,899,899,1,$4,NULL,$3)`,
+    [uniqueId(), orderId, now, JSON.stringify(options.itemSnapshot ?? {})],
   );
   // Trap 8: a unique recipient per row. Test files run as separate processes and
   // share one database, so `dispatchOutbox` routinely claims rows another file
@@ -544,4 +546,163 @@ withDb("leaves parked rows alone while no provider is configured", async () => {
     if (previous.key) process.env.EMAIL_API_KEY = previous.key;
     if (previous.from) process.env.EMAIL_FROM = previous.from;
   }
+});
+
+// --- what the messages actually say -----------------------------------------
+//
+// These are not wording tests. Each one is about a specific way a customer or a
+// kitchen ends up with the wrong information: an order described only by its
+// product name, a half-and-half whose sides are lost, an email that arrives as
+// unstyled text, a "ready for pickup" that reaches someone who already left.
+
+withDb("describes every choice the customer made, not just the product name", async () => {
+  // The whole point of the R1 email work: "1 x Poutine" is not a description of
+  // an order anyone can check. Placement, omissions and modifier groups all have
+  // to survive the trip from `snapshot_json` to the inbox.
+  const { outboxId, recipient } = await seedOutbox({
+    kind: "customer_order_confirmation",
+    status: "pending",
+    itemSnapshot: {
+      halal: true,
+      extraCheese: true,
+      recipeOmissions: ["Green pepper"],
+      toppings: [
+        { toppingId: "pepperoni", placement: "whole" },
+        { toppingId: "mushroom", placement: "left" },
+        { toppingId: "onion", placement: "right" },
+      ],
+      modifiers: [{ id: "crust", label: "Crust", values: [{ value: "Thin", label: "Thin" }] }],
+    },
+  });
+  const { calls } = stubProviders();
+  await dispatchOutbox({ limit: 50 });
+  assert.equal((await readRow(outboxId)).status, "sent");
+
+  const sent = calls.find((call) => call.url.includes("api.resend.com") && call.body.includes(recipient));
+  assert.ok(sent, "the confirmation should have been sent to this row's own address");
+  const payload = JSON.parse(sent.body) as { text: string; html: string };
+
+  // Grouped by side rather than suffixed per topping — a kitchen reading
+  // "(L)" off a list at 9pm is a kitchen making the wrong pizza.
+  //
+  // Case-insensitive because the id is only a fallback: a topping that exists in
+  // the `toppings` table comes back under its display name ("Pepperoni"), and
+  // one that does not falls back to the raw id. Both paths matter, and asserting
+  // on the casing would be asserting on which of the two the fixture happened to
+  // seed.
+  assert.match(payload.text, /Left half: mushroom/i);
+  assert.match(payload.text, /Right half: onion/i);
+  assert.match(payload.text, /Toppings: pepperoni/i);
+  assert.match(payload.text, /Crust: Thin/);
+  // Preparation-critical flags, including what was deliberately left off (H-03).
+  assert.match(payload.text, /Halal/);
+  assert.match(payload.text, /Extra cheese/);
+  assert.match(payload.text, /No Green pepper/);
+  // And the same facts in the HTML part, so the two cannot describe
+  // different orders.
+  assert.match(payload.html, /Left half/);
+  assert.match(payload.html, /No Green pepper/);
+});
+
+withDb("sends a designed HTML part alongside the plain text", async () => {
+  const { recipient } = await seedOutbox({ kind: "customer_order_confirmation", status: "pending" });
+  const { calls } = stubProviders();
+  await dispatchOutbox({ limit: 50 });
+
+  const sent = calls.find((call) => call.url.includes("api.resend.com") && call.body.includes(recipient));
+  assert.ok(sent);
+  const payload = JSON.parse(sent.body) as { text: string; html?: string };
+  // Both parts, always. HTML alone scores worse with every spam filter and is
+  // not what a client in text mode shows.
+  assert.ok(payload.text.length > 0, "the text part must never be dropped");
+  assert.ok(payload.html, "the HTML part is the whole point of the redesign");
+  assert.match(payload.html, /<!DOCTYPE html/i);
+  // The brand green masthead — proof the shell was applied, not just a string.
+  assert.match(payload.html, /#244b39/);
+});
+
+withDb("escapes markup in customer-supplied text rather than rendering it", async () => {
+  // Names and notes are customer input at one remove. An apostrophe in "Rob's
+  // usual" must not close an attribute, and a tag must not become markup.
+  const orderId = uniqueId();
+  const outboxId = uniqueId();
+  const now = Date.now();
+  await getPool().query(
+    `INSERT INTO orders (id,order_number,tracking_token_hash,feedback_token_hash,customer_name,customer_phone,
+       customer_email,fulfilment,status,payment_status,payment_method,schedule_type,estimated_for,pricing_json,
+       subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$5,'9055550142','ada@example.test','pickup','received','paid','online','asap',
+       $6,'{}',899,0,117,0,0,1016,$6,$6)`,
+    [orderId, `P62-T${RUN}-${(seq += 1)}`, `h${orderId}`, `f${orderId}`, "<script>alert(1)</script>", now],
+  );
+  await getPool().query(
+    `INSERT INTO order_items (id,order_id,product_id,product_name,variation_name,quantity,unit_price_cents,
+       line_total_cents,taxable,snapshot_json,instructions,created_at)
+     VALUES ($1,$2,'poutine','Poutine',NULL,1,899,899,1,'{}',NULL,$3)`,
+    [uniqueId(), orderId, now],
+  );
+  const recipient = `ada+${outboxId}@example.test`;
+  await getPool().query(
+    `INSERT INTO notification_outbox (id,kind,recipient,payload_json,status,attempt_count,scheduled_for,created_at,updated_at)
+     VALUES ($1,'customer_order_confirmation',$2,$3,'pending',0,$4,$4,$4)`,
+    [outboxId, recipient, JSON.stringify({ orderId, trackingToken: "tok" }), now],
+  );
+
+  const { calls } = stubProviders();
+  await dispatchOutbox({ limit: 50 });
+  const sent = calls.find((call) => call.url.includes("api.resend.com") && call.body.includes(recipient));
+  assert.ok(sent);
+  const html = (JSON.parse(sent.body) as { html: string }).html;
+  assert.ok(!html.includes("<script>alert(1)</script>"), "raw markup reached the document");
+  assert.match(html, /&lt;script&gt;/);
+});
+
+withDb("tells the customer their order is ready, using the status it was queued with", async () => {
+  // The queued status, not the live one. A retry that runs after the kitchen has
+  // moved the order on again must still send the message for the step it passed
+  // through, or "ready for pickup" arrives after the bag has been collected.
+  const { outboxId, recipient } = await seedOutbox({
+    kind: "customer_status_update",
+    status: "pending",
+    orderStatus: "completed",
+    payloadExtra: { status: "ready_for_pickup" },
+  });
+  const { calls } = stubProviders();
+  await dispatchOutbox({ limit: 50 });
+
+  assert.equal((await readRow(outboxId)).status, "sent");
+  const sent = calls.find((call) => call.url.includes("api.resend.com") && call.body.includes(recipient));
+  assert.ok(sent);
+  const payload = JSON.parse(sent.body) as { subject: string; text: string; html: string };
+  assert.match(payload.subject, /ready for pickup/i);
+  assert.match(payload.text, /Ready for pickup/i);
+  assert.match(payload.html, /Ready for pickup/i);
+});
+
+withDb("fails a status update it has no wording for instead of retrying it forever", async () => {
+  const { outboxId } = await seedOutbox({
+    kind: "customer_status_update",
+    status: "pending",
+    payloadExtra: { status: "received" },
+  });
+  stubProviders();
+  await dispatchOutbox({ limit: 50 });
+  // `received` is what the confirmation already said; there is no second message
+  // for it, and retrying a renderer that will throw identically is six wasted
+  // attempts delaying every real message behind it.
+  const row = await readRow(outboxId);
+  assert.equal(row.status, "failed");
+  assert.match(row.last_error ?? "", /no customer copy/);
+});
+
+withDb("never tells a cancelled order's customer that it is on its way", async () => {
+  const { outboxId } = await seedOutbox({
+    kind: "customer_status_update",
+    status: "pending",
+    orderStatus: "cancelled",
+    payloadExtra: { status: "out_for_delivery" },
+  });
+  stubProviders();
+  await dispatchOutbox({ limit: 50 });
+  assert.equal((await readRow(outboxId)).status, "failed");
 });

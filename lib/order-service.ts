@@ -1114,7 +1114,17 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     if (paymentMethod !== "pay_at_store" && paymentMethod !== "online") {
       throw new OrderValidationError("Choose an available payment method.");
     }
-    if (paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+    // Paying on collection is a *public website* setting, and the website only
+    // offers it on pickup: a stranger promising to pay a driver at a door is a
+    // risk the restaurant did not agree to take.
+    //
+    // A member of staff keying in a phone delivery is not that. They have the
+    // customer on the line, they decide whether to take the card number now or
+    // send the machine out with the driver, and refusing them here is what kept
+    // phone deliveries on paper and out of the books entirely. The relaxation is
+    // gated on `staffEntry`, which is a trusted context argument set after
+    // authentication and unreachable from a request body — see CreateOrderContext.
+    if (paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
       throw new OrderValidationError("Pay at store is available for pickup orders only.");
     }
     if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
@@ -1125,6 +1135,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       );
     }
     const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
+    // A driver with no number to call is a delivery that fails at the door. The
+    // website asks every customer for a phone number, but staff entry does not
+    // (see normalizeCustomer on why demanding one at a counter produces junk), so
+    // the requirement is reinstated for the one case that cannot do without it.
+    if (fulfilment === "delivery" && !customer.phone) {
+      throw new OrderValidationError("A delivery needs a phone number the driver can call.");
+    }
     const items = await validateItems(body.items, fulfilment, operations);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,

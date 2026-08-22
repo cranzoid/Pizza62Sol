@@ -357,6 +357,9 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 
   .print-root .pt-customer { font-size: 11pt; }
   .print-root .pt-customer strong { font-size: 12pt; }
+  /* Where the order came from and how it is paid. Not indented like a topping —
+     it belongs to the customer block, not to an item. */
+  .print-root .pt-origin { font-size: 9pt; letter-spacing: .5px; }
 
   .print-root .pt-item { margin-bottom: 3mm; }
   .print-root .pt-item-head { font-size: 13pt; font-weight: 900; display: flex; gap: 2mm; }
@@ -369,11 +372,18 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .print-root .pt-address { font-size: 11pt; }
   .print-root .pt-address strong { display: block; font-size: 10pt; letter-spacing: 1px; }
 
+  /* The breakdown above the grand total. Small and quiet — the kitchen does not
+     read it, but whoever cashes out at close does. */
+  .print-root .pt-money { font-size: 10pt; margin-bottom: 1.5mm; }
+  .print-root .pt-money-row { display: flex; justify-content: space-between; }
+
   .print-root .pt-total {
     display: flex;
     justify-content: space-between;
     font-size: 14pt;
     font-weight: 900;
+    border-top: 1px solid #000;
+    padding-top: 1mm;
   }
 
   .print-root .pt-footer { margin-top: 3mm; font-size: 8pt; text-align: center; }
@@ -381,6 +391,7 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   /* Never split an item across the tear line — half a pizza's toppings on the
      next ticket is worse than a slightly longer one. */
   .print-root .pt-item,
+  .print-root .pt-money,
   .print-root .pt-address { break-inside: avoid; page-break-inside: avoid; }
 }
 
@@ -596,6 +607,24 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   cursor: pointer;
 }
 .till-quantity span { min-width: 18px; text-align: center; font-size: 12px; font-weight: 700; }
+/* Set apart from the − / + pair on purpose: removing a line is not a smaller
+   version of decrementing it, and a thumb reaching for "one fewer" must not land
+   on "gone". */
+.till-remove {
+  width: auto !important;
+  padding: 0 10px;
+  margin-left: 4px;
+  font-size: 9px !important;
+  font-weight: 900;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: var(--red);
+  border-color: #f0d5d1 !important;
+}
+.till-remove:hover { background: var(--red) !important; color: #fff; border-color: var(--red) !important; }
+
+/* Pickup or delivery, above the customer fields it changes. */
+.till-fulfilment { margin-bottom: 4px; }
 
 /* --- Recording a refund -----------------------------------------------------
    This screen does not move money: Clover publishes no refund API, so the
@@ -711,6 +740,24 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .checkout-summary > div:not(.tip-grid):not(.form-error),
 .checkout-summary > p,
 .checkout-totals > div { font-size: 12px; }
+
+/* Removing a line from the review screen. Quiet enough not to compete with the
+   pay button, present enough that nobody has to go back to the bag for it. */
+.checkout-summary > div > span { flex: 1; min-width: 0; }
+.summary-remove {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, .6);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 0 4px 14px;
+  flex: 0 0 auto;
+}
+.summary-remove:hover { color: var(--yellow); }
 .checkout-totals > div small,
 .payment-choice small,
 .checkout-summary > small,

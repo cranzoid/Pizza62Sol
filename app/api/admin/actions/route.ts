@@ -2,6 +2,8 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, getSetting, writeAudit } from "@/db/runtime";
 import { canTransitionOrderStatus, generateOpaqueToken, hashOpaqueToken, type Fulfilment } from "@/lib/domain";
 import { anyProviderConfigured } from "@/lib/notifications/config";
+import { dispatchSoon } from "@/lib/notifications/dispatcher";
+import { isCustomerNotifiableStatus } from "@/lib/notifications/messages";
 
 type ActionBody =
   | { action: "order.status"; orderId?: string; status?: string; note?: string; override?: boolean }
@@ -130,9 +132,9 @@ export async function POST(request: Request) {
         target === "cancelled" ? "cancel_orders" : "change_order_status",
       );
       const order = await getD1()
-        .prepare("SELECT id, status, fulfilment FROM orders WHERE id = ?")
+        .prepare("SELECT id, order_number, status, fulfilment, customer_email FROM orders WHERE id = ?")
         .bind(body.orderId ?? "")
-        .first<{ id: string; status: string; fulfilment: Fulfilment }>();
+        .first<{ id: string; order_number: string; status: string; fulfilment: Fulfilment; customer_email: string | null }>();
       if (!order) return Response.json({ error: "Order not found." }, { status: 404 });
       if (!canTransitionOrderStatus(order.fulfilment, order.status, target, Boolean(body.override))) {
         return Response.json({ error: "That order status transition is not valid." }, { status: 409 });
@@ -161,6 +163,40 @@ export async function POST(request: Request) {
           )
           .bind(crypto.randomUUID(), order.id, order.status, target, user.id, body.note?.trim() || null, now),
       ]);
+      // Telling the customer the order moved. Only the steps they would
+      // otherwise phone to ask about — ready for pickup, out for delivery; see
+      // CUSTOMER_STATUS_UPDATES for why not every status — and only
+      // when there is an address to reach them at: a counter order rung in
+      // without an email must not queue a message to nowhere, which produces one
+      // permanently failed row per walk-in in the exact place someone has to
+      // look to find a real delivery failure.
+      //
+      // The status travels in the payload rather than being read off the order
+      // at send time. A retry that runs after the kitchen has moved the order on
+      // again would otherwise deliver "ready for pickup" to someone already
+      // holding the bag.
+      if (isCustomerNotifiableStatus(target) && order.customer_email) {
+        await getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'customer_status_update', ?, ?, ?, 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            order.customer_email,
+            JSON.stringify({ orderId: order.id, orderNumber: order.order_number, status: target }),
+            (await anyProviderConfigured()) ? "pending" : "pending_provider_setup",
+            now,
+            now,
+            now,
+          )
+          .run();
+        // Node can send this in-process, so "ready for pickup" does not wait for
+        // the next cron tick to leave. A failure here is swallowed by design: the
+        // row is already durable, and the sweeper is the safety net.
+        dispatchSoon();
+      }
       // H-09: completing an order is what releases its feedback request, delayed
       // by operations.feedbackDelayMinutes so the customer is asked after they
       // have actually eaten rather than as they walk out of the door.
@@ -175,7 +211,7 @@ export async function POST(request: Request) {
           )
           .bind(
             (await anyProviderConfigured()) ? "pending" : "pending_provider_setup",
-            now + (operations.feedbackDelayMinutes ?? 75) * 60_000,
+            now + (operations.feedbackDelayMinutes ?? 40) * 60_000,
             now,
             order.id,
           )

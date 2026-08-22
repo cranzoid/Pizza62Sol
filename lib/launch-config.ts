@@ -62,7 +62,10 @@ export const LAUNCH_SETTINGS = {
     cancellationRequestWindowMinutes: 5,
     payrollPeriod: "biweekly",
     locationVerificationEnabled: false,
-    feedbackDelayMinutes: 75,
+    // How long after an order is completed the feedback request goes out. Long
+    // enough that the customer has eaten, short enough that the meal is still
+    // the thing they were just doing.
+    feedbackDelayMinutes: 40,
     lowRatingThreshold: 2,
     halfToppingUnitsBps: 10_000,
     halalSurchargeType: "none",

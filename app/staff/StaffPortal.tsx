@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
+import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
 import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
 import { EmployeeTimeClock } from "@/app/staff/TimeClock";
@@ -182,33 +183,38 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
     <div className="pt-customer">
       <strong>{String(order.customer_name ?? "")}</strong>
       {order.customer_phone ? <div>{String(order.customer_phone)}</div> : null}
+      {/* Where it came from, so a counter query about "the phone order" can be
+          matched to paper without going back to a screen. */}
+      <div className="pt-origin">
+        {String(order.channel ?? "online") === "online" ? "WEBSITE" : String(order.channel).replaceAll("_", " ").toUpperCase()}
+        {" · "}
+        {String(order.payment_method ?? "").replaceAll("_", " ").toUpperCase()}
+      </div>
     </div>
     <div className="pt-rule" />
     {items.map((item, index) => {
-      const snapshot = (item.snapshot as Record<string, unknown>) ?? {};
-      const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
-      const modifiers = (snapshot.modifiers as Array<{ label: string; group?: string; values: Array<{ label: string; placement?: string }> }> | undefined) ?? [];
+      const snapshot = (item.snapshot as ItemSnapshot) ?? {};
+      // The same resolver the confirmation email uses, so paper and inbox
+      // describe the order in exactly the same words. A ticket that reads
+      // differently from what the customer was sent is how a correct order
+      // becomes a dispute nobody can settle.
+      const flags = snapshotFlags(snapshot);
+      const details = snapshotDetails(snapshot, toppingNames);
       return <div className="pt-item" key={String(item.id ?? index)}>
         <div className="pt-item-head">
           <span className="pt-qty">{String(item.quantity)}&times;</span>
           <span>{String(item.productName)}{item.variationName ? ` · ${String(item.variationName)}` : ""}</span>
         </div>
-        {/* Halal and extra cheese are preparation-critical, so they are called
-            out rather than left to blend into the modifier list. */}
-        {snapshot.halal ? <div className="pt-flag">** HALAL **</div> : null}
-        {snapshot.extraCheese ? <div className="pt-flag">** EXTRA CHEESE **</div> : null}
-        {/* H-03: what the customer asked us to leave off. Printed as loudly as
-            the flags above — an omission the kitchen cannot see will not happen,
-            which would make enforcing the recipe server-side pointless. */}
-        {Array.isArray(snapshot.recipeOmissions) && snapshot.recipeOmissions.length
-          ? <div className="pt-flag">** NO {(snapshot.recipeOmissions as string[]).join(", NO ").toUpperCase()} **</div>
-          : null}
-        {toppings.length ? <div className="pt-sub">{toppings.map((topping) =>
-          `${toppingNames.get(topping.toppingId) ?? topping.toppingId}${topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}`,
-        ).join(", ")}</div> : null}
-        {modifiers.map((modifier, modifierIndex) => <div className="pt-sub" key={modifierIndex}>
-          {modifier.group ? `${modifier.group} · ${modifier.label}` : modifier.label}: {modifier.values.map((value) =>
-            `${value.label}${value.placement === "left" ? " (L)" : value.placement === "right" ? " (R)" : ""}`).join(", ")}
+        {/* Halal, extra cheese and anything the customer asked us to leave off.
+            Called out rather than left to blend into the option list — H-03: an
+            omission the kitchen cannot see will not happen, which would make
+            enforcing the recipe server-side pointless. */}
+        {flags.map((flag) => <div className="pt-flag" key={flag}>** {flag.toUpperCase()} **</div>)}
+        {/* Every choice, labelled. Toppings arrive grouped by placement
+            (“LEFT HALF: …”) rather than suffixed per name, because a half-and-half
+            read off a list of suffixes at 9pm is a half-and-half made wrong. */}
+        {details.map((detail) => <div className="pt-sub" key={detail.label}>
+          <b>{detail.label.toUpperCase()}:</b> {detail.value}
         </div>)}
         {item.instructions ? <div className="pt-note">NOTE: {String(item.instructions)}</div> : null}
       </div>;
@@ -218,10 +224,27 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
       <strong>DELIVER TO</strong>
       <div>{address.line1}{address.unit ? `, Unit ${address.unit}` : ""}</div>
       <div>{address.city} {address.postalCode}</div>
-      {address.instructions ? <div className="pt-note">{address.instructions}</div> : null}
-    </div> : null}
-    {order.instructions ? <div className="pt-note">ORDER NOTE: {String(order.instructions)}</div> : null}
+      {/* `orders.instructions` is where the buzzer note is kept — the address
+          JSON is normalised down to what the radius check needs — so it is
+          printed here, with the address, rather than adrift at the bottom. */}
+      {order.instructions ? <div className="pt-note">{String(order.instructions)}</div> : null}
+    </div> : <>{order.instructions ? <div className="pt-note">ORDER NOTE: {String(order.instructions)}</div> : null}</>}
     <div className="pt-rule" />
+    {/* The full breakdown, not just the total. Someone reconciling the till at
+        close needs the same numbers the customer was charged, and a ticket that
+        shows only a grand total cannot answer “was the delivery fee taken?” */}
+    <div className="pt-money">
+      {totalRows({
+        subtotal_cents: Number(order.subtotal_cents ?? 0),
+        discount_cents: Number(order.discount_cents ?? 0),
+        tax_cents: Number(order.tax_cents ?? 0),
+        delivery_fee_cents: Number(order.delivery_fee_cents ?? 0),
+        tip_cents: Number(order.tip_cents ?? 0),
+        total_cents: Number(order.total_cents ?? 0),
+      }).filter((row) => !row.strong).map((row) => <div className="pt-money-row" key={row.label}>
+        <span>{row.label}</span><span>{row.value}</span>
+      </div>)}
+    </div>
     {/* Whether to take money is the one thing a mistake on is expensive, so it
         is stated in the imperative rather than as a status word. */}
     <div className="pt-total">
@@ -240,19 +263,19 @@ function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>
   const phone = order.customer_phone ? String(order.customer_phone) : null;
   return <div className="kitchen-ticket">
     {items.map((item, index) => {
-      const snapshot = (item.snapshot as Record<string, unknown>) ?? {};
-      const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
-      const modifiers = (snapshot.modifiers as Array<{ label: string; group?: string; values: Array<{ label: string; placement?: string }> }> | undefined) ?? [];
+      const snapshot = (item.snapshot as ItemSnapshot) ?? {};
+      // Shared with the printed ticket and the emails — see lib/order-presentation.ts.
+      const flags = snapshotFlags(snapshot);
+      const details = snapshotDetails(snapshot, toppingNames);
       return <div className="ticket-line" key={String(item.id ?? index)}>
-        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{snapshot.halal ? <span className="ticket-tag">HALAL</span> : null}{snapshot.extraCheese ? <span className="ticket-tag">Extra cheese</span> : null}{Array.isArray(snapshot.recipeOmissions) && snapshot.recipeOmissions.length ? <span className="ticket-tag ticket-tag--warn">NO {(snapshot.recipeOmissions as string[]).join(", NO ")}</span> : null}</div>
-        {toppings.length ? <div className="ticket-toppings">{toppings.map((topping, toppingIndex) => <span key={toppingIndex}>{toppingNames.get(topping.toppingId) ?? topping.toppingId}{topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}</span>)}</div> : null}
-        {modifiers.map((modifier, modifierIndex) => <div className="ticket-modifier" key={modifierIndex}><em>{modifier.group ? `${modifier.group} · ${modifier.label}` : modifier.label}:</em> {modifier.values.map((value) => `${value.label}${value.placement === "left" ? " (L)" : value.placement === "right" ? " (R)" : ""}`).join(", ")}</div>)}
+        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{flags.map((flag) => <span className={`ticket-tag${flag.startsWith("No ") ? " ticket-tag--warn" : ""}`} key={flag}>{flag}</span>)}</div>
+        {details.map((detail) => <div className="ticket-modifier" key={detail.label}><em>{detail.label}:</em> {detail.value}</div>)}
         {item.instructions ? <div className="ticket-note">Note: {String(item.instructions)}</div> : null}
       </div>;
     })}
-    {address ? <div className="ticket-address"><strong>Deliver to:</strong> {address.line1}{address.unit ? `, Unit ${address.unit}` : ""}, {address.city} {address.postalCode}{address.instructions ? ` — ${address.instructions}` : ""}</div> : null}
+    {address ? <div className="ticket-address"><strong>Deliver to:</strong> {address.line1}{address.unit ? `, Unit ${address.unit}` : ""}, {address.city} {address.postalCode}{order.instructions ? ` — ${String(order.instructions)}` : ""}</div> : null}
     <div className="ticket-payment">{String(order.payment_method ?? "").replaceAll("_", " ")} · {String(order.payment_status ?? "").replaceAll("_", " ")}{phone ? ` · ${phone}` : order.contactRedacted ? " · contact hidden" : ""}</div>
-    {order.instructions ? <div className="ticket-note">Order note: {String(order.instructions)}</div> : null}
+    {!address && order.instructions ? <div className="ticket-note">Order note: {String(order.instructions)}</div> : null}
   </div>;
 }
 

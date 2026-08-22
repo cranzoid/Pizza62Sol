@@ -35,7 +35,7 @@ export async function GET(request: Request) {
     const [orders, awaitingPayment, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
       getD1()
         .prepare(
-          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, status,
+          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel, status,
                   payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
                   address_json, instructions, subtotal_cents, discount_cents, tax_cents,
                   delivery_fee_cents, tip_cents, total_cents, created_at, acknowledged_at

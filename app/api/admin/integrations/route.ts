@@ -137,6 +137,10 @@ export async function GET(request: Request) {
         sms: twilio !== null,
         voice: twilio !== null && base !== null,
         restaurantEmail: Boolean(business.email),
+        // The address itself, not just whether one exists. "The restaurant is
+        // emailed about new orders ✓" is not an answer to "which inbox?", and the
+        // owner cannot confirm a setting they cannot see.
+        restaurantEmailAddress: business.email?.trim() || null,
         publicBaseUrl: base,
       },
     });

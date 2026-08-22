@@ -219,7 +219,7 @@ const standalonePizzas: MenuProductSeed[] = PIZZA_SIZES.map((size) => ({
   id: `${size.id}-pizza`,
   categoryId: "build-your-own",
   name: `${size.name} Pizza`,
-  description: `Choose the flyer-priced 1-topping or 3-topping ${size.name.toLowerCase()} pizza. Extra toppings are charged at the ${size.name.toLowerCase()} rate.`,
+  description: `Choose a 1-topping or 3-topping ${size.name.toLowerCase()} pizza. Extra toppings are charged at the ${size.name.toLowerCase()} rate.`,
   productType: "pizza",
   basePriceCents: size.basePriceCents,
   halalCapable: true,

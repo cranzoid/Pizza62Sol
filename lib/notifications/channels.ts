@@ -63,11 +63,20 @@ function isRetryableStatus(status: number): boolean {
  * as spam — the Gmail addresses on this project are *recipients*, not senders.
  * Until the custom domain is live, use the provider's sandbox sender.
  */
-export async function sendEmail(input: {
+export type EmailInput = {
   to: string;
   subject: string;
+  /**
+   * The plain-text part. Always required, never optional: a message with only an
+   * HTML part scores worse with every spam filter than one with both, and it is
+   * what a client in text mode actually shows.
+   */
   text: string;
-}): Promise<{ provider: string; reference: string | null }> {
+  /** The designed part. Omitted for internal test sends and nothing else. */
+  html?: string;
+};
+
+export async function sendEmail(input: EmailInput): Promise<{ provider: string; reference: string | null }> {
   const config = await emailConfig();
   if (!config) throw new ChannelNotConfiguredError("Email");
   return config.provider === "sendgrid" ? sendViaSendGrid(config, input) : sendViaResend(config, input);
@@ -75,7 +84,7 @@ export async function sendEmail(input: {
 
 async function sendViaResend(
   config: EmailConfig,
-  input: { to: string; subject: string; text: string },
+  input: EmailInput,
 ): Promise<{ provider: string; reference: string | null }> {
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -88,6 +97,10 @@ async function sendViaResend(
       to: [input.to],
       subject: input.subject,
       text: input.text,
+      // Sending both parts makes this a multipart/alternative message; the
+      // client picks. Omitting the key entirely when there is no HTML matters —
+      // Resend rejects a null `html`.
+      ...(input.html ? { html: input.html } : {}),
     }),
   });
   const body = (await response.json().catch(() => null)) as { id?: string; message?: string; name?: string } | null;
@@ -103,7 +116,7 @@ async function sendViaResend(
 
 async function sendViaSendGrid(
   config: EmailConfig,
-  input: { to: string; subject: string; text: string },
+  input: EmailInput,
 ): Promise<{ provider: string; reference: string | null }> {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -115,7 +128,14 @@ async function sendViaSendGrid(
       personalizations: [{ to: [{ email: input.to }] }],
       from: { email: config.from, name: "Pizza 62" },
       subject: input.subject,
-      content: [{ type: "text/plain", value: input.text }],
+      // SendGrid requires the parts in ascending order of preference and
+      // rejects the payload otherwise — text/plain must come before text/html.
+      content: input.html
+        ? [
+            { type: "text/plain", value: input.text },
+            { type: "text/html", value: input.html },
+          ]
+        : [{ type: "text/plain", value: input.text }],
     }),
   });
 

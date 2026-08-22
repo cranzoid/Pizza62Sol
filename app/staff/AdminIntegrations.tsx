@@ -42,6 +42,7 @@ type Readiness = {
   sms: boolean;
   voice: boolean;
   restaurantEmail: boolean;
+  restaurantEmailAddress: string | null;
   publicBaseUrl: string | null;
 };
 
@@ -379,7 +380,13 @@ function ReadinessPanel({ readiness }: { readiness: Readiness }) {
       "Customers get a confirmation email",
       "Needs an email provider API key and a verified sender address.",
     ],
-    [readiness.restaurantEmail, "The restaurant is emailed about new orders", "Set the restaurant's address in Settings."],
+    [
+      readiness.restaurantEmail,
+      readiness.restaurantEmailAddress
+        ? `New orders and low ratings are emailed to ${readiness.restaurantEmailAddress}`
+        : "The restaurant is emailed about new orders",
+      "No inbox is set, so nobody here is emailed when an order arrives. Set “Order alerts go to” under Settings → Restaurant details.",
+    ],
     [readiness.voice, "The kitchen is phoned about new orders", "Needs Twilio credentials and the public web address."],
     [readiness.sms, "Texts can be sent", "Needs Twilio credentials."],
   ];

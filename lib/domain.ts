@@ -319,7 +319,7 @@ export function modifierUnitsBps(values: ModifierValue[], halfToppingUnitsBps = 
   );
 }
 
-/** Cost of the topping units that exceed the allowance the flyer price already covers. */
+/** Cost of the topping units that exceed the allowance the listed price already covers. */
 export function priceToppingUnits(
   unitsBps: number,
   includedUnitsBps: number,

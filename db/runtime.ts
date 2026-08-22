@@ -387,6 +387,57 @@ const DATA_MIGRATIONS: Array<{
     ],
   },
   {
+    // "Flyer price" was our word for it, not the customer's.
+    //
+    // The seeded description for every build-your-own size said "the
+    // flyer-priced 1-topping or 3-topping pizza". A flyer is an internal
+    // reference — how the launch prices were sourced — and on a menu page it
+    // reads as jargon or, worse, as a promotion the customer cannot find. The
+    // seed text is fixed in `lib/menu.ts`, but products are inserted with ON
+    // CONFLICT DO NOTHING so an already-seeded database keeps the old string
+    // forever without this.
+    //
+    // Scoped by the exact phrase rather than by product id: a description the
+    // owner has since rewritten no longer contains it and is left alone, which
+    // is the C-08 rule — the menu belongs to the owner after first seed.
+    id: "2026-08-23-drop-flyer-wording",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE products
+             SET description = REPLACE(description, 'Choose the flyer-priced ', 'Choose a '),
+                 updated_at = ?
+           WHERE description LIKE 'Choose the flyer-priced %'`,
+        )
+        .bind(now),
+    ],
+  },
+  {
+    /**
+     * Ask about the meal after the meal.
+     *
+     * `feedbackDelayMinutes` shipped at 75, which put the request more than an
+     * hour after a pickup order was handed over — long enough that the customer
+     * has moved on and the response rate goes with it. Forty minutes is after
+     * the food has been eaten and while it is still the thing they were just
+     * doing.
+     *
+     * Conditional on the value still being the shipped default: an owner who has
+     * already tuned this has an opinion, and a migration must not overwrite it.
+     */
+    id: "2026-08-23-feedback-delay-40",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE settings
+             SET value_json = jsonb_set(value_json::jsonb, '{feedbackDelayMinutes}', '40'::jsonb)::text,
+                 version = settings.version + 1, updated_at = ?
+           WHERE key = 'operations' AND (value_json::jsonb ->> 'feedbackDelayMinutes') = '75'`,
+        )
+        .bind(now),
+    ],
+  },
+  {
     // Populates `business.email`, which the dispatcher already sends the
     // new-order and low-rating alerts to and which had never been set — so those
     // alerts fell back to voice and SMS alone.
