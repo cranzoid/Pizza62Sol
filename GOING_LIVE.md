@@ -57,14 +57,14 @@ owner sign in to Clover on their laptop at the same time.
 The owner already has a public and a private token. Only the private one is used
 here — the public token is for building your own card form, which this does not.
 
-| What | Where they get it |
-|---|---|
-| **Merchant ID** | In the address bar of their Clover dashboard, after `/m/`. No support ticket needed |
-| **Private API token** | They have it |
-| **Webhook signing secret** | Clover dashboard → Settings → Ecommerce → Hosted Checkout → generate |
-| **Environment** | Choose **Sandbox** now. Production after the test order works |
+| What                       | Where they get it                                                                   |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| **Merchant ID**            | In the address bar of their Clover dashboard, after `/m/`. No support ticket needed |
+| **Private API token**      | They have it                                                                        |
+| **Webhook signing secret** | Clover dashboard → Settings → Ecommerce → Hosted Checkout → generate                |
+| **Environment**            | Choose **Sandbox** now. Production after the test order works                       |
 
-Then, in the *same* Clover screen, paste the two URLs the Integrations tab shows
+Then, in the _same_ Clover screen, paste the two URLs the Integrations tab shows
 under "Addresses to paste elsewhere":
 
 - **Webhook URL** → `<app_url>/api/payments/clover/webhook`
@@ -91,7 +91,7 @@ Resend (free, 3,000/month) or SendGrid. Resend is the default.
 
 > ⚠️ **A gmail.com address cannot be a sender.** Only Google can prove ownership
 > of gmail.com, so mail claiming to be from one will be rejected or filed as
-> spam. `info.pizza62@gmail.com` is set up as a *recipient* — it receives the
+> spam. `info.pizza62@gmail.com` is set up as a _recipient_ — it receives the
 > new-order alerts — which is a different thing entirely.
 >
 > Until the domain is verified, use the provider's sandbox sender so confirmations
@@ -102,19 +102,19 @@ in the spam folder — that is what the domain verification is for.
 
 ### 5. Twilio
 
-| What | Notes |
-|---|---|
-| **Account SID / Auth token** | From the Twilio console |
-| **Twilio number** | E.164, e.g. `+19055550100`. A local Canadian number is fine — outbound calls need no verification |
-| **Number to ring in the kitchen** | E.164. **Not necessarily the number customers call** — this is the one that should ring at 9pm |
-| **Times to call back / minutes between** | Defaults 3 and 2. It keeps calling until somebody presses 1 |
-| **Text customers too** | **Leave off.** See below |
+| What                                     | Notes                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Account SID / Auth token**             | From the Twilio console                                                                           |
+| **Twilio number**                        | E.164, e.g. `+19055550100`. A local Canadian number is fine — outbound calls need no verification |
+| **Number to ring in the kitchen**        | E.164. **Not necessarily the number customers call** — this is the one that should ring at 9pm    |
+| **Times to call back / minutes between** | Defaults 3 and 2. It keeps calling until somebody presses 1                                       |
+| **Text customers too**                   | **Leave off.** See below                                                                          |
 
 Press **Test call**. The kitchen phone should ring and read out a test message.
 
 > **Why customer texting is off.** The Twilio number is an unregistered local long
 > code, and Canadian carriers filter application-to-person texts from those —
-> *silently*. A customer would believe they had been told about their order and
+> _silently_. A customer would believe they had been told about their order and
 > never have been. Email is the reliable channel. Turn this on only after
 > registering the number for A2P messaging.
 
@@ -125,13 +125,13 @@ prices per size, extra-topping rates, toppings, deals, delivery, hours.
 
 Currently set:
 
-| | |
-|---|---|
-| HST | 13%, charged on food **and** the delivery fee — matches the owner's prior receipts |
-| Delivery | $3.50, 10 km radius, **$20 minimum** before tax |
-| Estimates | Pickup 15 min, delivery 30 min |
-| Last orders | 20 minutes before closing |
-| Restaurant email | `info.pizza62@gmail.com` |
+|                  |                                                                                    |
+| ---------------- | ---------------------------------------------------------------------------------- |
+| HST              | 13%, charged on food **and** the delivery fee — matches the owner's prior receipts |
+| Delivery         | $3.50, 10 km radius, **$20 minimum** before tax                                    |
+| Estimates        | Pickup 15 min, delivery 30 min                                                     |
+| Last orders      | 20 minutes before closing                                                          |
+| Restaurant email | `info.pizza62@gmail.com`                                                           |
 
 Go through the pizza prices with the owner and the physical flyer in hand.
 
@@ -142,7 +142,7 @@ a **pickup-only special** — and both are in the menu deliberately. Confirmed b
 the owner, 2026-08-21.
 
 The tax rule is confirmed against a real receipt from the previous system:
-$30.99 food + $5.00 shipping + $4.68 HST = $40.67, which is 13% of food *plus*
+$30.99 food + $5.00 shipping + $4.68 HST = $40.67, which is 13% of food _plus_
 shipping. `tests/domain.test.ts` reproduces it exactly.
 
 ### 7. Pair the time-clock tablet
@@ -254,12 +254,12 @@ terraform output apex_a_record_command | bash   # the apex IP
 
 It prints, roughly:
 
-| Type | Name | Value |
-|---|---|---|
-| `A` | `pizza62.ca` | *(the inbound IP from the command above)* |
-| `TXT` | `asuid.pizza62.ca` | *(verification id)* |
-| `CNAME` | `www.pizza62.ca` | `app-pizza62-prod-XXXXXX.azurewebsites.net` |
-| `TXT` | `asuid.www.pizza62.ca` | *(verification id)* |
+| Type    | Name                   | Value                                       |
+| ------- | ---------------------- | ------------------------------------------- |
+| `A`     | `pizza62.ca`           | _(the inbound IP from the command above)_   |
+| `TXT`   | `asuid.pizza62.ca`     | _(verification id)_                         |
+| `CNAME` | `www.pizza62.ca`       | `app-pizza62-prod-XXXXXX.azurewebsites.net` |
+| `TXT`   | `asuid.www.pizza62.ca` | _(verification id)_                         |
 
 **Why the apex is an A record and www is a CNAME:** DNS forbids a CNAME at a zone
 apex, because it would conflict with the SOA and NS records that have to live
@@ -301,17 +301,17 @@ being broken.
 
 ## Day-to-day, for the owner
 
-| To do this | Go here |
-|---|---|
-| Stop taking orders for an hour | Settings → Holidays & closures → "For 1 hour" |
-| Close for a holiday | Settings → Holidays & closures → pick the dates |
-| Close delivery but stay open for pickup | Same screen, "What is closed" → Delivery only |
-| Change a price | Menu setup |
-| Mark something sold out | Live orders → product availability |
-| Take a phone or counter order | Take an order |
-| See how the week went | History & offers → set the dates → Export CSV |
-| Record a refund | History & offers → find the order → Refund |
-| Set up an offer | History & offers → Coupons & offers |
+| To do this                              | Go here                                         |
+| --------------------------------------- | ----------------------------------------------- |
+| Stop taking orders for an hour          | Settings → Holidays & closures → "For 1 hour"   |
+| Close for a holiday                     | Settings → Holidays & closures → pick the dates |
+| Close delivery but stay open for pickup | Same screen, "What is closed" → Delivery only   |
+| Change a price                          | Menu setup                                      |
+| Mark something sold out                 | Live orders → product availability              |
+| Take a phone or counter order           | Take an order                                   |
+| See how the week went                   | History & offers → set the dates → Export CSV   |
+| Record a refund                         | History & offers → find the order → Refund      |
+| Set up an offer                         | History & offers → Coupons & offers             |
 
 **Closures end by themselves.** That is the difference between them and the pause
 toggle, and the reason to use them: nobody has to remember to switch the store
