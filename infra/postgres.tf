@@ -92,6 +92,11 @@ resource "azurerm_postgresql_flexible_server" "main" {
   delegated_subnet_id = azurerm_subnet.postgres.id
   private_dns_zone_id = azurerm_private_dns_zone.postgres.id
 
+  # Azure rejects a server that combines its delegated-subnet/private-DNS mode
+  # with the provider's default public endpoint. Keep the database reachable
+  # only from the VNet, as intended by this stack.
+  public_network_access_enabled = false
+
   # Burstable SKUs do not support zone redundancy or HA.
   zone = "1"
 

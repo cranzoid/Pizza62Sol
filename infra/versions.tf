@@ -30,6 +30,11 @@ terraform {
 provider "azurerm" {
   subscription_id = var.subscription_id
 
+  # Storage account keys are disabled below. Make the provider use the same
+  # Entra ID/RBAC path as the application when it reads Blob and Queue service
+  # properties; otherwise refresh fails with KeyBasedAuthenticationNotPermitted.
+  storage_use_azuread = true
+
   features {
     key_vault {
       # Soft-delete is mandatory on Key Vault and cannot be turned off. Purging

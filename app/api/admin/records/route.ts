@@ -80,7 +80,7 @@ function buildFilters(url: URL): Filters {
   if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
     // Inclusive of the whole end day: "to the 21st" includes the 21st.
     conditions.push("created_at < ?");
-    bindings.push(torontoDayStart(to) + 86_400_000);
+    bindings.push(torontoDayStart(nextCalendarDate(to)));
   }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", bindings };
@@ -92,15 +92,29 @@ function torontoDayStart(date: string): number {
   // to the requested date avoids hardcoding a DST rule that changes.
   for (const offset of ["-05:00", "-04:00"]) {
     const candidate = new Date(`${date}T00:00:00${offset}`).getTime();
-    const rendered = new Intl.DateTimeFormat("en-CA", {
+    const parts = new Intl.DateTimeFormat("en", {
       timeZone: "America/Toronto",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-    }).format(new Date(candidate));
-    if (rendered === date) return candidate;
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(candidate));
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const rendered = `${values.year}-${values.month}-${values.day}`;
+    if (rendered === date && values.hour === "00" && values.minute === "00" && values.second === "00") {
+      return candidate;
+    }
   }
   return new Date(`${date}T00:00:00-05:00`).getTime();
+}
+
+/** The next YYYY-MM-DD date without allowing the host time zone to interfere. */
+function nextCalendarDate(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
 }
 
 const ORDER_COLUMNS = `id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,

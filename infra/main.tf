@@ -77,6 +77,10 @@ resource "azurerm_subnet" "postgres" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = ["10.20.2.0/24"]
+  # Flexible Server adds this endpoint while provisioning its delegated
+  # subnet. Declare it so later applies preserve the database's Azure Storage
+  # dependency instead of treating it as drift to remove.
+  service_endpoints = ["Microsoft.Storage"]
 
   # A delegated subnet may hold nothing but Flexible Servers.
   delegation {

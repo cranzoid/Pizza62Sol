@@ -927,7 +927,12 @@ export function nextOrderSlots(options: {
     const day = hours.find((entry) => entry.weekday === (weekday + offset) % 7);
     if (!day) continue;
     const first = Math.ceil(day.openMinute / interval) * interval;
-    for (let slotMinute = first; slotMinute <= day.closeMinute && slots.length < limit; slotMinute += interval) {
+    // `1440` expresses "midnight at the end of this day" in the hours model,
+    // but as a timestamp it belongs to the next weekday at minute zero. Do not
+    // offer that boundary as a slot: the schedule validator would correctly
+    // judge it against the next day's hours and reject what the UI just offered.
+    const last = Math.min(day.closeMinute, 1439);
+    for (let slotMinute = first; slotMinute <= last && slots.length < limit; slotMinute += interval) {
       // A slot on today's row that has already passed is skipped rather than moved.
       if (offset === 0 && slotMinute < minute) continue;
       const timestamp = zonedTimestamp(now, offset, slotMinute, timeZone);

@@ -498,6 +498,20 @@ test("only offers order times the kitchen can accept", () => {
   const midday = Date.parse("2026-07-27T17:07:00Z");
   const later = nextOrderSlots({ now: midday, hours, timeZone: zone, leadMinutes: 15 });
   assert.equal(zonedParts(later[0], zone).minute, 810);
+  // Friday closes at minute 1440. That value means the end of Friday in the
+  // settings model, but its timestamp is Saturday 00:00 and must not be offered
+  // as a Friday slot that validation will reject.
+  const lateFriday = Date.parse("2026-08-01T03:20:00Z"); // Friday 23:20 Toronto
+  const afterMidnightBoundary = nextOrderSlots({
+    now: lateFriday,
+    hours,
+    timeZone: zone,
+    leadMinutes: 30,
+    limit: 1,
+  });
+  assert.equal(zonedParts(afterMidnightBoundary[0], zone).weekday, 6);
+  assert.equal(zonedParts(afterMidnightBoundary[0], zone).minute, 660);
+  assert.ok(isStoreOpenAt(afterMidnightBoundary[0], hours, zone));
   // Hours that have not been configured cannot produce a bookable time.
   assert.deepEqual(nextOrderSlots({ now, hours: [], timeZone: zone, leadMinutes: 15 }), []);
 });

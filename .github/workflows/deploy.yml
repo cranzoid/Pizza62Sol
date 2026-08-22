@@ -84,15 +84,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
-
-      - name: Fail if the suite silently skipped its database tests
+      - name: Test with database coverage
         # The skip count is a deliberate signal (see the handoff's trap list): a
         # green run with skips means the database-backed half never executed, and
         # that is exactly the half that covers orders and payments.
         run: |
-          skipped=$(npm test 2>&1 | grep -oE '^ℹ skipped [0-9]+' | grep -oE '[0-9]+' || echo 0)
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+          skipped=$(grep -oE '^ℹ skipped [0-9]+' test-output.log | grep -oE '[0-9]+' || echo 0)
           if [ "$skipped" != "0" ]; then
             echo "::error::$skipped tests were skipped — the database-backed suites did not run."
             exit 1
@@ -101,24 +100,55 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Only what the server needs at runtime. `npm ci --omit=dev` after the
-      # build keeps the zip to roughly a third of the size, and a smaller
-      # artifact is a faster slot warm-up.
-      - name: Prune to production dependencies
-        run: npm ci --omit=dev
-
-      - name: Package
+      # Vinext's standalone output contains the production server and only the
+      # runtime dependencies its server bundle actually imports. The source
+      # directories beside it are intentionally limited to the migration path
+      # that startup.sh runs before accepting traffic.
+      - name: Assemble the standalone Linux release
         run: |
-          zip -qr build.zip \
-            dist node_modules package.json package-lock.json \
-            drizzle scripts db lib startup.sh \
-            alias-hooks.mjs register-alias.mjs
+          mkdir release
+          cp -R dist/standalone/. release/
+          cp -R drizzle scripts db lib release/
+          cp startup.sh alias-hooks.mjs register-alias.mjs release/
+          test -f release/server.js
+          test -f release/node_modules/vinext/dist/server/prod-server.js
+
+      - name: Smoke-test the exact release artifact
+        run: |
+          (
+            cd release
+            NODE_ENV=production \
+            HOST=127.0.0.1 \
+            PORT=3001 \
+            sh startup.sh > "$RUNNER_TEMP/pizza62-standalone.log" 2>&1 &
+            server_pid=$!
+            trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error --max-time 5 \
+                --output /dev/null http://127.0.0.1:3001/api/health; then
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                cat "$RUNNER_TEMP/pizza62-standalone.log"
+                exit 1
+              fi
+              sleep 1
+            done
+            curl --fail --silent --show-error --max-time 10 \
+              --output /dev/null http://127.0.0.1:3001/
+          )
+
+      - name: Create release archive
+        run: |
+          (cd release && zip -qr ../build.zip .)
           ls -lh build.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: build
           path: build.zip
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 5
 
   deploy:

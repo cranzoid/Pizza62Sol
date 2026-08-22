@@ -13,6 +13,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+APP_ROOT="$PWD"
 RESOURCE_GROUP="${RESOURCE_GROUP:-$(terraform -chdir=infra output -raw resource_group)}"
 APP_NAME="${APP_NAME:-$(terraform -chdir=infra output -raw app_name)}"
 
@@ -26,15 +27,28 @@ npm run build
 
 echo "==> Packaging"
 rm -f build.zip
-# Production dependencies only: roughly a third of the size, and a smaller
-# artifact is a faster slot warm-up.
-npm ci --omit=dev
-zip -qr build.zip \
-  dist node_modules package.json package-lock.json \
-  drizzle scripts db lib startup.sh \
-  alias-hooks.mjs register-alias.mjs
-# Put the dev dependencies back, or the next local command fails confusingly.
-npm ci
+# `output: "standalone"` makes Vinext trace only the dependencies the server
+# imports at runtime. That removes the build toolchain and the platform-specific
+# Rolldown binary from the release, so a deploy no longer needs a second Linux
+# npm install or a 100+ MB node_modules archive.
+RELEASE_DIR="$(mktemp -d /tmp/pizza62-release.XXXXXX)"
+trap 'rm -rf "$RELEASE_DIR"' EXIT
+cp -R dist/standalone/. "$RELEASE_DIR/"
+cp -R drizzle scripts db lib "$RELEASE_DIR/"
+cp startup.sh alias-hooks.mjs register-alias.mjs "$RELEASE_DIR/"
+test -f "$RELEASE_DIR/server.js"
+test -f "$RELEASE_DIR/node_modules/vinext/dist/server/prod-server.js"
+
+# A future runtime dependency might contain a native binary. A standalone build
+# made on macOS would then contain the Darwin binary, not the Linux one Azure
+# needs; fail clearly and use the Linux GitHub workflow in that case.
+if [ "$(uname -s)" != "Linux" ] && find "$RELEASE_DIR" -type f -name '*.node' -print -quit | grep -q .; then
+  echo "!!! The standalone release contains a native Node binary. Build it with the Linux GitHub workflow." >&2
+  exit 1
+fi
+
+(cd "$RELEASE_DIR" && zip -qr "$APP_ROOT/build.zip" .)
+ls -lh build.zip
 
 echo "==> Publishing to the staging slot"
 az webapp deploy \

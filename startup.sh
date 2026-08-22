@@ -20,4 +20,4 @@ echo "[startup] applying database migrations"
 node --experimental-strip-types --import ./register-alias.mjs scripts/migrate.ts
 
 echo "[startup] starting the server"
-exec node node_modules/vinext/dist/cli.js start
+exec node server.js

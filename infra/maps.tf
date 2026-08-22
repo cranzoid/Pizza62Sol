@@ -15,9 +15,11 @@
 resource "azurerm_maps_account" "main" {
   name                = "maps-${local.name}"
   resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  sku_name            = var.maps_sku
-  tags                = local.tags
+  # Azure Maps is a global service. Azure currently rejects new accounts in
+  # canadacentral with LocationNotAvailableForResourceType.
+  location = "global"
+  sku_name = var.maps_sku
+  tags     = local.tags
 
   # Managed identity only, consistent with storage and Key Vault. The account
   # keys are never read into Terraform state or handed to the app.

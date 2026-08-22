@@ -71,6 +71,9 @@ output "custom_domain_dns_records" {
     az command that reads it. Guessing it from the outbound addresses would be
     wrong: they are a different set.
   DESC
+  # Azure marks the verification ID as sensitive in the provider schema even
+  # though its purpose is to be published in a public DNS TXT record.
+  sensitive = true
   value = var.custom_domain == "" ? [] : concat(
     [
       "A      ${var.custom_domain}          <inbound IP — see apex_a_record_command>",
@@ -94,5 +97,5 @@ output "apex_a_record_command" {
     record targeting the App Service instead — it tracks the address itself and
     removes this failure mode entirely.
   DESC
-  value       = "az webapp show -g ${azurerm_resource_group.main.name} -n ${azurerm_linux_web_app.main.name} --query inboundIpAddress -o tsv"
+  value       = "az webapp config hostname get-external-ip -g ${azurerm_resource_group.main.name} --webapp-name ${azurerm_linux_web_app.main.name} -o tsv"
 }

@@ -60,7 +60,9 @@ locals {
 
       AZURE_STORAGE_ACCOUNT   = azurerm_storage_account.uploads.name
       AZURE_STORAGE_CONTAINER = azurerm_storage_container.uploads.name
-      AZURE_MAPS_CLIENT_ID    = azurerm_maps_account.main.id
+      # Maps requires the account's client ID in x-ms-client-id, not its ARM
+      # resource ID. The managed identity itself is selected separately below.
+      AZURE_MAPS_CLIENT_ID = azurerm_maps_account.main.x_ms_client_id
 
       # Which identity to use. An App Service with a user-assigned identity has
       # to be told which one, or DefaultAzureCredential picks arbitrarily.
@@ -74,6 +76,7 @@ locals {
       # and Twilio needs a URL it can reach for the keypress callback. Points at
       # the default hostname until a custom domain is configured.
       PUBLIC_BASE_URL = var.custom_domain != "" ? "https://${var.custom_domain}" : "https://${local.default_hostname}"
+      SEO_INDEXABLE   = var.custom_domain != "" ? "true" : "false"
 
       # Not secrets, and useful to read at a glance. The API key beside them
       # is a Key Vault reference; these two are just configuration.
@@ -85,9 +88,8 @@ locals {
 
       # Slot warm-up: the swap waits for the app to answer here before sending
       # it traffic, so a deploy that boots slowly does not serve 503s.
-      WEBSITE_SWAP_WARMUP_PING_PATH       = "/api/health"
-      WEBSITE_SWAP_WARMUP_PING_STATUSES   = "200"
-      WEBSITE_HEALTHCHECK_MAXPINGFAILURES = "3"
+      WEBSITE_SWAP_WARMUP_PING_PATH     = "/api/health"
+      WEBSITE_SWAP_WARMUP_PING_STATUSES = "200"
       # Migrations run before the server starts, so the container needs longer
       # than the 230-second default to report healthy on a cold start.
       WEBSITES_CONTAINER_START_TIME_LIMIT = "600"
@@ -136,6 +138,13 @@ resource "azurerm_linux_web_app" "main" {
   }
 
   app_settings = local.app_settings
+
+  # These values describe the hostname's role, not the code revision. Keep them
+  # with each slot during a swap so staging can never inherit production SEO or
+  # callback URLs (and production cannot inherit staging's no-index setting).
+  sticky_settings {
+    app_setting_names = ["PUBLIC_BASE_URL", "SEO_INDEXABLE"]
+  }
 
   logs {
     detailed_error_messages = false
@@ -218,7 +227,8 @@ resource "azurerm_linux_web_app_slot" "staging" {
   app_settings = merge(local.app_settings, {
     # Except this: a slot that is about to become production must not be
     # indexed, and must not be the URL in a customer's notification email.
-    SEO_INDEXABLE = "false"
+    PUBLIC_BASE_URL = "https://${azurerm_linux_web_app.main.name}-staging.azurewebsites.net"
+    SEO_INDEXABLE   = "false"
   })
 
   lifecycle {
