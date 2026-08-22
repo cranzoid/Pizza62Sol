@@ -972,24 +972,28 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .till-quantity { width: 100%; justify-content: flex-end; }
 }
 
-/* Clover's card fields are iframes we only provide a box for — the height is
-   fixed here because an empty container collapses before Clover paints into it,
-   which makes the form jump as each field loads. */
-.clover-card-fields { display: flex; flex-direction: column; gap: 0.75rem; }
+/* Clover's card fields.
+   Each is an iframe Clover serves into a box we provide, and Clover sets that
+   iframe to height:100%. A container with only a `min-height` therefore does not
+   constrain it — an iframe's intrinsic height is 150px, so the fields rendered
+   three times taller than every other input on the form. The height here is
+   definite for that reason, and matches `.checkout-modal input`. */
+.clover-card-fields { display: block; }
 .clover-field {
-  min-height: 2.75rem;
-  padding: 0 0.75rem;
-  display: flex;
-  align-items: center;
-  border: 1px solid var(--line, rgba(0, 0, 0, 0.18));
-  border-radius: 8px;
-  background: var(--surface, #fff);
+  height: 50px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  background: white;
+  overflow: hidden;
 }
-.clover-field > iframe { width: 100%; border: 0; }
-.clover-field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+.clover-field > iframe { display: block; width: 100%; height: 100%; border: 0; }
+.clover-field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.clover-card-fields > label { margin: 12px 0; }
+.clover-card-fields .clover-field-row label { margin: 12px 0 0; }
+.clover-card-note { font-size: 9px; color: var(--muted); margin: 14px 0 0; line-height: 1.5; }
 @media (max-width: 30rem) { .clover-field-row { grid-template-columns: 1fr; } }
 
-/* The field boxes stay laid out while Clover paints into them. They are dimmed
-   rather than `hidden`, because mounting a payment iframe inside display:none is
-   a reliable way to get a frame that never initialises. */
+/* Dimmed rather than `hidden` while Clover paints into the boxes: mounting a
+   payment iframe inside display:none is a reliable way to get a frame that never
+   initialises. */
 .clover-fields-loading { opacity: 0.45; pointer-events: none; }

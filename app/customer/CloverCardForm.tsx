@@ -33,7 +33,28 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
  * mistake cannot be made again.
  */
 type CloverElement = { mount: (selector: string) => void; unmount?: () => void };
-type CloverElements = { create: (kind: string, options?: Record<string, unknown>) => CloverElement };
+type CloverElements = { create: (kind: string, styles?: Record<string, unknown>) => CloverElement };
+
+/**
+ * Passed to every field so the text *inside* Clover's iframes matches the rest
+ * of the checkout. Without it the fields render in the browser default face
+ * beside inputs set in the site's own, which reads as a third-party widget
+ * dropped onto the page — the opposite of the point of moving payment here.
+ *
+ * Ignored harmlessly if Clover changes the shape it accepts; the fields keep
+ * working and only look generic.
+ */
+const FIELD_STYLES = {
+  body: { fontFamily: "Arial, Helvetica, sans-serif" },
+  input: {
+    fontFamily: "Arial, Helvetica, sans-serif",
+    fontSize: "14px",
+    fontWeight: "600",
+    color: "#17140f",
+    padding: "0",
+  },
+  "input::placeholder": { color: "#766e61", fontWeight: "400" },
+} as const;
 type CloverInstance = {
   elements: () => CloverElements;
   createToken: () => Promise<{ token?: string; errors?: Record<string, string> }>;
@@ -148,7 +169,7 @@ export function CloverCardForm({
         ];
         for (const [kind, elementId] of mounts) {
           if (!document.getElementById(elementId)) continue;
-          const element = factory.create(kind);
+          const element = factory.create(kind, FIELD_STYLES as unknown as Record<string, unknown>);
           element.mount(`#${elementId}`);
           elements.push(element);
         }
@@ -205,7 +226,7 @@ export function CloverCardForm({
             {fieldError}
           </p>
         ) : null}
-        <p className="utility-help">Your card is entered directly with Clover. We never see or store it.</p>
+        <p className="clover-card-note">Your card is entered directly with Clover. We never see or store it.</p>
       </div>
     </fieldset>
   );

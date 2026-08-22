@@ -1349,7 +1349,9 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         </button>
         {!contactComplete ? <small className="checkout-hint">Add your name, phone and email above to continue.</small> : null}
         {contactComplete && !addressComplete ? <small className="checkout-hint">Add your delivery address above to continue.</small> : null}
-        <small>This total is calculated by Pizza 62 and is what you will be charged. Card details are entered on Clover&apos;s secure page and never reach this site.</small>
+        <small>This total is calculated by Pizza 62 and is what you will be charged. {paymentMethod === "online" && inlineCardAvailable
+          ? "Card details go straight to Clover and never reach this site."
+          : "Card details are entered on Clover\u2019s secure page and never reach this site."}</small>
       </aside></div>
   </section></div>;
 }
