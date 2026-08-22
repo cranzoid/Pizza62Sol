@@ -29,7 +29,7 @@ const { inspectImage, ImageRejected } = await import("@/lib/image-validation");
 const { GET: rosterRoute } = await import("@/app/api/timeclock/kiosk/route");
 const { GET: trackRoute } = await import("@/app/api/orders/track/route");
 const { hashOpaqueToken, generateOpaqueToken } = await import("@/lib/domain");
-const { securityHeadersFor } = await import("@/lib/security-headers");
+const { securityHeadersFor, isTokenBearingPath, APPLE_PAY_ASSOCIATION_PATH } = await import("@/lib/security-headers");
 
 const reachable = await getPool()
   .query("SELECT 1")
@@ -210,4 +210,26 @@ test("keeps the ordinary referrer policy everywhere else", () => {
 test("allows the HTTPS image URLs accepted by the owner editors", () => {
   const policy = securityHeadersFor("/")["Content-Security-Policy"];
   assert.match(policy, /img-src 'self' https: data: blob:/);
+});
+
+
+// --- Apple Pay domain verification ------------------------------------------
+
+test("serves the Apple Pay association file as text, and reachable", () => {
+  // Apple fetches this to prove we control the domain before Apple Pay may run
+  // on it, and verification is on a multi-day cycle — a rejection for a
+  // guessable reason costs days. The static handler types an extensionless file
+  // as application/octet-stream, so the content type is set deliberately here.
+  const headers = securityHeadersFor(APPLE_PAY_ASSOCIATION_PATH);
+  assert.equal(headers["Content-Type"], "text/plain; charset=utf-8");
+
+  // Apple's verifier is not a browser and does not send a token, so the
+  // token-bearing hardening must not apply — `no-store` on this path would be
+  // harmless but `no-referrer` signals nothing, and more importantly the file
+  // must never be treated as private or redirected.
+  assert.equal(headers["Cache-Control"], undefined);
+});
+
+test("does not let the association path fall into the token-bearing set", () => {
+  assert.equal(isTokenBearingPath(APPLE_PAY_ASSOCIATION_PATH), false);
 });

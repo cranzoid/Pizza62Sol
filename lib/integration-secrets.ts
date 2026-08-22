@@ -41,6 +41,11 @@ import { env } from "@/lib/runtime-env";
 export const INTEGRATION_SECRET_KEYS = [
   "CLOVER_MERCHANT_ID",
   "CLOVER_API_TOKEN",
+  // The browser half of the iframe key. It is designed to be public — it ships
+  // in the page and identifies the merchant to Clover's SDK — but it is stored
+  // and rotated with the others rather than hard-coded, because it changes when
+  // the merchant regenerates the pair.
+  "CLOVER_PUBLIC_TOKEN",
   "CLOVER_WEBHOOK_SECRET",
   "CLOVER_ENVIRONMENT",
   "TWILIO_ACCOUNT_SID",
@@ -76,6 +81,7 @@ const KEY_SET = new Set<string>(INTEGRATION_SECRET_KEYS);
 const READABLE_IN_FULL = new Set<string>([
   "CLOVER_ENVIRONMENT",
   "CLOVER_MERCHANT_ID",
+  "CLOVER_PUBLIC_TOKEN",
   "TWILIO_FROM_NUMBER",
   "RESTAURANT_ALERT_PHONE",
   "EMAIL_PROVIDER",

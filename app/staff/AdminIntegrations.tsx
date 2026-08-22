@@ -82,7 +82,13 @@ const CLOVER_FIELDS: FieldSpec[] = [
     key: "CLOVER_API_TOKEN",
     label: "Private API token",
     type: "password",
-    hint: "The private token, not the public one. The public token is only for building your own card form.",
+    hint: "The server half of the key pair. Takes the payment. Never leaves the server.",
+  },
+  {
+    key: "CLOVER_PUBLIC_TOKEN",
+    label: "Public API token",
+    hint: "The browser half of the same pair. Runs the card form on our own checkout page. Safe to be visible.",
+    placeholder: "e.g. 1a2b3c4d5e6f...",
   },
   {
     key: "CLOVER_WEBHOOK_SECRET",

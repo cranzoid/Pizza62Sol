@@ -57,6 +57,22 @@ export function isTokenBearingPath(pathname: string): boolean {
 }
 
 /**
+ * Apple's domain-association file, which proves to Apple that we control
+ * `pizza62.ca` before Apple Pay may run on it.
+ *
+ * It gets its own content type for one reason: the static handler serves an
+ * extensionless file as `application/octet-stream`, and this file is fetched by
+ * Apple's verifier rather than by a browser. Verification runs on a multi-day
+ * cycle, so a rejection for a guessable reason costs days — `text/plain` is what
+ * the file is, and it removes the question.
+ *
+ * The path must stay reachable directly: no redirect, no auth, no 404. The
+ * canonical-host redirect only rewrites the exact `www.` alias, so the apex this
+ * is registered under is unaffected — see `lib/canonical-host.ts`.
+ */
+export const APPLE_PAY_ASSOCIATION_PATH = "/.well-known/apple-developer-merchantid-domain-association";
+
+/**
  * The headers for one request path.
  *
  * On a token-bearing page:
@@ -72,6 +88,10 @@ export function isTokenBearingPath(pathname: string): boolean {
  * away legitimate navigation context for no benefit.
  */
 export function securityHeadersFor(pathname: string): Record<string, string> {
+  if (pathname === APPLE_PAY_ASSOCIATION_PATH) {
+    return { ...BASE_SECURITY_HEADERS, "Content-Type": "text/plain; charset=utf-8" };
+  }
+
   if (!isTokenBearingPath(pathname)) return BASE_SECURITY_HEADERS;
   return {
     ...BASE_SECURITY_HEADERS,
