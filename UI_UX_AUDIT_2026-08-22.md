@@ -67,6 +67,8 @@ illustration style, cards, borders, shadows, and information architecture.
 | P2 | Kitchen-screen ticket details were 7–9px despite being scanned at distance. | High | High | Fixed screen-only ticket type; thermal print CSS remains unchanged. |
 | P2 | Till quantity targets were only 30×30px despite being described as thumb controls. | Medium | High | Fixed to 40×40px without changing layout or color. |
 | P2 | Kiosk PIN feedback did not announce how many digits had been entered. | — | Medium | Fixed with a non-sensitive live count. |
+| P2 | Staging's `SEO_INDEXABLE=false` setting was not reflected in metadata or `robots.txt`, so a preview slot could be crawled. | Medium | Medium | Fixed: non-indexable slots emit noindex metadata and disallow all crawlers. |
+| P2 | Admin accepted remote HTTPS product/hero images while the Content Security Policy blocked them from rendering. | Medium | Medium | Fixed by aligning `img-src` with the editor's existing HTTPS-only validation. |
 | Data | Two active public products are named `test` (one simple side and one pizza). | High | High | Not mutated in this UI-only pass; deactivate from Admin → Menu setup before production swap. |
 
 ## Viewport validation matrix

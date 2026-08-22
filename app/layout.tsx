@@ -29,6 +29,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const title = String(content.seoTitle ?? "").trim() || "Pizza 62 | Hamilton, Ontario";
   const description = String(content.seoDescription ?? "").trim()
     || "Order fresh pizza, wings and local deals directly from Pizza 62 in Hamilton, Ontario.";
+  const indexable = process.env.SEO_INDEXABLE === "true";
   return {
     metadataBase: new URL(origin),
     title: { default: title, template: "%s | Pizza 62" },
@@ -58,6 +59,9 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       images: [socialImage],
     },
+    robots: indexable
+      ? { index: true, follow: true }
+      : { index: false, follow: false, noarchive: true, nosnippet: true },
     appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Pizza 62" },
     formatDetection: { telephone: false },
   };

@@ -13,8 +13,9 @@
 /**
  * H-16 / H-26: the baseline, applied to every response.
  *
- * CSP allows self-hosted assets plus the inline styles and scripts the framework
- * emits, and forbids framing. `nosniff` also hardens owner-uploaded images.
+ * CSP allows self-hosted assets plus HTTPS images accepted by the website/menu
+ * editors, the inline styles and scripts the framework emits, and forbids
+ * framing. `nosniff` also hardens owner-uploaded images.
  */
 export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
@@ -25,7 +26,7 @@ export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy": [
     "default-src 'self'",
     "base-uri 'self'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' https: data: blob:",
     "style-src 'self' 'unsafe-inline'",
     "script-src 'self' 'unsafe-inline'",
     // Clover Hosted Checkout is never called from the browser — the session is

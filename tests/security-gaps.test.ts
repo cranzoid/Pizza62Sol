@@ -206,3 +206,8 @@ test("keeps the ordinary referrer policy everywhere else", () => {
   assert.equal(headers["X-Content-Type-Options"], "nosniff");
   assert.equal(headers["Cache-Control"], undefined, "the rest of the site stays cacheable");
 });
+
+test("allows the HTTPS image URLs accepted by the owner editors", () => {
+  const policy = securityHeadersFor("/")["Content-Security-Policy"];
+  assert.match(policy, /img-src 'self' https: data: blob:/);
+});

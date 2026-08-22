@@ -194,7 +194,7 @@ function DailyTrend({ rows }: { rows: Analytics["daily"] }) {
   const active = hover ?? (rows[peak]?.salesCents ? peak : null);
   if (!rows.some((row) => row.orders)) return <div className="staff-empty">No paid orders in this period yet.</div>;
   return <figure className="viz-figure-block">
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Sales for each day in the selected period" onMouseLeave={() => setHover(null)}>
+    <svg viewBox={`0 0 ${width} ${height}`} role="group" aria-label="Sales for each day in the selected period" onMouseLeave={() => setHover(null)}>
       {ticks.map((tick) => <g key={tick.value}>
         <line className="viz-gridline" x1={padding.left} x2={width - padding.right} y1={tick.y} y2={tick.y} />
         <text className="viz-axis" x={padding.left - 8} y={tick.y + 3} textAnchor="end">{formatMoney(tick.value)}</text>
