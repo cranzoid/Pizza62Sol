@@ -1240,7 +1240,17 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
             merchantId={cloverIframe.merchantId}
             sandbox={Boolean(cloverIframe.sandbox)}
             onReady={setCardForm}
-            onUnavailable={() => { setCardFormBlocked(true); setCardForm(null); }}
+            onUnavailable={(reason) => {
+              // Logged, not swallowed. The fallback is silent by design — a
+              // customer should get a working payment page, not a diagnosis —
+              // but a silent fallback is indistinguishable from the hosted
+              // checkout simply "taking over", which is exactly how a blocked
+              // reCAPTCHA looked from the outside. This is the breadcrumb.
+              console.error("[checkout] inline card form unavailable, falling back to Clover:", reason);
+              analytics("card_form_unavailable", { reason });
+              setCardFormBlocked(true);
+              setCardForm(null);
+            }}
           />
         : null}</div>
       <aside className="checkout-summary">

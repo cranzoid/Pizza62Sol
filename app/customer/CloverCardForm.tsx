@@ -167,7 +167,7 @@ export function CloverCardForm({
           The secure card form could not load. You can still pay on Clover&apos;s page.
         </p>
       ) : null}
-      <div hidden={status !== "ready"}>
+      <div className={status === "ready" ? undefined : "clover-fields-loading"}>
         <label>
           Card number
           <div className="clover-field" ref={numberRef} />

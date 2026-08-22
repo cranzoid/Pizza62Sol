@@ -988,3 +988,8 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .clover-field > iframe { width: 100%; border: 0; }
 .clover-field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 @media (max-width: 30rem) { .clover-field-row { grid-template-columns: 1fr; } }
+
+/* The field boxes stay laid out while Clover paints into them. They are dimmed
+   rather than `hidden`, because mounting a payment iframe inside display:none is
+   a reliable way to get a frame that never initialises. */
+.clover-fields-loading { opacity: 0.45; pointer-events: none; }

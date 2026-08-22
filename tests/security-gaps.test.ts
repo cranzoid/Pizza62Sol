@@ -251,6 +251,12 @@ test("lets Clover's card form run on the storefront, and nowhere else", () => {
   // blocked with the script tag loading perfectly well.
   const checkout = securityHeadersFor("/")["Content-Security-Policy"];
   assert.match(checkout, /script-src [^;]*https:\/\/checkout\.clover\.com/);
+  // Clover's SDK injects https://www.google.com/recaptcha/api.js during
+  // initialisation. Omitting it blocks the card form in the most misleading way
+  // available: the SDK script itself loads, and only the init inside it dies, so
+  // it reads as the hosted checkout taking over rather than as a CSP violation.
+  assert.match(checkout, /script-src [^;]*https:\/\/www\.google\.com/);
+  assert.match(checkout, /frame-src [^;]*https:\/\/www\.google\.com/);
   assert.match(checkout, /frame-src [^;]*https:\/\/\*\.clover\.com/);
   assert.match(checkout, /connect-src [^;]*https:\/\/scl\.clover\.com/);
 

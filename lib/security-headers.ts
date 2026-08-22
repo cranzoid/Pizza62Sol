@@ -26,11 +26,27 @@
  * instruction to. The Apple host is there because Apple Pay renders its own
  * sheet from `applepay.cdn-apple.com` inside Clover's frame.
  */
-const CLOVER_SCRIPT_ORIGINS = "https://checkout.clover.com https://checkout.sandbox.dev.clover.com";
+/**
+ * Google's reCAPTCHA, which Clover's SDK loads itself.
+ *
+ * Not optional and not obvious: the SDK injects
+ * `https://www.google.com/recaptcha/api.js` during initialisation, so a policy
+ * that names every Clover origin and omits this one still blocks the card form —
+ * and it fails in the most misleading way available, because the SDK script
+ * loads fine and only the initialisation inside it dies. That looked exactly
+ * like Clover's hosted checkout "taking over", when it was the fallback
+ * correctly firing on a form that had been blocked from starting.
+ *
+ * reCAPTCHA also renders in an iframe and calls home, so it needs all three
+ * directives rather than just `script-src`.
+ */
+const RECAPTCHA_ORIGINS = "https://www.google.com https://www.gstatic.com";
+
+const CLOVER_SCRIPT_ORIGINS = `https://checkout.clover.com https://checkout.sandbox.dev.clover.com ${RECAPTCHA_ORIGINS}`;
 const CLOVER_FRAME_ORIGINS =
-  "https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com https://applepay.cdn-apple.com";
+  `https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com https://applepay.cdn-apple.com ${RECAPTCHA_ORIGINS}`;
 const CLOVER_CONNECT_ORIGINS =
-  "https://scl.clover.com https://scl-sandbox.dev.clover.com https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com";
+  `https://scl.clover.com https://scl-sandbox.dev.clover.com https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com ${RECAPTCHA_ORIGINS}`;
 
 export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
