@@ -60,15 +60,26 @@ export function isTokenBearingPath(pathname: string): boolean {
  * Apple's domain-association file, which proves to Apple that we control
  * `pizza62.ca` before Apple Pay may run on it.
  *
- * It gets its own content type for one reason: the static handler serves an
- * extensionless file as `application/octet-stream`, and this file is fetched by
- * Apple's verifier rather than by a browser. Verification runs on a multi-day
- * cycle, so a rejection for a guessable reason costs days — `text/plain` is what
- * the file is, and it removes the question.
+ * It is a static file in `public/`, and it is served as
+ * `application/octet-stream` because the static handler types an extensionless
+ * file that way. That cannot be corrected from here: middleware runs (every
+ * other header below is present on the response) but the static handler sets
+ * `Content-Type` afterwards and wins. Two other routes were tried and rejected —
+ * a route handler at this path 404s, because the router ignores directories
+ * beginning with a dot, and reading the payload inside middleware would put a
+ * filesystem call on every request to the site to fix a header Apple does not
+ * document a requirement for.
  *
- * The path must stay reachable directly: no redirect, no auth, no 404. The
+ * `text/plain` would be the tidier answer if it were reachable. Octet-stream is
+ * what most static hosts serve this file as, and the documented verification
+ * failures are 404s and redirects rather than content types — so if Apple ever
+ * does reject it, the content type is the first thing to suspect and the fix is
+ * to move this to a rewritten route.
+ *
+ * What the path does need, and has: no redirect, no auth, no 404. The
  * canonical-host redirect only rewrites the exact `www.` alias, so the apex this
- * is registered under is unaffected — see `lib/canonical-host.ts`.
+ * is registered under is unaffected — see `lib/canonical-host.ts`. A broader
+ * canonical rule added later would break verification silently.
  */
 export const APPLE_PAY_ASSOCIATION_PATH = "/.well-known/apple-developer-merchantid-domain-association";
 
@@ -88,10 +99,6 @@ export const APPLE_PAY_ASSOCIATION_PATH = "/.well-known/apple-developer-merchant
  * away legitimate navigation context for no benefit.
  */
 export function securityHeadersFor(pathname: string): Record<string, string> {
-  if (pathname === APPLE_PAY_ASSOCIATION_PATH) {
-    return { ...BASE_SECURITY_HEADERS, "Content-Type": "text/plain; charset=utf-8" };
-  }
-
   if (!isTokenBearingPath(pathname)) return BASE_SECURITY_HEADERS;
   return {
     ...BASE_SECURITY_HEADERS,
