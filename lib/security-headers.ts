@@ -17,6 +17,21 @@
  * editors, the inline styles and scripts the framework emits, and forbids
  * framing. `nosniff` also hardens owner-uploaded images.
  */
+/**
+ * Clover's origins, for the one page that runs its card form.
+ *
+ * Both environments are listed rather than derived from `CLOVER_ENVIRONMENT`,
+ * because this module is pure data with no database access — and naming the
+ * sandbox host costs nothing, since a policy is a permission to connect, not an
+ * instruction to. The Apple host is there because Apple Pay renders its own
+ * sheet from `applepay.cdn-apple.com` inside Clover's frame.
+ */
+const CLOVER_SCRIPT_ORIGINS = "https://checkout.clover.com https://checkout.sandbox.dev.clover.com";
+const CLOVER_FRAME_ORIGINS =
+  "https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com https://applepay.cdn-apple.com";
+const CLOVER_CONNECT_ORIGINS =
+  "https://scl.clover.com https://scl-sandbox.dev.clover.com https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com";
+
 export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
   "X-Content-Type-Options": "nosniff",
@@ -98,7 +113,33 @@ export const APPLE_PAY_ASSOCIATION_PATH = "/.well-known/apple-developer-merchant
  * The strict policy stays everywhere else: `no-referrer` site-wide would throw
  * away legitimate navigation context for no benefit.
  */
+/**
+ * The pages that host the inline card form.
+ *
+ * Only the storefront: the checkout is a modal on it, so that is the single
+ * place Clover's SDK, its iframes and its API need to be reachable from. Keeping
+ * the widening off every other route means an XSS anywhere else in the site
+ * still cannot talk to the payment origins.
+ */
+function isPaymentPath(pathname: string): boolean {
+  return pathname === "/";
+}
+
+/** The baseline with Clover's origins added to the three directives that block it. */
+function paymentHeaders(): Record<string, string> {
+  return {
+    ...BASE_SECURITY_HEADERS,
+    "Content-Security-Policy": BASE_SECURITY_HEADERS["Content-Security-Policy"]
+      .replace("script-src 'self' 'unsafe-inline'", `script-src 'self' 'unsafe-inline' ${CLOVER_SCRIPT_ORIGINS}`)
+      .replace("connect-src 'self'", `connect-src 'self' ${CLOVER_CONNECT_ORIGINS}`)
+      // No frame-src in the baseline, so it falls back to default-src 'self' and
+      // Clover's iframes are blocked. It has to be added, not rewritten.
+      .replace("object-src 'none'", `frame-src ${CLOVER_FRAME_ORIGINS}; object-src 'none'`),
+  };
+}
+
 export function securityHeadersFor(pathname: string): Record<string, string> {
+  if (isPaymentPath(pathname)) return paymentHeaders();
   if (!isTokenBearingPath(pathname)) return BASE_SECURITY_HEADERS;
   return {
     ...BASE_SECURITY_HEADERS,

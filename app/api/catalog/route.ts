@@ -1,5 +1,11 @@
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
-import { cloverCheckoutConfigured } from "@/lib/clover";
+import {
+  cloverApiBase,
+  cloverCheckoutConfigured,
+  cloverIframeEnabled,
+  cloverMerchantId,
+  cloverPublicToken,
+} from "@/lib/clover";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
 import { loadActiveClosures } from "@/lib/closures";
 
@@ -59,6 +65,20 @@ export async function GET() {
       // would look available with no credentials behind it.
       integrations: {
         clover: await cloverCheckoutConfigured(),
+        // The browser half of the Clover key, plus whether inline card entry is
+        // the active path. Sent to every visitor by design: the token identifies
+        // the merchant to Clover's SDK and cannot move money on its own.
+        // `enabled` is false until both halves are configured *and* the flag is
+        // set, so a half-configured account keeps the hosted checkout.
+        cloverIframe: (await cloverIframeEnabled())
+          ? {
+              enabled: true,
+              publicToken: await cloverPublicToken(),
+              merchantId: await cloverMerchantId(),
+              // Selects which of Clover's two SDK hosts the browser loads.
+              sandbox: (await cloverApiBase()).includes("sandbox"),
+            }
+          : { enabled: false },
         email: (await readIntegrationSecret("EMAIL_API_KEY")) !== null,
       },
     },

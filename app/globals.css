@@ -971,3 +971,20 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .till-line { align-items: flex-start; flex-direction: column; }
   .till-quantity { width: 100%; justify-content: flex-end; }
 }
+
+/* Clover's card fields are iframes we only provide a box for — the height is
+   fixed here because an empty container collapses before Clover paints into it,
+   which makes the form jump as each field loads. */
+.clover-card-fields { display: flex; flex-direction: column; gap: 0.75rem; }
+.clover-field {
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.18));
+  border-radius: 8px;
+  background: var(--surface, #fff);
+}
+.clover-field > iframe { width: 100%; border: 0; }
+.clover-field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+@media (max-width: 30rem) { .clover-field-row { grid-template-columns: 1fr; } }

@@ -239,3 +239,32 @@ test("does not redirect the apex host that Apple Pay is registered under", async
     null,
   );
 });
+
+
+// --- the CSP widening that inline card entry needs ---------------------------
+
+test("lets Clover's card form run on the storefront, and nowhere else", () => {
+  // The inline form needs three directives opened: the SDK is a script from
+  // Clover, the card fields are iframes from Clover, and tokenising is a call to
+  // Clover. `frame-src` is the one that is easy to miss — the baseline has no
+  // such directive, so it falls back to `default-src 'self'` and the fields are
+  // blocked with the script tag loading perfectly well.
+  const checkout = securityHeadersFor("/")["Content-Security-Policy"];
+  assert.match(checkout, /script-src [^;]*https:\/\/checkout\.clover\.com/);
+  assert.match(checkout, /frame-src [^;]*https:\/\/\*\.clover\.com/);
+  assert.match(checkout, /connect-src [^;]*https:\/\/scl\.clover\.com/);
+
+  // Everywhere else keeps the closed policy, so an XSS on any other route still
+  // cannot reach the payment origins.
+  const elsewhere = securityHeadersFor("/track")["Content-Security-Policy"];
+  assert.doesNotMatch(elsewhere, /clover\.com/);
+  assert.match(elsewhere, /connect-src 'self';/);
+});
+
+test("keeps the rest of the payment-page policy locked down", () => {
+  const checkout = securityHeadersFor("/")["Content-Security-Policy"];
+  assert.match(checkout, /object-src 'none'/);
+  assert.match(checkout, /frame-ancestors 'none'/);
+  assert.match(checkout, /base-uri 'self'/);
+  assert.match(checkout, /form-action 'self'/);
+});

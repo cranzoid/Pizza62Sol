@@ -25,6 +25,10 @@ const {
   cloverApiBase,
   cloverCheckoutConfigured,
   CloverNotConfiguredError,
+  createCloverCharge,
+  CloverDeclinedError,
+  cloverEcommerceBase,
+  cloverIframeConfigured,
 } = await import("@/lib/clover");
 const { clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
 
@@ -75,6 +79,7 @@ afterEach(() => {
   delete process.env.CLOVER_MERCHANT_ID;
   delete process.env.CLOVER_API_TOKEN;
   delete process.env.CLOVER_ENVIRONMENT;
+  delete process.env.CLOVER_PUBLIC_TOKEN;
   delete process.env.PUBLIC_BASE_URL;
   clearIntegrationSecretCache();
 });
@@ -347,4 +352,102 @@ test("does not let a trailing slash produce a double-slashed return URL", async 
 
   const redirectUrls = calls[0].body.redirectUrls as { success: string };
   assert.ok(redirectUrls.success.startsWith("https://pizza62.example/order/return?"), redirectUrls.success);
+});
+
+
+// --- charging a tokenised card ----------------------------------------------
+
+const CHARGE = {
+  amountCents: 2032,
+  sourceToken: "clv_tok_test",
+  idempotencyKey: "idem-key-1",
+  orderNumber: "P62-1001",
+  customerEmail: "grace@example.test",
+};
+
+const CHARGE_OK = { id: "chg_123", status: "paid", amount: 2032 };
+
+test("charges the Ecommerce host, not the Hosted Checkout host", async () => {
+  // These are different hosts and the mistake is easy: scl.clover.com takes
+  // charges, api.clover.com takes checkout sessions. Getting it wrong 404s in a
+  // way that reads like a bad path rather than a bad host.
+  configure();
+  const { calls } = stubClover(CHARGE_OK);
+  await createCloverCharge(CHARGE);
+  assert.equal(calls[0].url, "https://scl-sandbox.dev.clover.com/v1/charges");
+
+  process.env.CLOVER_ENVIRONMENT = "production";
+  clearIntegrationSecretCache();
+  assert.equal(await cloverEcommerceBase(), "https://scl.clover.com");
+});
+
+test("charges the server-priced amount in Canadian dollars", async () => {
+  configure();
+  const { calls } = stubClover(CHARGE_OK);
+  await createCloverCharge(CHARGE);
+  assert.equal(calls[0].body.amount, 2032);
+  assert.equal(calls[0].body.currency, "cad");
+  assert.equal(calls[0].body.source, "clv_tok_test");
+});
+
+test("sends the idempotency key Clover requires", async () => {
+  // Without it a double-tap or a retried request charges the card twice. Clover
+  // rejects the call outright if the header is missing, but the value matters as
+  // much as its presence: it has to be the order's own durable key, so a browser
+  // retry resolves to the same charge rather than a second one.
+  configure();
+  const { calls } = stubClover(CHARGE_OK);
+  await createCloverCharge(CHARGE);
+  assert.equal(calls[0].headers.get("idempotency-key"), "idem-key-1");
+});
+
+test("carries the order number so a refund can be reconciled by hand", async () => {
+  configure();
+  const { calls } = stubClover(CHARGE_OK);
+  await createCloverCharge(CHARGE);
+  assert.deepEqual(calls[0].body.metadata, { orderNumber: "P62-1001" });
+});
+
+test("treats a 402 as the customer's card being refused", async () => {
+  configure();
+  stubClover({ error: { message: "Your card was declined." } }, 402);
+  await assert.rejects(() => createCloverCharge(CHARGE), CloverDeclinedError);
+});
+
+test("does not blame the customer's card for our own failures", async () => {
+  // A 401 is a bad token on our side. Reporting that as a decline sends the
+  // customer away to find another card for a problem no card can fix.
+  configure();
+  stubClover({ message: "Unauthorized" }, 401);
+  await assert.rejects(
+    () => createCloverCharge(CHARGE),
+    (error: Error) => error.name !== "CloverDeclinedError" && /charge failed/.test(error.message),
+  );
+});
+
+test("refuses a 2xx that did not actually take the money", async () => {
+  // A charge returned in any other state has not been captured, and treating it
+  // as paid gives the food away.
+  configure();
+  stubClover({ id: "chg_1", status: "pending", amount: 2032 });
+  await assert.rejects(() => createCloverCharge(CHARGE), CloverDeclinedError);
+});
+
+test("refuses to charge a non-positive amount or an empty token", async () => {
+  configure();
+  stubClover(CHARGE_OK);
+  await assert.rejects(() => createCloverCharge({ ...CHARGE, amountCents: 0 }), /non-positive/);
+  await assert.rejects(() => createCloverCharge({ ...CHARGE, sourceToken: "  " }), /without a card token/);
+});
+
+test("reports the inline form unconfigured until both halves of the key are set", async () => {
+  // Half-configured is worse than off: the customer types a card into a form
+  // that cannot charge it.
+  configure();
+  assert.equal(await cloverIframeConfigured(), false, "no public token yet");
+  process.env.CLOVER_PUBLIC_TOKEN = "pub_token";
+  clearIntegrationSecretCache();
+  assert.equal(await cloverIframeConfigured(), true);
+  delete process.env.CLOVER_PUBLIC_TOKEN;
+  clearIntegrationSecretCache();
 });

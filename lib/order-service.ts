@@ -23,7 +23,14 @@ import {
 } from "@/lib/domain";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
 import { closureFor, closureMessage, loadActiveClosures } from "@/lib/closures";
-import { createCloverCheckout, cloverCheckoutConfigured } from "@/lib/clover";
+import {
+  createCloverCheckout,
+  createCloverCharge,
+  cloverCheckoutConfigured,
+  cloverIframeEnabled,
+  CloverDeclinedError,
+} from "@/lib/clover";
+import { applyPaymentApproved } from "@/lib/payment-completion";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
@@ -47,6 +54,12 @@ export type OrderRequest = {
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
   paymentMethod?: "pay_at_store" | "online";
+  /**
+   * A single-use card token minted by Clover's iframe in the customer's browser.
+   * Present only for inline card entry; its absence selects the hosted-checkout
+   * path. It is a token, never card data — the card itself never reaches us.
+   */
+  paymentToken?: string;
   tip?:
     | { type: "none" }
     | { type: "percentage"; valueBps: number }
@@ -1091,6 +1104,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       throw new OrderValidationError(`${fulfilment} ordering is currently unavailable.`, 409);
     }
     const paymentMethod = body.paymentMethod;
+    // Trimmed to a bounded string: it is forwarded to Clover, so an oversized or
+    // whitespace-only value should be rejected here rather than becoming a
+    // confusing failure at the charge call.
+    const paymentToken = typeof body.paymentToken === "string" ? body.paymentToken.trim() : "";
+    if (paymentToken.length > 500) {
+      throw new OrderValidationError("That payment could not be read.", 400, "INVALID_PAYMENT_TOKEN");
+    }
     if (paymentMethod !== "pay_at_store" && paymentMethod !== "online") {
       throw new OrderValidationError("Choose an available payment method.");
     }
@@ -1430,6 +1450,93 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       );
     }
     await getD1().batch(operationsBatch);
+    if (paymentMethod === "online" && paymentToken && (await cloverIframeEnabled())) {
+      // The inline path. Unlike the hosted one, the outcome is known inside this
+      // request: the order is paid before the customer is answered, so there is
+      // no `awaiting_payment` window for the reaper to cancel through and no
+      // dependence on a webhook arriving for anyone to be told what happened.
+      try {
+        const charge = await createCloverCharge({
+          amountCents: price.totalCents,
+          sourceToken: paymentToken,
+          // The browser's durable checkout key, not a fresh one. It survives a
+          // refresh, a double tap and a retry after an ambiguous failure, so a
+          // second attempt presents the same key to Clover and resolves to the
+          // original charge instead of taking the money twice. That is the whole
+          // reason this is threaded through rather than generated here.
+          idempotencyKey: idempotencyKey,
+          orderNumber,
+          customerEmail: customer.email,
+        });
+        await applyPaymentApproved({
+          orderId,
+          note: `Clover charge approved (${charge.chargeId})`,
+          providerReference: charge.chargeId,
+        });
+        return {
+          duplicate: false,
+          orderId,
+          orderNumber,
+          trackingToken,
+          feedbackToken,
+          status: "received",
+          paymentStatus: "paid",
+          estimateAt: schedule.estimatedFor,
+          price,
+        };
+      } catch (error) {
+        const declined = error instanceof CloverDeclinedError;
+        await getD1().batch([
+          getD1()
+            .prepare(
+              "UPDATE payments SET status = ?, failure_reason = ?, updated_at = ? WHERE order_id = ? AND provider = 'clover'",
+            )
+            .bind(
+              declined ? "declined" : "failed",
+              error instanceof Error ? error.message.slice(0, 500) : "Clover charge failed",
+              Date.now(),
+              orderId,
+            ),
+          getD1()
+            .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
+            .bind(Date.now(), orderId),
+          getD1()
+            .prepare(
+              `INSERT INTO order_events
+               (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
+               VALUES (?, ?, 'awaiting_payment', 'cancelled', 'clover', NULL, ?, ?)`,
+            )
+            .bind(
+              crypto.randomUUID(),
+              orderId,
+              declined ? "Clover declined the card" : "Clover charge failed",
+              Date.now(),
+            ),
+          // Nobody paid, so the confirmation and the kitchen alert parked on this
+          // order must never be sent.
+          getD1()
+            .prepare(
+              `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
+               WHERE status IN ('waiting_payment', 'waiting_completion')
+                 AND payload_json::jsonb->>'orderId' = ?`,
+            )
+            .bind(Date.now(), orderId),
+          // Releases the key so the customer's next attempt is a fresh order
+          // rather than resolving to this cancelled one. Safe against
+          // double-charging because the *Clover* key is the browser's, which does
+          // not change across the retry — see the note on it above.
+          getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ?").bind(keyHash),
+        ]);
+        throw new OrderValidationError(
+          declined
+            ? "That card was declined. No payment was taken — try another card, or pay at the store."
+            : "The payment could not be completed. No payment was taken; please try again.",
+          declined ? 402 : 502,
+          declined ? "PAYMENT_DECLINED" : "PAYMENT_PROVIDER_ERROR",
+        );
+      }
+    }
+
     if (paymentMethod === "online") {
       try {
         const checkout = await createCloverCheckout({

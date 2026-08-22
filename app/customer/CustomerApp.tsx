@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
+import { CloverCardForm, type CloverCardFormHandle } from "@/app/customer/CloverCardForm";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
   BAKE_SAUCE_OPTIONS,
@@ -69,7 +70,16 @@ type Catalog = {
   toppings: Topping[];
   settings: Record<string, { value: Record<string, unknown>; version: number }>;
   closures: StoreClosure[];
-  integrations: { clover: boolean; email: boolean };
+  integrations: {
+    clover: boolean;
+    email: boolean;
+    /**
+     * Present and enabled once Clover is configured for inline card entry. The
+     * public token is safe to ship to the browser — it identifies the merchant to
+     * Clover's SDK and cannot move money on its own.
+     */
+    cloverIframe?: { enabled: boolean; publicToken?: string; merchantId?: string; sandbox?: boolean };
+  };
 };
 type ModifierSelection = {
   id: string;
@@ -1102,6 +1112,14 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
   const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">(store.open ? "asap" : "scheduled"); const [scheduledFor, setScheduledFor] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
+  // Inline card entry, when Clover is configured for it and the SDK actually
+  // loads. `cardFormBlocked` is the fallback signal: blockers stop payment
+  // iframes often enough that the hosted page has to stay reachable, so a
+  // failure here silently returns the customer to the redirect they had before.
+  const [cardForm, setCardForm] = useState<CloverCardFormHandle | null>(null);
+  const [cardFormBlocked, setCardFormBlocked] = useState(false);
+  const cloverIframe = integrations.cloverIframe;
+  const inlineCardAvailable = Boolean(cloverIframe?.enabled && cloverIframe.publicToken) && !cardFormBlocked;
   // C-07: one durable idempotency key per checkout attempt. It survives refreshes,
   // back-navigation, and double-clicks (persisted in localStorage) and is only
   // cleared after the order is accepted, so retries never create a second order.
@@ -1157,8 +1175,21 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
   const submit = async () => {
     setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod });
     try {
+      // The card is turned into a single-use token before the order is sent, so
+      // a card the customer mistyped fails here — with the form still in front of
+      // them and nothing created — rather than after an order row exists.
+      let paymentToken: string | undefined;
+      if (paymentMethod === "online" && cardForm) {
+        try {
+          paymentToken = await cardForm.tokenize();
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : "Please check the card details.");
+          setSubmitting(false);
+          return;
+        }
+      }
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, paymentToken, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
       }) });
       const result = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
@@ -1202,7 +1233,16 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         </label> : null}
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
-      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? "Secure hosted checkout by Clover" : "Add Clover credentials to enable"}</small></span></label></fieldset></div>
+      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
+      {paymentMethod === "online" && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
+        ? <CloverCardForm
+            publicToken={cloverIframe.publicToken}
+            merchantId={cloverIframe.merchantId}
+            sandbox={Boolean(cloverIframe.sandbox)}
+            onReady={setCardForm}
+            onUnavailable={() => { setCardFormBlocked(true); setCardForm(null); }}
+          />
+        : null}</div>
       <aside className="checkout-summary">
         <h3>Order summary</h3>
         {cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b></div>)}

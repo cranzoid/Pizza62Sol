@@ -22,8 +22,7 @@
  */
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { cloverMerchantId, cloverWebhookSecret, verifyCloverSignature, type CloverWebhookEvent } from "@/lib/clover";
-import { anyProviderConfigured } from "@/lib/notifications/config";
-import { dispatchSoon } from "@/lib/notifications/dispatcher";
+import { applyPaymentApproved } from "@/lib/payment-completion";
 
 export async function POST(request: Request) {
   // Through `cloverWebhookSecret()`, not `env` directly: the owner sets this on
@@ -89,45 +88,14 @@ export async function POST(request: Request) {
     // event cannot re-open an order the kitchen has since moved on, or resurrect
     // one the reaper cancelled.
     if (record.status !== "awaiting_payment") return Response.json({ received: true });
-    const releasedStatus = (await anyProviderConfigured()) ? "pending" : "pending_provider_setup";
-    await getD1().batch([
-      getD1()
-        .prepare(
-          "UPDATE payments SET status = 'captured', failure_reason = NULL, updated_at = ? WHERE order_id = ? AND provider = 'clover'",
-        )
-        .bind(now, orderId),
-      getD1()
-        .prepare(
-          "UPDATE orders SET status = 'received', payment_status = 'paid', updated_at = ? WHERE id = ? AND status = 'awaiting_payment'",
-        )
-        .bind(now, orderId),
-      getD1()
-        .prepare(
-          `INSERT INTO order_events
-           (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
-           VALUES (?, ?, 'awaiting_payment', 'received', 'clover', NULL, ?, ?)`,
-        )
-        .bind(crypto.randomUUID(), orderId, `Clover payment approved (${event.id ?? "no payment id"})`, now),
-      // Releases everything parked on this payment — the customer's
-      // confirmation and the restaurant's new-order alert both. They were parked
-      // in `waiting_payment` at order creation precisely so an unpaid order
-      // never confirms itself or rings the kitchen.
-      //
-      // Scoped by status rather than by kind, so a kind added later is released
-      // by this too instead of silently staying parked forever.
-      getD1()
-        .prepare(
-          `UPDATE notification_outbox SET status = ?, updated_at = ?
-           WHERE status = 'waiting_payment'
-             AND payload_json::jsonb->>'orderId' = ?`,
-        )
-        .bind(releasedStatus, now, orderId),
-    ]);
-    // The order is live now, so tell the customer and the kitchen immediately
-    // rather than waiting for the cron sweeper. Not awaited: Clover is waiting on
-    // this response, and a slow provider must not cause a webhook timeout and a
-    // redelivery of an event already applied.
-    dispatchSoon();
+    // The state change itself lives in lib/payment-completion.ts, shared with the
+    // inline-card path. Two copies of "this order is paid" would eventually
+    // disagree about whether the kitchen gets told.
+    await applyPaymentApproved({
+      orderId,
+      note: `Clover payment approved (${event.id ?? "no payment id"})`,
+      now,
+    });
     return Response.json({ received: true });
   }
 

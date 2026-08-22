@@ -48,6 +48,11 @@ export const INTEGRATION_SECRET_KEYS = [
   "CLOVER_PUBLIC_TOKEN",
   "CLOVER_WEBHOOK_SECRET",
   "CLOVER_ENVIRONMENT",
+  // Routes checkout through the inline card form instead of Clover's hosted
+  // page. A stored flag rather than a build-time constant so it can be turned
+  // off from the Integrations tab in the middle of a bad dinner service,
+  // without a deploy.
+  "CLOVER_IFRAME_ENABLED",
   "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
   "TWILIO_FROM_NUMBER",
@@ -82,6 +87,7 @@ const READABLE_IN_FULL = new Set<string>([
   "CLOVER_ENVIRONMENT",
   "CLOVER_MERCHANT_ID",
   "CLOVER_PUBLIC_TOKEN",
+  "CLOVER_IFRAME_ENABLED",
   "TWILIO_FROM_NUMBER",
   "RESTAURANT_ALERT_PHONE",
   "EMAIL_PROVIDER",
