@@ -79,10 +79,10 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
     <aside className="staff-sidebar">
       <div className="staff-brand"><BrandLogo name="Pizza 62" chip /><small>Time clock</small></div>
       <nav className="staff-nav" aria-label="Time clock sections">
-        <button className={tab === "clock" ? "active" : ""} onClick={() => setTab("clock")}><span>Clock</span></button>
-        <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}><span>My schedule</span></button>
-        <button className={tab === "timesheet" ? "active" : ""} onClick={() => setTab("timesheet")}><span>My hours</span></button>
-        <button className={tab === "requests" ? "active" : ""} onClick={() => setTab("requests")}><span>Requests</span></button>
+        <button aria-pressed={tab === "clock"} className={tab === "clock" ? "active" : ""} onClick={() => setTab("clock")}><span>Clock</span></button>
+        <button aria-pressed={tab === "schedule"} className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}><span>My schedule</span></button>
+        <button aria-pressed={tab === "timesheet"} className={tab === "timesheet" ? "active" : ""} onClick={() => setTab("timesheet")}><span>My hours</span></button>
+        <button aria-pressed={tab === "requests"} className={tab === "requests" ? "active" : ""} onClick={() => setTab("requests")}><span>Requests</span></button>
         <a href="/kiosk"><span>Kiosk mode</span></a>
         <a href="/kitchen"><span>Kitchen</span></a>
       </nav>
@@ -92,7 +92,7 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
       <div className="staff-topbar">
         <div><h1>{tab === "clock" ? "Your shift" : tab === "schedule" ? "Your schedule" : tab === "timesheet" ? "Your hours" : "Your requests"}</h1>
           <p>Exact timestamps · Unpaid breaks subtracted · No automatic rounding</p></div>
-        <span className="live-chip"><i /> {data ? data.state.replaceAll("_", " ") : "Loading"}</span>
+        <div className="sound-control"><span className="live-chip"><i /> {data ? data.state.replaceAll("_", " ") : "Loading"}</span><button className="mobile-signout" onClick={logout}>Sign out</button></div>
       </div>
       {error ? <div className="form-error" role="alert">{error}</div> : null}
       {message ? <p className="admin-message" role="status">{message}</p> : null}
@@ -158,7 +158,7 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
               <button className="text-button" disabled={periodOffset === 0} onClick={() => setPeriodOffset((value) => Math.min(0, value + 1))}>Later →</button>
             </div>
           </div>
-          <table className="viz-table">
+          <div className="table-scroll" role="region" aria-label="Timesheet days" tabIndex={0}><table className="viz-table">
             <thead><tr><th scope="col">Day</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Break</th><th scope="col">Paid</th></tr></thead>
             <tbody>
               {data.timesheet.days.map((day) => <tr key={day.date}>
@@ -170,7 +170,7 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
               </tr>)}
               {!data.timesheet.days.length ? <tr><td colSpan={5} className="staff-empty">No hours recorded in this period.</td></tr> : null}
             </tbody>
-          </table>
+          </table></div>
           {data.approvals.length ? <p className="editor-hint">Approved periods: {data.approvals.map((row) => new Date(Number(row.period_start)).toLocaleDateString("en-CA")).join(", ")}</p> : null}
         </section> : null}
 
@@ -357,7 +357,7 @@ export function TimeClockKiosk() {
             : <p className="kiosk-hint">Tap your name to start.</p>}
       </> : <>
         <p className="kiosk-selected">{selected.name}</p>
-        <div className="kiosk-pin" aria-label="PIN entry">{[0, 1, 2, 3, 4, 5, 6, 7].map((slot) => <i key={slot} className={slot < pin.length ? "filled" : ""} aria-hidden="true" />)}</div>
+        <div className="kiosk-pin" role="status" aria-label={`${pin.length} PIN digit${pin.length === 1 ? "" : "s"} entered`}>{[0, 1, 2, 3, 4, 5, 6, 7].map((slot) => <i key={slot} className={slot < pin.length ? "filled" : ""} aria-hidden="true" />)}</div>
         <div className="kiosk-keypad">
           {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((key) => <button key={key} onClick={() => setPin((value) => (value + key).slice(0, 8))}>{key}</button>)}
           <button onClick={() => setPin("")}>Clear</button>

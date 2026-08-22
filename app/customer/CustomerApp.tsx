@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
+import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
   BAKE_SAUCE_OPTIONS,
   CHEESE_OPTIONS,
@@ -402,6 +403,8 @@ export default function CustomerApp() {
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
   const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed;
+  const deliveryDialogRef = useDialogBehavior<HTMLFormElement>(deliveryGate, () => setDeliveryGate(false));
+  const closedDialogRef = useDialogBehavior<HTMLDivElement>(showClosedNotice, () => setClosedNoticeDismissed(true));
   const opensIn = store.changesAt ? countdown(store.changesAt - now) : "";
   const opensAtLabel = store.changesAt
     ? new Date(store.changesAt).toLocaleString("en-CA", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone })
@@ -410,6 +413,7 @@ export default function CustomerApp() {
   const eligibleProducts = (catalog?.products ?? []).filter((product) =>
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
   );
+  const cartItemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   // H-24: the cart's totals come from the server, priced by the same code that
   // will charge the card. The browser used to run its own copy of the discount
@@ -482,17 +486,17 @@ export default function CustomerApp() {
             <div><p className="eyebrow dark"><span /> The menu</p><h2>What are you<br /><em>craving?</em></h2></div>
             <div className="menu-context">
               <span>Ordering for</span>
-              <div className="segmented-control">
-                <button className={fulfilment === "pickup" ? "active" : ""} onClick={() => chooseFulfilment("pickup")}>Pickup</button>
-                <button className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>Delivery</button>
+              <div className="segmented-control" role="group" aria-label="Ordering method">
+                <button type="button" aria-pressed={fulfilment === "pickup"} className={fulfilment === "pickup" ? "active" : ""} onClick={() => chooseFulfilment("pickup")}>Pickup</button>
+                <button type="button" aria-pressed={fulfilment === "delivery"} className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>Delivery</button>
               </div>
             </div>
           </div>
           {loadingError ? <div className="error-banner" role="alert">{loadingError}</div> : null}
           {!catalog && !loadingError ? <div className="menu-loading" role="status"><span />Loading the live menu…</div> : null}
-          <div className="category-tabs" aria-label="Menu categories">
+          <nav className="category-tabs" aria-label="Menu categories">
             {categories.map((category) => <a key={category.id} href={`#category-${category.id}`}>{category.name}</a>)}
-          </div>
+          </nav>
           {categories.map((category, categoryIndex) => {
             const products = eligibleProducts.filter((product) => product.category_id === category.id);
             if (!products.length) return null;
@@ -575,9 +579,13 @@ export default function CustomerApp() {
           <Link href="/track">Track order</Link>
         </nav>
         <div className="header-actions">
+          <nav className="header-shortcuts" aria-label="Mobile navigation">
+            <a href="#menu">Menu</a>
+            <Link href="/track">Track</Link>
+          </nav>
           <a className="phone-link" href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a>
-          <button className="cart-pill" onClick={() => setCartOpen(true)} aria-label={`Open cart with ${cart.length} items`}>
-            <span>Bag</span><b>{cart.reduce((sum, line) => sum + line.quantity, 0)}</b>
+          <button className="cart-pill" onClick={() => setCartOpen(true)} aria-label={`Open cart with ${cartItemCount} item${cartItemCount === 1 ? "" : "s"}`}>
+            <span>Bag</span><b>{cartItemCount}</b>
           </button>
         </div>
       </header>
@@ -589,11 +597,11 @@ export default function CustomerApp() {
             <p className="eyebrow"><span /> {String(content.heroEyebrow ?? "Hamilton-made since the first slice")}</p>
             <h1>{String(content.heroHeadline ?? "Big flavour.")}<br /><em>{String(content.heroAccent ?? "Zero fuss.")}</em></h1>
             <p className="hero-lede">{String(content.heroDescription ?? "Hot pizza, honest prices, and the kind of local service that remembers your order.")}</p>
-            <div className="hero-method" aria-label="Choose how to get your order">
-              <button className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>
+            <div className="hero-method" role="group" aria-label="Choose how to get your order">
+              <button aria-pressed={fulfilment === "delivery"} className={fulfilment === "delivery" ? "active" : ""} onClick={() => chooseFulfilment("delivery")}>
                 <span className="method-icon">D</span><span><b>Delivery</b><small>About {String(ordering.deliveryEstimateMinutes ?? 30)} min</small></span><ArrowIcon />
               </button>
-              <button className={fulfilment === "pickup" ? "active" : ""} onClick={() => chooseFulfilment("pickup")}>
+              <button aria-pressed={fulfilment === "pickup"} className={fulfilment === "pickup" ? "active" : ""} onClick={() => chooseFulfilment("pickup")}>
                 <span className="method-icon">P</span><span><b>Pickup</b><small>About {String(ordering.pickupEstimateMinutes ?? 15)} min</small></span><ArrowIcon />
               </button>
             </div>
@@ -610,7 +618,7 @@ export default function CustomerApp() {
               : `Closed · opens ${opensAtLabel}${opensIn ? ` (in ${opensIn})` : ""}`
             }</div>
           </div>
-          <div className={`hero-art ${heroImageUrl ? "hero-art--photo" : ""}`} style={heroImageUrl ? { backgroundImage: `url(${heroImageUrl})` } : undefined} aria-label={heroImageUrl ? `${businessName} food photograph` : "A playful illustration of a fresh pizza"}>
+          <div className={`hero-art ${heroImageUrl ? "hero-art--photo" : ""}`} role="img" style={heroImageUrl ? { backgroundImage: `url(${heroImageUrl})` } : undefined} aria-label={heroImageUrl ? `${businessName} food photograph` : "A playful illustration of a fresh pizza"}>
             {heroImageUrl ? null : <div className="pizza-scene">
               <div className="pizza-shadow" />
               <div className="pizza-disc">
@@ -641,22 +649,22 @@ export default function CustomerApp() {
 
       {deliveryGate ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeliveryGate(false)}>
-          <div className="delivery-gate" role="dialog" aria-modal="true" aria-labelledby="delivery-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setDeliveryGate(false)} aria-label="Close">×</button>
+          <form ref={deliveryDialogRef} className="delivery-gate" role="dialog" aria-modal="true" aria-labelledby="delivery-title" tabIndex={-1} onSubmit={(event) => { event.preventDefault(); screenPostalCode(); }} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => setDeliveryGate(false)} aria-label="Close">×</button>
             <div className="gate-number">01</div><p className="eyebrow dark"><span /> Quick delivery check</p>
             <h2 id="delivery-title">Are we in your<br /><em>neighbourhood?</em></h2>
             <p>Enter your postal code for an initial Hamilton-area screen. Your full address is collected at checkout; no third-party address provider is used.</p>
             <label>Postal code<input autoFocus value={postalCode} onChange={(event) => setPostalCode(event.target.value)} placeholder="L8K 4S2" autoComplete="postal-code" /></label>
             {gateMessage ? <div className={gateMessage.startsWith("This") ? "gate-success" : "gate-error"} role="status">{gateMessage}</div> : null}
-            <button className="primary-button" onClick={screenPostalCode}>Check my area <ArrowIcon /></button>
-            <button className="text-button" onClick={() => chooseFulfilment("pickup")}>I&apos;ll pick it up instead</button>
-          </div>
+            <button type="submit" className="primary-button">Check my area <ArrowIcon /></button>
+            <button type="button" className="text-button" onClick={() => chooseFulfilment("pickup")}>I&apos;ll pick it up instead</button>
+          </form>
         </div>
       ) : null}
 
       {showClosedNotice ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setClosedNoticeDismissed(true)}>
-          <div className="delivery-gate closed-gate" role="dialog" aria-modal="true" aria-labelledby="closed-title" onMouseDown={(event) => event.stopPropagation()}>
+          <div ref={closedDialogRef} className="delivery-gate closed-gate" role="dialog" aria-modal="true" aria-labelledby="closed-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setClosedNoticeDismissed(true)} aria-label="Close">×</button>
             <div className="closed-face" aria-hidden="true"><i /><b /></div>
             <p className="eyebrow dark"><span /> Kitchen closed</p>
@@ -786,6 +794,7 @@ function PizzaCustomizer({
   onClose: () => void;
   onAdd: (line: CartLine) => void;
 }) {
+  const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const configuration = product.configuration;
   const recipeToppingIds = Array.isArray(configuration.recipeToppingIds)
     ? configuration.recipeToppingIds.map(String)
@@ -901,7 +910,7 @@ function PizzaCustomizer({
   if (legacyBase.length) modifiers.push({ id: "pizza-base", label: "Crust, bake & sauce", values: legacyBase.map((value) => ({ value, label: value })) });
   return (
     <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
-      <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="customizer-title" onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="customizer-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Customize your order</p><h2 id="customizer-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
           {sizePanel}{cheesePanel}
@@ -924,6 +933,7 @@ const LEGACY_BASE_FALLBACK = ["Thin Crust", "Thick Crust", "Lightly Done", "Well
 // ordered on its own — cheese and halal, crust, bake & sauce, then toppings — and
 // group them under a heading per pizza so a two-pizza deal reads as two pizzas.
 function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps, onClose, onAdd }: { product: Product; toppings: Topping[]; halalNotice: string; halfToppingUnitsBps: number; onClose: () => void; onAdd: (line: CartLine) => void }) {
+  const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const sections = useMemo(
     () => orderModifierSections(
       (Array.isArray(product.configuration.sections) ? product.configuration.sections : []) as ModifierSection[],
@@ -1012,7 +1022,7 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
   }));
   return (
     <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
-      <section className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
           {halalEnabled ? <fieldset><legend>Halal</legend><div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => setHalal(event.target.checked)} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div></fieldset> : null}
@@ -1062,11 +1072,12 @@ function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps
  * next to a button that removes it, rather than at the payment screen.
  */
 function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; quote: Quote | null; loading: boolean; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
+  const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const totals = quote?.totals ?? EMPTY_TOTALS;
   const lineIssue = (index: number) => quote?.issues.find((issue) => issue.index === index) ?? null;
   const orderIssues = quote?.issues.filter((issue) => issue.index === null) ?? [];
   const blocked = Boolean(quote && !quote.ok);
-  return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside className="cart-drawer" aria-label="Your order" onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2>Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
+  return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside ref={dialogRef} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2 id="cart-title">Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
     <div className="cart-lines">{cart.length ? cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal meat toppings</small> : null}{line.toppings?.map((entry) => <small key={entry.toppingId}>{entry.name}{placementSuffix(entry.placement)}</small>)}{line.modifiers?.map((modifier) => <small key={modifier.id}>{modifier.label}: {modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}</small>)}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; }) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
     <div className="cart-summary">
       <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
@@ -1082,6 +1093,7 @@ function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onChe
 }
 
 function Checkout({ cart, fulfilment, settings, integrations, store, hours, timeZone, now, onClose, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onConfirmed: (result: Record<string, unknown>) => void }) {
+  const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
   const [tip, setTip] = useState(0); const [customTip, setCustomTip] = useState(""); const [tipMode, setTipMode] = useState<"preset" | "custom">("preset");
@@ -1172,7 +1184,7 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
       onConfirmed(result);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "The order was not accepted."); setSubmitting(false); }
   };
-  return <div className="modal-backdrop"><section className="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><p className="eyebrow dark"><span /> Secure checkout</p><h2 id="checkout-title">Finish your <em>{fulfilment}</em> order</h2>
+  return <div className="modal-backdrop"><section ref={dialogRef} className="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title" tabIndex={-1}><button className="modal-close" onClick={onClose} aria-label="Close">×</button><p className="eyebrow dark"><span /> Secure checkout</p><h2 id="checkout-title">Finish your <em>{fulfilment}</em> order</h2>
     {fulfilment === "delivery" && !integrations.clover ? <div className="setup-alert"><strong>Online delivery payment is ready for its Clover credentials</strong><p>The ordering flow and 30-minute estimate are configured. Add the Clover secrets in the hosting environment to accept delivery payment.</p></div> : null}
     <div className="checkout-grid"><div><fieldset><legend>Contact details</legend><label>Full name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /></label><label>Phone<input value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="tel" inputMode="tel" /></label><label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" inputMode="email" /></label></fieldset>
       {fulfilment === "delivery" ? <fieldset><legend>Delivery address</legend><label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} autoComplete="street-address" /></label><label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="address-line2" /></label><label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value)} autoComplete="postal-code" placeholder="L8H 5W7" /></label><label>Delivery instructions<textarea value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} maxLength={500} /></label></fieldset> : null}
@@ -1293,6 +1305,7 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
 }
 
 function Confirmation({ result, onClose }: { result: Record<string, unknown>; onClose: () => void }) {
+  const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   // C-07: a duplicate submission resolves to an order that already exists. Its
   // tracking/feedback tokens are stored only as hashes, so they cannot be re-issued
   // here — the links are omitted rather than rendered with an "undefined" token.
@@ -1305,5 +1318,5 @@ function Confirmation({ result, onClose }: { result: Record<string, unknown>; on
     ? `/feedback?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.feedbackToken))}`
     : null;
   const estimateAt = Number(result.estimateAt);
-  return <div className="modal-backdrop"><section className="confirmation-card" role="dialog" aria-modal="true"><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2>{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}{feedbackUrl ? <Link className="text-button" href={feedbackUrl}>Open secure feedback link</Link> : null}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
+  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}{feedbackUrl ? <Link className="text-button" href={feedbackUrl}>Open secure feedback link</Link> : null}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
 }

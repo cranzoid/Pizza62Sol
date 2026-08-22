@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { formatDuration } from "@/app/staff/TimeClock";
+import { useDialogBehavior } from "@/app/useDialogBehavior";
 
 type TeamRow = {
   id: string; name: string; email: string; role: string; active: number;
@@ -130,7 +131,7 @@ export function ManagerTimeClock() {
       {data.timesheets.map((row) => <details className="product-admin-card" key={row.staffUserId}>
         <summary><span><strong>{row.name}</strong><small>{formatDuration(row.totalPaidMs)} paid · {formatDuration(row.overtimeMs)} overtime · {formatMoney(row.grossPayCents)}</small></span><span>{row.approved ? "Approved" : row.openSession ? "Shift open" : "Ready"}</span></summary>
         <div className="product-editor">
-          <table className="viz-table">
+          <div className="table-scroll" role="region" aria-label={`${row.name} timesheet`} tabIndex={0}><table className="viz-table">
             <thead><tr><th scope="col">Day</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Break</th><th scope="col">Paid</th></tr></thead>
             <tbody>{row.days.map((day) => <tr key={day.date}>
               <th scope="row">{day.date}</th>
@@ -140,7 +141,7 @@ export function ManagerTimeClock() {
               <td>{formatDuration(day.paidMs)}</td>
             </tr>)}
             {!row.days.length ? <tr><td colSpan={5} className="staff-empty">No hours in this period.</td></tr> : null}</tbody>
-          </table>
+          </table></div>
           <ManualPunch staffUserId={row.staffUserId} onAct={act} />
           <button className="staff-button" disabled={row.openSession} onClick={() => void act({ action: "timesheet.approve", staffUserId: row.staffUserId, periodOffset }, `${row.name}'s timesheet approved.`)}>{row.approved ? "Re-approve timesheet" : "Approve timesheet"}</button>
         </div>
@@ -276,6 +277,7 @@ function ScheduleBoard({ data, weekFrom, onWeek, onAct }: { data: ManagerData; w
 }
 
 function ShiftDialog({ shift, team, onClose, onAct }: { shift: ShiftDraft; team: TeamRow[]; onClose: () => void; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
+  const dialogRef = useDialogBehavior<HTMLDivElement>(true, onClose);
   const [staffUserId, setStaffUserId] = useState(shift.staff_user_id ?? "");
   const [startsAt, setStartsAt] = useState(dateTimeInput(shift.starts_at));
   const [endsAt, setEndsAt] = useState(dateTimeInput(shift.ends_at));
@@ -283,7 +285,7 @@ function ShiftDialog({ shift, team, onClose, onAct }: { shift: ShiftDraft; team:
   const [breakMinutes, setBreakMinutes] = useState(String(shift.unpaid_break_minutes ?? 30));
   const [notes, setNotes] = useState(shift.notes ?? "");
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-    <div className="staff-panel shift-dialog" role="dialog" aria-modal="true" aria-labelledby="shift-title" onMouseDown={(event) => event.stopPropagation()}>
+    <div ref={dialogRef} className="staff-panel shift-dialog" role="dialog" aria-modal="true" aria-labelledby="shift-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
       <div className="staff-panel-head"><h2 id="shift-title">{shift.id ? "Change shift" : "Add shift"}</h2><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
       <div className="settings-form">
         <label>Who<select value={staffUserId} onChange={(event) => setStaffUserId(event.target.value)}><option value="">Open shift</option>{team.filter((member) => member.active).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>

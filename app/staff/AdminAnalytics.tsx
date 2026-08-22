@@ -213,6 +213,10 @@ function DailyTrend({ rows }: { rows: Analytics["daily"] }) {
         height={plotHeight}
         fill="transparent"
         onMouseEnter={() => setHover(index)}
+        onPointerDown={() => setHover(index)}
+        onFocus={() => setHover(index)}
+        tabIndex={0}
+        aria-label={`${row.date}: ${formatMoney(row.salesCents)}, ${row.orders} orders`}
       ><title>{`${row.date}: ${formatMoney(row.salesCents)} · ${row.orders} orders`}</title></rect>)}
       {rows.map((row, index) => index === 0 || index === rows.length - 1 || index === Math.floor(rows.length / 2)
         ? <text key={`label-${row.date}`} className="viz-axis" x={points[index].x} y={height - 8} textAnchor={index === 0 ? "start" : index === rows.length - 1 ? "end" : "middle"}>{row.date.slice(5)}</text>
@@ -220,17 +224,16 @@ function DailyTrend({ rows }: { rows: Analytics["daily"] }) {
     </svg>
     <figcaption>{active !== null && rows[active]
       ? <><strong>{rows[active].date}</strong> · {formatMoney(rows[active].salesCents)} from {rows[active].orders} order{rows[active].orders === 1 ? "" : "s"}</>
-      : "Hover a day for its total."}</figcaption>
+      : "Select or focus a day for its total."}</figcaption>
   </figure>;
 }
 
 function Columns({ rows, everyNthLabel = 1, valueLabel }: { rows: Array<{ key: string; label: string; value: number; hint: string }>; everyNthLabel?: number; valueLabel: string }) {
   const max = Math.max(1, ...rows.map((row) => row.value));
-  const peak = rows.reduce((best, row, index) => (row.value > rows[best].value ? index : best), 0);
   if (!rows.some((row) => row.value)) return <div className="staff-empty">Nothing to show yet.</div>;
-  return <div className="viz-columns" role="img" aria-label={`Orders by ${valueLabel}`}>
+  return <div className="viz-columns" role="img" aria-label={`${valueLabel}: ${rows.map((row) => `${row.label} ${row.value}`).join(", ")}`}>
     {rows.map((row, index) => <div className="viz-column" key={row.key} title={row.hint}>
-      <span className="viz-column-value">{index === peak && row.value ? row.value : ""}</span>
+      <span className="viz-column-value">{row.value || ""}</span>
       <i style={{ height: `${Math.max(2, (row.value / max) * 100)}%`, background: SERIES, opacity: row.value ? 1 : .18 }} />
       <span className="viz-column-label">{index % everyNthLabel === 0 ? row.label : ""}</span>
     </div>)}
@@ -268,14 +271,14 @@ function SplitBar({ title, segments }: { title: string; segments: Array<{ key: s
 function RankedTable({ rows }: { rows: Analytics["topProducts"] }) {
   const max = Math.max(1, ...rows.map((row) => row.quantity));
   if (!rows.length) return <div className="staff-empty">No items sold in this period yet.</div>;
-  return <table className="viz-table">
+  return <div className="table-scroll" role="region" aria-label="Top-selling items" tabIndex={0}><table className="viz-table">
     <thead><tr><th scope="col">Item</th><th scope="col">Sold</th><th scope="col">Sales</th></tr></thead>
     <tbody>{rows.map((row) => <tr key={row.name}>
       <th scope="row"><span className="viz-bar-cell"><i style={{ width: `${(row.quantity / max) * 100}%`, background: SERIES }} /></span>{row.name}</th>
       <td>{row.quantity}</td>
       <td>{formatMoney(row.salesCents)}</td>
     </tr>)}</tbody>
-  </table>;
+  </table></div>;
 }
 
 function Ratings({ distribution, total }: { distribution: Analytics["ratings"]["distribution"]; total: number }) {

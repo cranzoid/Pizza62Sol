@@ -625,3 +625,349 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .refund-history { margin-top: 10px; border-top: 1px solid #eef1ee; padding-top: 8px; font-size: 9px; }
 .refund-history > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; }
 .refund-voided { text-decoration: line-through; opacity: .6; }
+
+/* ---------------------------------------------------------------------------
+   UI/UX consistency pass (2026-08-22)
+
+   These rules deliberately reuse the established palette, type families,
+   borders and shadows. They address legibility, responsive navigation, touch
+   targets, safe viewport sizing and reflow without redesigning the brand.
+   ------------------------------------------------------------------------ */
+
+.public-header { position: sticky; top: 0; }
+.menu-section,
+#deals,
+#hours { scroll-margin-top: 84px; }
+.public-header .header-shortcuts { display: none; }
+.category-tabs {
+  position: sticky;
+  top: 84px;
+  z-index: 40;
+  margin-inline: calc(clamp(24px, 6vw, 96px) * -1);
+  padding: 12px clamp(24px, 6vw, 96px);
+  background: color-mix(in srgb, var(--paper) 96%, transparent);
+  border-block: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+.category-tabs a { display: inline-flex; align-items: center; min-height: 44px; }
+.menu-category { scroll-margin-top: 160px; }
+.product-card:focus-within { transform: translateY(-6px); box-shadow: 10px 10px 0 var(--ink); }
+
+.eyebrow { font-size: 11px; }
+.promise-strip strong { font-size: 14px; }
+.promise-strip small { font-size: 12px; line-height: 1.4; }
+.menu-context > span,
+.product-kicker,
+.floating-tag small,
+.deal-price > span { font-size: 10px; }
+.product-content p { font-size: 14px; }
+.product-footer small { font-size: 10px; }
+.product-footer button,
+.deal-price .primary-button { min-height: 44px; font-size: 11px; }
+.hours-row { font-size: 14px; }
+.hours-card > small { font-size: 11px; }
+.public-footer > div > b { font-size: 11px; }
+.public-footer > div > a { font-size: 13px; min-height: 28px; }
+.public-footer > small { font-size: 11px; }
+
+.modal-close { width: 44px; height: 44px; }
+.customizer { height: 100dvh; }
+.customizer legend { line-height: 1.2; }
+.size-options b,
+.choice-list b,
+.topping-grid button,
+.recipe-item { font-size: 12px; }
+.size-options small,
+.choice-list small,
+.choice-list em,
+.topping-grid small { font-size: 10px; line-height: 1.35; }
+.placement-switch button { min-height: 38px; font-size: 10px; }
+.allowance-meter { font-size: 12px; gap: 12px; }
+.editor-hint { font-size: 11px; }
+.delivery-gate label,
+.checkout-modal label,
+.instructions-label { font-size: 12px; }
+.checkout-modal input,
+.checkout-modal textarea,
+.checkout-modal select,
+.instructions-label textarea { font-size: 16px; }
+.checkout-modal select {
+  width: 100%;
+  min-height: 50px;
+  border: 1px solid var(--line);
+  background: white;
+  padding: 14px 16px;
+  color: var(--ink);
+  text-transform: none;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.cart-line p,
+.cart-line small { font-size: 11px; line-height: 1.45; }
+.cart-line button { min-height: 38px; font-size: 11px; }
+.cart-summary > div { font-size: 13px; }
+.cart-total small,
+.secure-note { font-size: 11px; }
+.checkout-summary > div:not(.tip-grid):not(.form-error),
+.checkout-summary > p,
+.checkout-totals > div { font-size: 12px; }
+.checkout-totals > div small,
+.payment-choice small,
+.checkout-summary > small,
+.checkout-hint,
+.coupon-ok,
+.coupon-bad,
+.cart-line-issue,
+.cart-blocker { font-size: 10px; }
+.tip-grid button,
+.coupon-row button { min-height: 40px; font-size: 11px; }
+.terms-accept { font-size: 12px; }
+.terms-accept input { width: 18px; height: 18px; }
+
+.policy-card { font-family: Georgia, serif; font-size: 17px; line-height: 1.7; }
+.policy-card h2 { margin-top: 1.6em; line-height: 1.2; }
+.policy-card a,
+.utility-help a { text-decoration: underline; font-weight: 900; }
+.utility-help { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 24px; }
+.feedback-card--centered { text-align: center; }
+.feedback-thanks { font-family: Georgia, serif; font-size: 38px; }
+.feedback-thanks-copy { color: var(--muted); font-family: Georgia, serif; }
+.feedback-comments { margin-top: 20px; }
+.feedback-alert-note { color: var(--muted); font-size: 11px; line-height: 1.45; text-align: center; }
+.lookup-form label,
+.feedback-card label { font-size: 11px; }
+.lookup-form input,
+.feedback-card textarea { min-height: 48px; font-size: 16px; }
+.lookup-error { grid-column: 1 / -1; }
+.tracking-head { gap: 14px; flex-wrap: wrap; }
+.tracking-head span,
+.tracking-step { font-size: 10px; }
+.tracking-item { gap: 16px; font-size: 13px; }
+
+.mobile-signout { display: none; }
+.staff-nav button,
+.staff-nav a { min-height: 42px; font-size: 12px; }
+.staff-topbar p { font-size: 12px; }
+.live-chip { font-size: 10px; }
+.stat-card span { font-size: 10px; }
+.stat-card small { font-size: 11px; line-height: 1.4; }
+.staff-panel-head button,
+.staff-button,
+.sound-control button { min-height: 40px; font-size: 11px; }
+.ops-order h3 { font-size: 14px; }
+.ops-order p { font-size: 11px; line-height: 1.45; }
+.status-pill { font-size: 9px; }
+.order-actions button { min-height: 40px; font-size: 10px; }
+.setup-item strong { font-size: 12px; }
+.setup-item p { font-size: 11px; line-height: 1.45; }
+.danger-banner { gap: 12px; font-size: 12px; }
+.danger-banner button { min-height: 40px; font-size: 10px; }
+.settings-form label,
+.employee-form label,
+.admin-product-row label,
+.category-admin-row label,
+.product-editor label,
+.variation-row label { font-size: 10px; line-height: 1.35; }
+.settings-form input,
+.settings-form textarea,
+.settings-form select,
+.employee-form input,
+.employee-form select,
+.timeoff-form input,
+.timeoff-form textarea,
+.hours-admin input,
+.category-admin-row input,
+.admin-create-row input,
+.admin-create-row select,
+.product-editor input,
+.product-editor select,
+.product-editor textarea,
+.variation-row input,
+.integration-field input,
+.integration-field select { min-height: 42px; font-size: 14px; }
+.admin-check { min-height: 42px; font-size: 11px !important; }
+.admin-message,
+.staff-empty { font-size: 12px; line-height: 1.45; }
+.login-card > p,
+.bootstrap-note p { font-size: 12px; }
+.login-card label { font-size: 11px; }
+.login-card input { min-height: 46px; font-size: 16px; }
+.login-shell--checking { grid-template-columns: 1fr; }
+.login-card--checking { text-align: center; font-size: 14px; }
+.login-back-link { display: block; margin-top: 20px; text-align: center; text-decoration: underline; font-size: 12px; font-weight: 800; }
+.clock-caption,
+.clock-event span,
+.clock-actions button { font-size: 11px; }
+.clock-event strong { font-size: 12px; }
+.clock-actions button { min-height: 46px; }
+.kitchen-ticket { gap: 9px; }
+.ticket-line { padding: 11px; }
+.ticket-line-head,
+.ticket-line-head strong { font-size: 13px; }
+.ticket-tag { font-size: 9px; }
+.ticket-toppings span,
+.ticket-modifier,
+.ticket-note,
+.ticket-address,
+.ticket-payment { font-size: 11px; line-height: 1.4; }
+.admin-product-row strong,
+.admin-product-card > summary strong,
+.shift-row strong { font-size: 12px; }
+.admin-product-row small,
+.admin-topping-row small,
+.product-admin-card > summary small,
+.subhead small,
+.section-row em,
+.shift-row small { font-size: 10px; line-height: 1.4; }
+.admin-topping-row strong,
+.hours-admin strong,
+.admin-create-row strong,
+.integration-field-label,
+.closure-quick strong { font-size: 11px; }
+.section-row strong { font-size: 12px; }
+.shift-row,
+.manual-punch,
+.record-filters input,
+.record-filters select,
+.pager { font-size: 11px; }
+.shift-chip { font-size: 10px; }
+.shift-chip small { font-size: 9px; }
+.channel-split-item strong,
+.channel-split-item small { font-size: 10px; }
+.till-button strong,
+.till-line strong { font-size: 12px; }
+.till-button span,
+.till-line small { font-size: 10px; }
+.till-quantity button { width: 40px; height: 40px; }
+.table-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.table-scroll:focus-visible { outline: 3px solid #f0b636; outline-offset: 3px; }
+.table-scroll .viz-table { min-width: 580px; }
+.viz-table { font-size: 11px; }
+.viz-table thead th { font-size: 9px; }
+.viz-figure-block figcaption,
+.viz-funnel-row,
+.viz-split-head,
+.viz-facts div { font-size: 11px; }
+.viz-legend { font-size: 10px; }
+
+@media (hover: none) {
+  .product-card:hover { transform: none; box-shadow: none; }
+}
+
+@media (max-width: 1050px) {
+  .public-header .header-shortcuts { display: flex; align-items: center; gap: 16px; }
+  .header-shortcuts a { font-size: 11px; font-weight: 900; text-transform: uppercase; }
+  .staff-shell { grid-template-columns: 200px 1fr; }
+  .staff-sidebar { padding: 20px 14px; }
+  .staff-nav button span { display: inline; }
+  .staff-sidebar-footer { display: block; }
+  .staff-nav button,
+  .staff-nav a { padding: 11px 10px; text-align: left; }
+  .viz-pair { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .closed-strip {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px 12px;
+    padding: 12px 16px;
+  }
+  .closed-strip button { grid-column: 1 / -1; min-height: 42px; }
+  .public-header { top: 0; }
+  .public-header .header-shortcuts { gap: 12px; }
+  .category-tabs {
+    top: 70px;
+    margin-inline: -18px;
+    padding: 9px 18px;
+  }
+  .menu-category { scroll-margin-top: 138px; }
+  .menu-section,
+  #deals,
+  #hours { scroll-margin-top: 70px; }
+  .hero-copy h1 { font-size: clamp(48px, 16vw, 64px); }
+  .section-heading h2,
+  .deal-copy h2,
+  .hours-section h2 { font-size: clamp(44px, 14vw, 55px); }
+  .hero-art { min-height: min(390px, 105vw); }
+  .modal-backdrop { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
+  .modal-backdrop--right,
+  .drawer-backdrop { padding: 0; }
+  .checkout-modal { max-height: calc(100dvh - 24px); }
+  .customizer-footer { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  .cart-summary { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+  .topping-grid { grid-template-columns: 1fr; }
+  .size-options,
+  .cheese-options { grid-template-columns: 1fr 1fr; }
+  .allowance-meter { align-items: flex-start; flex-direction: column; }
+  .public-footer { gap: 34px 22px; }
+  .utility-header { height: 70px; padding: 10px 16px; }
+  .utility-header .brand-logo--full { width: 112px; height: 42px; }
+  .utility-header > a:last-child { font-size: 10px; text-align: right; }
+  .utility-title h1 { font-size: clamp(40px, 13vw, 48px); }
+  .utility-title p br { display: none; }
+  .tracking-item { align-items: baseline; }
+
+  .staff-sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    width: 100%;
+    overflow: hidden;
+  }
+  .staff-nav { display: flex; flex: 1; min-width: 0; overflow-x: auto; }
+  .staff-nav button span { display: inline; }
+  .staff-nav button,
+  .staff-nav a { min-height: 44px; padding: 10px 12px; text-align: center; }
+  .staff-sidebar-footer { display: none; }
+  .login-card .staff-brand { display: grid; }
+  .staff-topbar { gap: 14px; }
+  .sound-control { flex-wrap: wrap; justify-content: flex-end; }
+  .mobile-signout {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dbe1dc;
+    border-radius: 8px;
+    background: white;
+    padding: 9px 12px;
+    font-size: 10px;
+    font-weight: 900;
+  }
+  .shift-row { grid-template-columns: 1fr auto; }
+  .shift-row > *:nth-child(2),
+  .shift-row > *:nth-child(3) { grid-column: 1 / -1; }
+  .record-filters > * { flex: 1 1 180px; min-width: 0 !important; }
+  .section-row { grid-template-columns: 28px 1fr auto; }
+  .section-row > .section-move { grid-column: 2 / -1; justify-content: flex-end; }
+  .publish-bar > div:last-child { width: 100%; justify-content: space-between; }
+  .integration-field-label { align-items: flex-start; flex-direction: column; }
+  .kiosk-shell { padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+
+  /* A 16px control font prevents iOS Safari from zooming the whole page when a
+     staff member or customer focuses a field. */
+  input,
+  select,
+  textarea { font-size: 16px !important; }
+}
+
+@media (max-width: 430px) {
+  .header-shortcuts a:last-child { display: none; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .staff-topbar { align-items: flex-start; }
+  .staff-topbar h1 { font-size: 25px; }
+  .live-chip { padding: 8px 10px; }
+  .customizer-head { padding: 20px 18px; }
+  .customizer-body { padding: 24px 18px; }
+  .customizer-footer { grid-template-columns: 1fr; gap: 10px; }
+  .customizer-footer .primary-button { width: 100%; }
+  .delivery-gate h2 { font-size: 40px; }
+  .checkout-modal > h2 { font-size: 38px; }
+  .confirmation-card h2 { font-size: 42px; }
+  .rating-row { justify-content: space-between; }
+  .rating-row button { flex: 1; max-width: 52px; }
+  .danger-banner { align-items: stretch; flex-direction: column; }
+  .period-switch { align-items: stretch; flex-direction: column; }
+  .till-line { align-items: flex-start; flex-direction: column; }
+  .till-quantity { width: 100%; justify-content: flex-end; }
+}

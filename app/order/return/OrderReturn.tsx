@@ -1,7 +1,6 @@
 "use client";
-/* eslint-disable @next/next/no-html-link-for-pages */
-
 import { useCallback, useEffect, useRef, useState } from "react";
+import { UtilityHeader } from "@/app/UtilityHeader";
 
 /**
  * Where Clover sends the customer back to after a hosted checkout.
@@ -41,10 +40,6 @@ function readPending(): Pending | null {
   } catch {
     return null;
   }
-}
-
-function Header() {
-  return <header className="utility-header"><a className="brand" href="/"><span className="pizza-mark"><span>62</span><i className="pizza-dot pizza-dot--one" /></span><span className="brand-copy"><strong>Pizza 62</strong><small>Hamilton, Ontario</small></span></a><a href="/">Back to menu ↗</a></header>;
 }
 
 export default function OrderReturn() {
@@ -98,7 +93,7 @@ export default function OrderReturn() {
     return () => { cancelled = true; };
   }, [pending, poll]);
 
-  return <div className="utility-page"><Header /><main className="utility-content">
+  return <div className="utility-page"><a className="skip-link" href="#utility-content">Skip to content</a><UtilityHeader /><main className="utility-content" id="utility-content">
     <div className="utility-title">
       <p className="eyebrow dark" style={{ justifyContent: "center" }}><span /> Online payment</p>
       {state === "paid" ? <>
@@ -126,7 +121,7 @@ export default function OrderReturn() {
       {trackingUrl && state !== "cancelled"
         ? <p><a className="primary-button" href={trackingUrl}>Track this order</a></p>
         : <p>Your confirmation email carries the tracking link. You can also <a href="/track"><strong>look the order up</strong></a> with its number and tracking token.</p>}
-      <p style={{ color: "var(--muted)", fontSize: 10, marginTop: 24 }}>
+      <p className="utility-help">
         Need help? Call <a style={{ textDecoration: "underline", fontWeight: 900 }} href="tel:+19055475777">(905) 547-5777</a>.
       </p>
     </section>

@@ -147,7 +147,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
         })}
       </div> : null}
 
-      <table className="viz-table">
+      <div className="table-scroll" role="region" aria-label="Order history" tabIndex={0}><table className="viz-table">
         <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Where from</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
         <tbody>
           {orders.map((order) => <tr key={String(order.id)}>
@@ -166,7 +166,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
           </tr>)}
           {!orders.length ? <tr><td colSpan={6} className="staff-empty">No orders match that search.</td></tr> : null}
         </tbody>
-      </table>
+      </table></div>
 
       {summary.total > summary.pageSize ? <div className="pager">
         <button className="staff-button" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>Previous</button>
