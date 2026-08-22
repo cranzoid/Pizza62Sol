@@ -7,6 +7,11 @@ records, integrations, menu/settings/team editors, and Azure staging/production 
 **Design constraint:** retain the existing Pizza 62 palette, typography character,
 illustration style, cards, borders, shadows, and information architecture.
 
+**Release follow-up (2026-08-23):** the owner asked for the live offers to lead
+the homepage, confirmed the two `test` products are intentional, and explicitly
+authorized release using the source/layout and automated checks when the connected
+browser remained unavailable.
+
 ## Method and evidence
 
 - Inventoried every UI route and all 5,496 lines of React/CSS UI source.
@@ -69,7 +74,9 @@ illustration style, cards, borders, shadows, and information architecture.
 | P2 | Kiosk PIN feedback did not announce how many digits had been entered. | — | Medium | Fixed with a non-sensitive live count. |
 | P2 | Staging's `SEO_INDEXABLE=false` setting was not reflected in metadata or `robots.txt`, so a preview slot could be crawled. | Medium | Medium | Fixed: non-indexable slots emit noindex metadata and disallow all crawlers. |
 | P2 | Admin accepted remote HTTPS product/hero images while the Content Security Policy blocked them from rendering. | Medium | Medium | Fixed by aligning `img-src` with the editor's existing HTTPS-only validation. |
-| Data | Two active public products are named `test` (one simple side and one pizza). | High | High | Not mutated in this UI-only pass; deactivate from Admin → Menu setup before production swap. |
+| P1 | Visitors reached the brand hero before seeing the restaurant's current specials. | High | High | Fixed: a live offers-first section now leads the homepage and lists all configured Hamilton Heroes, pickup specials and deals with current availability. |
+| P1 | Marquee text could visually collide because animated flex items were allowed to shrink; the handwritten hero note also occupied the marquee's vertical space. | High | Medium | Fixed: marquee items retain their measured width and the note is positioned above the ticker. |
+| Data | Two active public products are named `test` (one simple side and one pizza). | High | High | Confirmed intentional by the owner on 2026-08-23; retained unchanged. |
 
 ## Viewport validation matrix
 
@@ -78,10 +85,10 @@ slot swap:
 
 | Viewport | Required coverage | Status |
 |---|---|---|
-| 1440×900 desktop | Header/hero/menu, each customizer type, cart/checkout, utility pages, admin/kitchen dense layouts | Pending connected browser |
-| 1024×768 tablet | Public shortcuts, two-column menu, labelled staff rail, tables and settings grids | Pending connected browser |
-| 390×844 phone | Closed strip, sticky menu tabs, all dialogs, checkout, utility pages, staff horizontal nav/sign-out, kiosk | Pending connected browser |
-| 320×568 small phone | Heading wrapping, footer, customizer footer, forms, tracking and dense staff controls | Pending connected browser |
+| 1440×900 desktop | Header/offers/hero/menu, each customizer type, cart/checkout, utility pages, admin/kitchen dense layouts | Source/layout review complete; connected render waived by owner |
+| 1024×768 tablet | Public shortcuts, offers track, two-column menu, labelled staff rail, tables and settings grids | Source/layout review complete; connected render waived by owner |
+| 390×844 phone | Offers track, closed strip, sticky menu tabs, dialogs, checkout, utility pages, staff navigation/sign-out, kiosk | Source/layout review complete; connected render waived by owner |
+| 320×568 small phone | Offer-card wrapping, header shortcuts, headings, footer, forms, tracking and dense staff controls | Source/layout review complete; connected render waived by owner |
 
 ## Out-of-scope visual changes deliberately avoided
 
@@ -96,5 +103,6 @@ Do not swap staging into production until:
 
 1. TypeScript, lint, tests and production build pass.
 2. Staging `/api/health` returns `{"status":"ok"}`.
-3. The four viewport checks above pass in a connected browser.
-4. The two public `test` products are either confirmed intentional or deactivated.
+3. The four viewport layouts above pass source review; the owner explicitly
+   accepted this fallback because the connected browser was unavailable.
+4. The two public `test` products are confirmed intentional and remain unchanged.

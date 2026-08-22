@@ -247,6 +247,8 @@ const DEFAULT_PROMISES = [
   { title: "Track every step", text: "Private, secure order updates" },
 ];
 
+const HOMEPAGE_OFFER_CATEGORY_IDS = new Set(["hamilton-heroes", "pickup-specials", "deals"]);
+
 function formatMinuteTime(value: number) {
   if (value === 1440) return "Midnight";
   const hour = Math.floor(value / 60);
@@ -423,6 +425,18 @@ export default function CustomerApp() {
   const eligibleProducts = (catalog?.products ?? []).filter((product) =>
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
   );
+  const homepageOffers = (catalog?.products ?? [])
+    .filter((product) => HOMEPAGE_OFFER_CATEGORY_IDS.has(product.category_id))
+    .map((product) => {
+      const availability = product.configuration.availability as WeeklyAvailability | undefined;
+      return { product, availability, availableNow: isWithinWeeklyAvailability(availability, new Date(now)) };
+    })
+    .sort((left, right) => {
+      const priority = (offer: typeof left) => offer.availability
+        ? (offer.availableNow ? 0 : 3)
+        : offer.product.category_id === "pickup-specials" ? 1 : 2;
+      return priority(left) - priority(right);
+    });
   const cartItemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   // H-24: the cart's totals come from the server, priced by the same code that
@@ -482,6 +496,14 @@ export default function CustomerApp() {
     if (product.product_type === "pizza" || (Array.isArray(sections) && sections.length)) {
       setSelectedProduct(product);
     } else addSimple(product);
+  };
+
+  const openOffer = (product: Product) => {
+    // Pickup-only offers stay visible even if a returning visitor last selected
+    // delivery. Selecting one makes the necessary fulfilment change explicit and
+    // prevents a valid special from failing later when the cart is quoted.
+    if (product.pickup_eligible && !product.delivery_eligible) setFulfilment("pickup");
+    openProduct(product);
   };
 
   const siteSections: Record<string, React.ReactNode> = {
@@ -583,13 +605,14 @@ export default function CustomerApp() {
           <span className="brand-copy"><small>Hamilton, Ontario</small></span>
         </a>
         <nav aria-label="Primary navigation">
+          <a href="#offers">Offers</a>
           <a href="#menu">Menu</a>
-          <a href="#deals">Deals</a>
           <a href="#hours">Hours</a>
           <Link href="/track">Track order</Link>
         </nav>
         <div className="header-actions">
           <nav className="header-shortcuts" aria-label="Mobile navigation">
+            <a href="#offers">Offers</a>
             <a href="#menu">Menu</a>
             <Link href="/track">Track</Link>
           </nav>
@@ -601,6 +624,44 @@ export default function CustomerApp() {
       </header>
 
       <main id="top">
+        <section className="offers-first" id="offers" aria-labelledby="offers-title">
+          <div className="offers-first__heading">
+            <div>
+              <p className="eyebrow dark"><span /> Today at Pizza 62</p>
+              <h2 id="offers-title">Start with<br /><em>a special.</em></h2>
+            </div>
+            <p>See today&apos;s available specials first, plus the ongoing pickup and family offers configured in our live menu.</p>
+          </div>
+          {!catalog && !loadingError ? <div className="offers-loading" role="status"><span />Loading today&apos;s offers…</div> : null}
+          {loadingError ? <div className="error-banner" role="alert">Offers are temporarily unavailable. The rest of the site is still available below.</div> : null}
+          {catalog && homepageOffers.length ? (
+            <div className="offers-track" aria-label="Current offers">
+              {homepageOffers.map(({ product, availability, availableNow }) => {
+                const pickupOnly = Boolean(product.pickup_eligible && !product.delivery_eligible);
+                const categoryName = categories.find((category) => category.id === product.category_id)?.name ?? "Offer";
+                const unavailable = Boolean(product.setup_required || product.sold_out || (availability && !availableNow));
+                const badge = availability
+                  ? (availableNow ? "Available today" : String(availability.label ?? "Limited hours"))
+                  : pickupOnly ? "Pickup special" : categoryName;
+                return (
+                  <article className={`offer-card ${availability && availableNow ? "offer-card--today" : ""}`} key={product.id}>
+                    <div className="offer-card__meta"><span>{badge}</span><small>{pickupOnly ? "Pickup only" : "Pickup or delivery"}</small></div>
+                    <h3>{product.name}</h3>
+                    <p>{product.description}</p>
+                    <div className="offer-card__footer">
+                      <strong><small>from</small>{formatMoney(product.base_price_cents)}</strong>
+                      <button type="button" disabled={unavailable} onClick={() => openOffer(product)}>
+                        {product.sold_out ? "Sold out" : product.setup_required ? "Owner setup" : availability && !availableNow ? "Not available now" : pickupOnly && fulfilment === "delivery" ? "Switch to pickup" : "Choose offer"}<ArrowIcon />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : null}
+          <a className="offers-first__all" href="#category-deals">See the complete deals menu <ArrowIcon /></a>
+        </section>
+
         <section className="hero-section">
           <div className="hero-grain" aria-hidden="true" />
           <div className="hero-copy">
@@ -643,7 +704,7 @@ export default function CustomerApp() {
               <div className="scribble-note">made fresh<br />for Hamilton ↗</div>
             </div>}
           </div>
-          <div className="hero-marquee" aria-hidden="true"><span>PIZZA • WINGS • DEALS • PICKUP • DELIVERY • HAMILTON •&nbsp;</span><span>PIZZA • WINGS • DEALS • PICKUP • DELIVERY • HAMILTON •</span></div>
+          <div className="hero-marquee" aria-hidden="true"><span>PIZZA • WINGS • DEALS • PICKUP • DELIVERY • HAMILTON •&nbsp;</span><span>PIZZA • WINGS • DEALS • PICKUP • DELIVERY • HAMILTON •&nbsp;</span></div>
         </section>
 
         {sectionOrder.map((id) => sectionVisible(id) ? <Fragment key={id}>{siteSections[id]}</Fragment> : null)}
@@ -651,7 +712,7 @@ export default function CustomerApp() {
 
       <footer className="public-footer">
         <div className="footer-brand"><BrandLogo src={logoUrl} name={businessName} chip /><p>{String(content.footerTagline ?? "Hamilton pizza made for real life.")}</p></div>
-        <div><b>Order</b><a href="#menu">Menu</a><a href="#deals">Deals</a><Link href="/track">Track an order</Link></div>
+        <div><b>Order</b><a href="#offers">Offers</a><a href="#menu">Menu</a><Link href="/track">Track an order</Link></div>
         <div><b>Information</b><a href="#hours">Hours & delivery</a><Link href="/privacy">Privacy</Link><Link href="/accessibility">Accessibility</Link></div>
         <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<Link href="/admin">Staff portal</Link></div>
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
