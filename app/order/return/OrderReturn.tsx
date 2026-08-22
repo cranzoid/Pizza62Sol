@@ -27,6 +27,16 @@ import { UtilityHeader } from "@/app/UtilityHeader";
 
 type Pending = { orderNumber?: string; trackingToken?: string; feedbackToken?: string };
 
+/**
+ * Clover's `redirectUrls.failure` target carries `?status=failed`, so a customer
+ * whose card was declined is told that rather than being shown "confirming your
+ * payment" while a poll that can never settle runs down its 90 seconds.
+ */
+function arrivedFromFailure(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("status") === "failed";
+}
+
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 90_000;
 
@@ -44,8 +54,8 @@ function readPending(): Pending | null {
 
 export default function OrderReturn() {
   const [pending] = useState(readPending);
-  const [state, setState] = useState<"waiting" | "paid" | "cancelled" | "timeout" | "unknown">(
-    () => (readPending() ? "waiting" : "unknown"),
+  const [state, setState] = useState<"waiting" | "paid" | "cancelled" | "timeout" | "unknown" | "failed">(
+    () => (arrivedFromFailure() ? "failed" : readPending() ? "waiting" : "unknown"),
   );
   // Seeded in the effect rather than at render: reading the clock during render
   // is impure, and the deadline only has to start when polling does.
@@ -79,7 +89,7 @@ export default function OrderReturn() {
   }, [pending]);
 
   useEffect(() => {
-    if (!pending) return;
+    if (!pending || state === "failed") return;
     let cancelled = false;
     startedAt.current ??= Date.now();
     const tick = async () => {
@@ -91,6 +101,9 @@ export default function OrderReturn() {
     };
     void tick();
     return () => { cancelled = true; };
+    // `state` is read only as a guard on entry; polling must not restart when it
+    // changes, so it is deliberately not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, poll]);
 
   return <div className="utility-page"><a className="skip-link" href="#utility-content">Skip to content</a><UtilityHeader /><main className="utility-content" id="utility-content">
@@ -108,6 +121,10 @@ export default function OrderReturn() {
         <h1>Still confirming.</h1>
         <p>Your payment has not been confirmed to us yet. If your card was charged,<br />the order will appear shortly and you will get a confirmation email.</p>
       </> : null}
+      {state === "failed" ? <>
+        <h1>That payment did not go through.</h1>
+        <p>Your card was not charged. You can try again with another card,<br />or call the restaurant and pay over the phone.</p>
+      </> : null}
       {state === "cancelled" ? <>
         <h1>This order was cancelled.</h1>
         <p>The checkout was not completed in time and no payment was taken.<br />You are welcome to order again.</p>
@@ -118,7 +135,7 @@ export default function OrderReturn() {
       </> : null}
     </div>
     <section className="lookup-card">
-      {trackingUrl && state !== "cancelled"
+      {trackingUrl && state !== "cancelled" && state !== "failed"
         ? <p><a className="primary-button" href={trackingUrl}>Track this order</a></p>
         : <p>Your confirmation email carries the tracking link. You can also <a href="/track"><strong>look the order up</strong></a> with its number and tracking token.</p>}
       <p className="utility-help">

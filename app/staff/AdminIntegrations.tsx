@@ -245,7 +245,15 @@ export function AdminIntegrationsPanel() {
               label="Clover → Settings → Ecommerce → Webhook URL"
               value={data.callbacks.cloverWebhook}
             />
-            <CopyRow label="Clover → Settings → Ecommerce → Return URL" value={data.callbacks.cloverReturn} />
+            {/* Not a "paste this" row any more. The app sends its own return URLs
+                on every checkout session, and a URL entered in Clover's dashboard
+                overrides them for every order — dropping the session id the return
+                page needs. Shown so the address is still discoverable, labelled so
+                nobody pastes it back in. */}
+            <CopyRow
+              label="Clover → Return URL (sent automatically — leave blank in Clover)"
+              value={data.callbacks.cloverReturn}
+            />
             <CopyRow label="Twilio → Voice callback (set automatically)" value={data.callbacks.twilioVoiceAck} />
           </div>
         </section>

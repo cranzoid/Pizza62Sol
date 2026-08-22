@@ -75,6 +75,7 @@ afterEach(() => {
   delete process.env.CLOVER_MERCHANT_ID;
   delete process.env.CLOVER_API_TOKEN;
   delete process.env.CLOVER_ENVIRONMENT;
+  delete process.env.PUBLIC_BASE_URL;
   clearIntegrationSecretCache();
 });
 
@@ -305,4 +306,45 @@ test("compares hex case-insensitively", async () => {
     await verifyCloverSignature(BODY, `t=${NOW_SECONDS},v1=${valid.toUpperCase()}`, SECRET, NOW),
     true,
   );
+});
+
+
+// --- sending the customer back ----------------------------------------------
+
+test("asks Clover to send the customer back to the return page", async () => {
+  // The regression: this module used to assert that Clover supported only a
+  // single return URL configured per-merchant in the dashboard, and so sent no
+  // `redirectUrls` at all. With nothing in the dashboard either, a customer who
+  // paid was left on Clover's receipt page — the payment succeeded and the
+  // browser never came home.
+  process.env.PUBLIC_BASE_URL = "https://pizza62.example";
+  configure();
+  const { calls } = stubClover(OK_RESPONSE);
+  await createCloverCheckout(ORDER);
+
+  const redirectUrls = calls[0].body.redirectUrls as { success?: string; failure?: string } | undefined;
+  assert.ok(redirectUrls, "a checkout with no redirectUrls strands the customer on Clover");
+  assert.equal(redirectUrls.success, "https://pizza62.example/order/return?session_id={CHECKOUT_SESSION_ID}");
+  assert.equal(redirectUrls.failure, "https://pizza62.example/order/return?status=failed");
+});
+
+test("omits the redirect rather than sending a URL it cannot be sure of", async () => {
+  // With no configured base URL there is no correct absolute address to send,
+  // and a wrong one is worse than none: Clover would redirect every paying
+  // customer to somewhere that does not exist. Omitting it leaves the merchant
+  // dashboard's own setting — if there is one — to do the job.
+  configure();
+  const { calls } = stubClover(OK_RESPONSE);
+  await createCloverCheckout(ORDER);
+  assert.equal(calls[0].body.redirectUrls, undefined);
+});
+
+test("does not let a trailing slash produce a double-slashed return URL", async () => {
+  process.env.PUBLIC_BASE_URL = "https://pizza62.example/";
+  configure();
+  const { calls } = stubClover(OK_RESPONSE);
+  await createCloverCheckout(ORDER);
+
+  const redirectUrls = calls[0].body.redirectUrls as { success: string };
+  assert.ok(redirectUrls.success.startsWith("https://pizza62.example/order/return?"), redirectUrls.success);
 });

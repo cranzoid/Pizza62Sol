@@ -18,11 +18,16 @@
  *    from checkout session to order lives in `payments.provider_reference`,
  *    written immediately after the session is created, and the webhook looks the
  *    order up through it.
- * 3. **Return URLs are configured per-merchant in the Clover dashboard, not per
- *    session.** So the success URL cannot carry `?order=…&token=…`; the browser
- *    stashes those before redirecting and recovers them at `/order/return`.
+ * 3. **Return URLs must be sent per session, or the customer is never sent
+ *    back.** This module previously asserted the opposite — that Clover only
+ *    supports a single return URL configured per-merchant in the dashboard — and
+ *    so sent none at all. Clover accepts `redirectUrls` on the create-checkout
+ *    call; with neither that nor a dashboard entry, a customer who pays is
+ *    simply left sitting on Clover's receipt page. Where both exist the
+ *    dashboard wins, so an entry there silently overrides what is sent here.
  */
 import { readIntegrationSecret, readIntegrationSecrets } from "@/lib/integration-secrets";
+import { publicBaseUrl } from "@/lib/notifications/config";
 
 const SANDBOX_BASE = "https://apisandbox.dev.clover.com";
 const PRODUCTION_BASE = "https://api.clover.com";
@@ -132,6 +137,23 @@ export async function createCloverCheckout(input: {
     throw new Error(`Refusing to start a checkout for a non-positive total (${input.totalCents})`);
   }
   const { firstName, lastName } = splitName(input.customerName);
+  // Where Clover sends the customer once the card clears. Omitted entirely when
+  // no base URL is configured rather than guessed at from the request host: a
+  // wrong absolute URL here strands every paying customer on Clover's receipt
+  // page, and `publicBaseUrl()` is the one value that is known to be right.
+  //
+  // `{CHECKOUT_SESSION_ID}` is Clover's own substitution token. It is used in
+  // preference to the order number because the value it expands to is the
+  // session UUID already stored in `payments.provider_reference` — a
+  // non-guessable key that a return-page lookup can be built on later, where a
+  // sequential order number in a URL would be enumerable.
+  const baseUrl = await publicBaseUrl();
+  const redirectUrls = baseUrl
+    ? {
+        success: `${baseUrl}/order/return?session_id={CHECKOUT_SESSION_ID}`,
+        failure: `${baseUrl}/order/return?status=failed`,
+      }
+    : undefined;
   const response = await fetch(`${await cloverApiBase()}/invoicingcheckoutservice/v1/checkouts`, {
     method: "POST",
     headers: {
@@ -148,6 +170,7 @@ export async function createCloverCheckout(input: {
         phoneNumber: input.customerPhone,
       },
       tips: { enabled: false },
+      ...(redirectUrls ? { redirectUrls } : {}),
       shoppingCart: {
         lineItems: [
           {

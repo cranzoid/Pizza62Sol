@@ -30,6 +30,7 @@ const { getPool, closePool, PostgresDatabase } = await import("@/db/pg-driver");
 const { POST: createOrderRoute } = await import("@/app/api/orders/route");
 const { POST: webhookRoute } = await import("@/app/api/payments/clover/webhook/route");
 const { reapStalePayments } = await import("@/scripts/reap-payments");
+const { writeIntegrationSecret, clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
 const { nextOrderSlots } = await import("@/lib/domain");
 
 const reachable = await getPool()
@@ -355,4 +356,51 @@ withDb("is safe to run twice", async () => {
   await reapStalePayments(new PostgresDatabase(getPool()), at);
   const second = await reapStalePayments(new PostgresDatabase(getPool()), at);
   assert.ok(!second.some((row) => row.id === order.orderId), "an already-cancelled order is not re-reaped");
+});
+
+
+// --- where the signing secret is read from ----------------------------------
+
+withDb("authenticates a delivery when the signing secret is only in the database", async () => {
+  // The regression this exists for. Every Clover credential is read through
+  // `readIntegrationSecret`, which is database-first — that is the whole point of
+  // the Integrations tab, and it is where the owner actually pastes the signing
+  // secret. The webhook route alone read `process.env` directly, so in the one
+  // configuration the deployment guide tells you to use, every delivery 503'd
+  // while `cloverWebhookConfigured()` reported the webhook as configured. Paid
+  // orders sat in `awaiting_payment` until the reaper cancelled them, with Clover
+  // holding the money and no refund API to give it back.
+  //
+  // The existing tests all missed it because they set `process.env` directly,
+  // exercising the fallback and never the primary path. This one stores the
+  // secret the way the owner does and removes the environment variable, so a
+  // route that reads the environment cannot pass it.
+  const databaseSecret = `db-only-${crypto.randomUUID()}`;
+  const order = await createAwaitingPaymentOrder();
+
+  const previousKey = process.env.SETTINGS_ENCRYPTION_KEY;
+  const previousSecret = process.env.CLOVER_WEBHOOK_SECRET;
+  process.env.SETTINGS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
+  try {
+    await writeIntegrationSecret("CLOVER_WEBHOOK_SECRET", databaseSecret, "test");
+    delete process.env.CLOVER_WEBHOOK_SECRET;
+    clearIntegrationSecretCache();
+
+    const response = await webhookRoute(
+      await signedWebhook(approval(order.sessionId), { secret: databaseSecret }),
+    );
+    assert.equal(response.status, 200, "a database-stored secret must authenticate the delivery");
+
+    const row = await readOrder(order.orderId);
+    assert.equal(row.status, "received");
+    assert.equal(row.payment_status, "paid");
+    assert.equal(row.payment_row_status, "captured");
+  } finally {
+    await getPool().query("DELETE FROM integration_secrets WHERE key = $1", ["CLOVER_WEBHOOK_SECRET"]);
+    clearIntegrationSecretCache();
+    if (previousKey === undefined) delete process.env.SETTINGS_ENCRYPTION_KEY;
+    else process.env.SETTINGS_ENCRYPTION_KEY = previousKey;
+    if (previousSecret === undefined) delete process.env.CLOVER_WEBHOOK_SECRET;
+    else process.env.CLOVER_WEBHOOK_SECRET = previousSecret;
+  }
 });

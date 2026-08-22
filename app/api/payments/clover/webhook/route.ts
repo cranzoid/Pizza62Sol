@@ -20,14 +20,20 @@
  *   not, and its sessions die after 15 minutes. Orders stranded in
  *   `awaiting_payment` are cleaned up by `scripts/reap-payments.ts` instead.
  */
-import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1 } from "@/db/runtime";
-import { cloverMerchantId, verifyCloverSignature, type CloverWebhookEvent } from "@/lib/clover";
+import { cloverMerchantId, cloverWebhookSecret, verifyCloverSignature, type CloverWebhookEvent } from "@/lib/clover";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 
 export async function POST(request: Request) {
-  const webhookSecret = (env as unknown as Record<string, string | undefined>).CLOVER_WEBHOOK_SECRET;
+  // Through `cloverWebhookSecret()`, not `env` directly: the owner sets this on
+  // the Integrations tab, so it normally lives encrypted in the database and the
+  // environment holds nothing. Reading `process.env` here meant every delivery
+  // 503'd while `cloverWebhookConfigured()` — which does read the store — told
+  // the admin screen the webhook was configured. Orders stayed in
+  // `awaiting_payment` until the reaper cancelled them, with Clover holding the
+  // customer's money. The two reads must come from the same place.
+  const webhookSecret = await cloverWebhookSecret();
   if (!webhookSecret) return Response.json({ error: "Clover webhook is not configured." }, { status: 503 });
 
   // The raw bytes, not the parsed body: the MAC covers exactly what was sent.

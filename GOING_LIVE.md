@@ -64,15 +64,28 @@ here — the public token is for building your own card form, which this does no
 | **Webhook signing secret** | Clover dashboard → Settings → Ecommerce → Hosted Checkout → generate                |
 | **Environment**            | Choose **Sandbox** now. Production after the test order works                       |
 
-Then, in the _same_ Clover screen, paste the two URLs the Integrations tab shows
-under "Addresses to paste elsewhere":
+Then, in the _same_ Clover screen, paste the webhook URL the Integrations tab
+shows under "Addresses to paste elsewhere":
 
 - **Webhook URL** → `<app_url>/api/payments/clover/webhook`
-- **Return URL** → `<app_url>/order/return`
 
-> ⚠️ **The return URL is set once per merchant, not per order.** Every paying
-> customer lands on that one path. If it is wrong, payments still work and every
-> customer sees an error page.
+> ⚠️ **Leave the Return URL fields in the Clover dashboard empty.** The app now
+> sends its own return URLs on every checkout session, built from
+> `PUBLIC_BASE_URL`. A URL entered in the dashboard **overrides** what the app
+> sends, for every order, and it cannot carry the session id the return page uses
+> to recognise which order was paid. Only fill these in as a fallback if
+> `PUBLIC_BASE_URL` cannot be set.
+
+> ⚠️ **`PUBLIC_BASE_URL` must be set before the first online order.** Without it
+> the app sends no return URL at all, and — with the dashboard fields empty too —
+> a customer who pays is left sitting on Clover's receipt page.
+
+> ⚠️ **The webhook signing secret must be readable by the webhook route.** Paste
+> it into Admin → Integrations (it is stored encrypted in the database) *or* set
+> `CLOVER_WEBHOOK_SECRET` in the hosting environment. Either works; both are read
+> through the same store. After the first test payment, confirm the order left
+> `awaiting_payment` — if it did not, the webhook is not being authenticated, and
+> the reaper will cancel the order 20 minutes later while Clover keeps the money.
 
 > ⚠️ **Set the custom domain first if you are going to.** These URLs are baked
 > into Clover's dashboard; changing the domain later means coming back here.
