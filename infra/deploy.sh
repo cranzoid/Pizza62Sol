@@ -32,7 +32,7 @@ rm -f build.zip
 # Rolldown binary from the release, so a deploy no longer needs a second Linux
 # npm install or a 100+ MB node_modules archive.
 RELEASE_DIR="$(mktemp -d /tmp/pizza62-release.XXXXXX)"
-trap 'rm -rf "$RELEASE_DIR"' EXIT
+trap 'rm -f "$APP_ROOT/build.zip"; rm -rf "$RELEASE_DIR"' EXIT
 cp -R dist/standalone/. "$RELEASE_DIR/"
 cp -R drizzle scripts db lib "$RELEASE_DIR/"
 cp startup.sh alias-hooks.mjs register-alias.mjs "$RELEASE_DIR/"
