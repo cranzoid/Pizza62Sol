@@ -51,7 +51,10 @@ before(() => {
 });
 
 afterEach(async () => {
-  if (reachable) await getPool().query("DELETE FROM integration_secrets");
+  if (reachable) {
+    await getPool().query("DELETE FROM integration_secrets");
+    await getPool().query("DELETE FROM audit_log WHERE target_type = 'integration_secret'");
+  }
   process.env.SETTINGS_ENCRYPTION_KEY = TEST_KEY;
   clearIntegrationSecretCache();
 });
@@ -234,9 +237,14 @@ withDb("clearing a credential is audited distinctly from setting one", async () 
   await post(cookie, { action: "secret.set", key: "CLOVER_API_TOKEN", value: "temporary" });
   await post(cookie, { action: "secret.set", key: "CLOVER_API_TOKEN", value: "" });
   const audit = await getPool().query<{ action: string }>(
-    "SELECT action FROM audit_log WHERE target_type = 'integration_secret' ORDER BY created_at DESC LIMIT 1",
+    `SELECT action FROM audit_log
+     WHERE target_type = 'integration_secret' AND target_id = 'CLOVER_API_TOKEN'
+     ORDER BY action`,
   );
-  assert.equal(audit.rows[0].action, "integration.secret.cleared");
+  assert.deepEqual(
+    audit.rows.map((row) => row.action),
+    ["integration.secret.cleared", "integration.secret.set"],
+  );
 });
 
 withDb("will not run a test send for a channel with no credentials", async () => {
