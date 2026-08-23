@@ -268,6 +268,23 @@ function countdown(milliseconds: number) {
   return `${minutes}m`;
 }
 
+/**
+ * Set once the visitor has actually been asked delivery-or-pickup this visit.
+ *
+ * Session-scoped, not local: the answer is good for as long as the tab is open,
+ * and the next visit asks again. A customer who ordered delivery on Friday is
+ * not committed to delivery on Saturday just because the browser remembered.
+ */
+const METHOD_ASKED_KEY = "p62_fulfilment_asked";
+
+function alreadyAskedMethod(): boolean {
+  // "Asked" on the server, so the markup React hydrates never contains the
+  // prompt. Nothing is lost: the prompt waits for the catalogue, which arrives
+  // from a fetch long after hydration.
+  if (typeof window === "undefined") return true;
+  return window.sessionStorage.getItem(METHOD_ASKED_KEY) === "1";
+}
+
 function rememberedFulfilment(): "pickup" | "delivery" {
   if (typeof window === "undefined") return "pickup";
   return window.localStorage.getItem("p62_fulfilment") === "delivery"
@@ -326,7 +343,7 @@ function ArrowIcon() {
 export default function CustomerApp() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [loadingError, setLoadingError] = useState("");
-  const [fulfilment, setFulfilment] = useState<"pickup" | "delivery">(rememberedFulfilment);
+  const [chosenFulfilment, setFulfilment] = useState<"pickup" | "delivery">(rememberedFulfilment);
   const [deliveryGate, setDeliveryGate] = useState(false);
   const [postalCode, setPostalCode] = useState("");
   const [gateMessage, setGateMessage] = useState("");
@@ -348,16 +365,32 @@ export default function CustomerApp() {
     analytics("website_visit");
   }, []);
 
-  useEffect(() => {
-    window.localStorage.setItem("p62_fulfilment", fulfilment);
-    window.localStorage.setItem("p62_cart_draft", JSON.stringify(cart));
-  }, [fulfilment, cart]);
-
   const business = catalog?.settings.business?.value ?? {};
   const phone = (business.phone as string | undefined) ?? FALLBACK_PHONE;
   const businessName = String(business.name ?? "Pizza 62");
   const businessAddress = String(business.address ?? "55 Parkdale Ave N, Hamilton, ON L8H 5W7");
   const ordering = catalog?.settings.ordering?.value ?? {};
+  // Only read for the delivery-or-pickup prompt, so the customer is choosing
+  // against the real fee rather than being shown it after the cart is built.
+  const deliveryFeeCents = Number(catalog?.settings.delivery?.value.feeCents ?? 350);
+
+  // Which methods the restaurant is actually taking. `!== false` rather than a
+  // truthiness check so a settings row that predates a flag still offers both,
+  // which is what the storefront did before the flag existed.
+  const pickupEnabled = ordering.pickupEnabled !== false;
+  const deliveryEnabled = ordering.deliveryEnabled !== false;
+
+  // A remembered method the restaurant has since switched off is corrected here
+  // rather than left to be discovered at checkout. Derived rather than written
+  // back to state so there is one answer, not a stored one racing a rendered one.
+  const fulfilment: "pickup" | "delivery" =
+    !deliveryEnabled && pickupEnabled ? "pickup" : !pickupEnabled && deliveryEnabled ? "delivery" : chosenFulfilment;
+
+  useEffect(() => {
+    window.localStorage.setItem("p62_fulfilment", fulfilment);
+    window.localStorage.setItem("p62_cart_draft", JSON.stringify(cart));
+  }, [fulfilment, cart]);
+
   const operations = catalog?.settings.operations?.value ?? {};
   const content = catalog?.settings.content?.value ?? {};
   const logoUrl = String(content.logoUrl ?? "");
@@ -415,6 +448,18 @@ export default function CustomerApp() {
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
   const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed;
+
+  // The site used to open on pickup — inherited from a previous visit, or just
+  // the default — and say so only in small type beside the estimate. A customer
+  // who meant to order delivery could reach the payment step before the
+  // difference showed up as an address form and a fee. Ask instead, so the
+  // method is chosen rather than assumed.
+  const [methodAsked, setMethodAsked] = useState(alreadyAskedMethod);
+
+  // Behind the closed notice: a customer who arrives after hours needs to be
+  // told the kitchen is shut before being asked how they want the food.
+  const showMethodPrompt =
+    Boolean(catalog) && !methodAsked && !showClosedNotice && pickupEnabled && deliveryEnabled;
   const deliveryDialogRef = useDialogBehavior<HTMLFormElement>(deliveryGate, () => setDeliveryGate(false));
   const closedDialogRef = useDialogBehavior<HTMLDivElement>(showClosedNotice, () => setClosedNoticeDismissed(true));
   const opensIn = store.changesAt ? countdown(store.changesAt - now) : "";
@@ -455,6 +500,21 @@ export default function CustomerApp() {
       window.setTimeout(() => menuRef.current?.scrollIntoView({ behavior: "smooth" }), 80);
     }
   };
+
+  /**
+   * Closes the delivery-or-pickup prompt, with or without an answer.
+   *
+   * Dismissing it counts as asked — the question has been put in front of the
+   * customer, and a dialog that cannot be closed is worse than the problem it
+   * solves. The method stays visible in the hero and above the menu either way.
+   */
+  const answerMethodPrompt = (next?: "pickup" | "delivery") => {
+    window.sessionStorage.setItem(METHOD_ASKED_KEY, "1");
+    setMethodAsked(true);
+    if (next) chooseFulfilment(next);
+  };
+
+  const methodDialogRef = useDialogBehavior<HTMLDivElement>(showMethodPrompt, () => answerMethodPrompt());
 
   const screenPostalCode = () => {
     const normalized = postalCode.toUpperCase().replace(/\s/g, "");
@@ -717,6 +777,29 @@ export default function CustomerApp() {
         <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<Link href="/admin">Staff portal</Link></div>
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
       </footer>
+
+      {showMethodPrompt ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => answerMethodPrompt()}>
+          <div ref={methodDialogRef} className="delivery-gate method-gate" role="dialog" aria-modal="true" aria-labelledby="method-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => answerMethodPrompt()} aria-label="Close">×</button>
+            <div className="gate-number">01</div><p className="eyebrow dark"><span /> Before you build your order</p>
+            <h2 id="method-title">Delivery, or<br /><em>picking it up?</em></h2>
+            <p>Timing, the delivery fee and which offers you can use all follow from this. Pick one now — you can switch it any time from the menu.</p>
+            <div className="method-choices">
+              <button type="button" className="method-choice" onClick={() => answerMethodPrompt("delivery")}>
+                <span className="method-icon">D</span>
+                <span><b>Deliver it to me</b><small>About {String(ordering.deliveryEstimateMinutes ?? 30)} min · {deliveryFeeCents === 0 ? "no delivery fee" : `${formatMoney(deliveryFeeCents)} delivery`}</small></span>
+                <ArrowIcon />
+              </button>
+              <button type="button" className="method-choice" onClick={() => answerMethodPrompt("pickup")}>
+                <span className="method-icon">P</span>
+                <span><b>I&apos;ll pick it up</b><small>About {String(ordering.pickupEstimateMinutes ?? 15)} min · {businessAddress}</small></span>
+                <ArrowIcon />
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {deliveryGate ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeliveryGate(false)}>
