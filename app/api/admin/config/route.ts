@@ -71,6 +71,8 @@ type Body =
       description?: string;
       productType?: "pizza" | "simple" | "bundle" | "configurable";
       basePriceCents?: number;
+      imageUrl?: string | null;
+      active?: boolean;
     }
   | {
       action: "variation.upsert";
@@ -345,19 +347,20 @@ export async function POST(request: Request) {
       const categoryId = body.categoryId ?? "";
       const productType = body.productType ?? "simple";
       const basePrice = body.basePriceCents ?? 0;
+      const imageUrl = body.imageUrl?.trim() || null;
       const category = await getD1().prepare("SELECT id FROM categories WHERE id = ? AND active = 1").bind(categoryId).first();
-      if (!category || name.length < 2 || name.length > 120 || description.length > 1000 || !["pizza", "simple", "bundle", "configurable"].includes(productType) || !Number.isSafeInteger(basePrice) || basePrice < 0 || basePrice > 100_000) {
+      if (!category || name.length < 2 || name.length > 120 || description.length > 1000 || !["pizza", "simple", "bundle", "configurable"].includes(productType) || !Number.isSafeInteger(basePrice) || basePrice < 0 || basePrice > 100_000 || (imageUrl !== null && !imageUrl.startsWith("/api/uploads/") && !/^https:\/\//.test(imageUrl))) {
         return Response.json({ error: "Enter a valid product name, category, type, and price." }, { status: 400 });
       }
       const id = crypto.randomUUID();
       const now = Date.now();
       await getD1().prepare(
         `INSERT INTO products
-         (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
+         (id, category_id, name, slug, description, product_type, image_url, base_price_cents, taxable,
           pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
           setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, 1, 1, 0, ?, ?, '{}', 10000, ?, ?)`,
-      ).bind(id, categoryId, name, id, description, productType, basePrice, productType === "pizza" ? 1 : 0, name.toUpperCase().slice(0, 40), now, now).run();
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, 1, ?, 0, ?, ?, '{}', 10000, ?, ?)`,
+      ).bind(id, categoryId, name, id, description, productType, imageUrl, basePrice, body.active === false ? 0 : 1, productType === "pizza" ? 1 : 0, name.toUpperCase().slice(0, 40), now, now).run();
       await writeAudit({ actorId: user.id, action: "product.create", targetType: "product", targetId: id, next: body });
       return Response.json({ ok: true, id }, { status: 201 });
     }

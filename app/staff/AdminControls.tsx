@@ -405,15 +405,63 @@ function Colour({ label, value, onChange }: { label: string; value: string; onCh
 
 export function AdminMenuPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const [message, setMessage] = useState("");
+  const [section, setSection] = useState<"products" | "categories" | "toppings">("products");
+  const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "live" | "attention" | "hidden">("all");
+  const [addingProduct, setAddingProduct] = useState(false);
+  const [newProductId, setNewProductId] = useState("");
   const complete = async (work: () => Promise<unknown>, success: string) => {
     setMessage("");
-    try { await work(); setMessage(success); await onSaved(); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "Could not save."); }
+    try { const result = await work(); setMessage(success); await onSaved(); return result; }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Could not save."); return undefined; }
   };
+  const activeProducts = dashboard.products.filter((product) => product.active);
+  const attentionProducts = dashboard.products.filter((product) => product.active && (product.sold_out || product.setup_required));
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredProducts = dashboard.products.filter((product) => {
+    const matchesQuery = !normalizedQuery || `${product.name} ${product.description}`.toLowerCase().includes(normalizedQuery);
+    const matchesCategory = categoryFilter === "all" || product.category_id === categoryFilter;
+    const matchesStatus = statusFilter === "all" ||
+      (statusFilter === "live" && product.active && !product.sold_out && !product.setup_required) ||
+      (statusFilter === "attention" && product.active && Boolean(product.sold_out || product.setup_required)) ||
+      (statusFilter === "hidden" && !product.active);
+    return matchesQuery && matchesCategory && matchesStatus;
+  });
   return <div className="admin-stack admin-controls">
-    <section className="staff-panel"><div className="staff-panel-head"><h2>Menu categories</h2><span className="live-chip">Names · order · visibility</span></div><div className="category-admin-list">{dashboard.categories.map((category) => <CategoryEditor key={category.id} category={category} onSave={(body) => complete(() => configRequest(body), `${category.name} category saved.`)} />)}</div><NewCategory onSave={(body) => complete(() => configRequest(body), "Category created.")} /></section>
-    <section className="staff-panel"><div className="staff-panel-head"><h2>Products · {dashboard.products.length}</h2><span className="live-chip"><i /> Full owner control</span></div><div className="product-admin-cards">{dashboard.products.map((product) => <ProductEditor key={product.id} product={product} categories={dashboard.categories} variations={dashboard.variations.filter((variation) => variation.product_id === product.id)} toppings={dashboard.toppings} onSave={(body, success) => complete(() => configRequest(body), success)} />)}</div><NewProduct categories={dashboard.categories} onSave={(body) => complete(() => configRequest(body), "Product created. Open it above to add options or sizes.")} /></section>
-    <section className="staff-panel"><div className="staff-panel-head"><h2>Toppings & halal options</h2><span className="live-chip">Names · kitchen labels · visibility</span></div><div className="product-admin-cards">{dashboard.toppings.map((topping) => <ToppingEditor key={topping.id} topping={topping} onSave={(body) => complete(() => configRequest(body), `${topping.name} saved.`)} />)}</div><NewTopping onSave={(body) => complete(() => configRequest(body), "Topping created.")} /></section>
+    <section className="menu-setup-intro">
+      <div className="menu-setup-intro__copy"><span className="menu-setup-eyebrow">Your live ordering menu</span><h2>Make a menu change without guesswork.</h2><p>Add an item, update its price or photo, or hide it from customers. Changes go to the website as soon as you save.</p></div>
+      <div className="menu-setup-stats" aria-label="Menu summary"><div><strong>{activeProducts.length}</strong><span>Shown on menu</span></div><div><strong>{attentionProducts.length}</strong><span>Need attention</span></div><div><strong>{dashboard.categories.filter((category) => category.active).length}</strong><span>Visible categories</span></div></div>
+      <a className="staff-button menu-preview-link" href="/#menu" target="_blank" rel="noreferrer">View customer menu ↗</a>
+    </section>
+    <section className="menu-how-it-works" aria-label="How menu changes work">
+      <div><b>1</b><span><strong>Add or edit</strong><small>Start with the item basics. Pizza sizes and customer choices are edited inside the item.</small></span></div>
+      <div><b>2</b><span><strong>Add a photo</strong><small>Use a landscape 1200 × 675 image. You will see the same centre crop customers see.</small></span></div>
+      <div><b>3</b><span><strong>Save or hide</strong><small>Hide removes an item from the live menu but safely keeps past order records.</small></span></div>
+    </section>
+    <nav className="menu-admin-tabs" aria-label="Menu setup sections">
+      <button className={section === "products" ? "active" : ""} aria-pressed={section === "products"} onClick={() => setSection("products")}>Menu items <span>{dashboard.products.length}</span></button>
+      <button className={section === "categories" ? "active" : ""} aria-pressed={section === "categories"} onClick={() => setSection("categories")}>Categories <span>{dashboard.categories.length}</span></button>
+      <button className={section === "toppings" ? "active" : ""} aria-pressed={section === "toppings"} onClick={() => setSection("toppings")}>Toppings <span>{dashboard.toppings.length}</span></button>
+    </nav>
+    {section === "products" ? <section className="staff-panel menu-products-panel">
+      <div className="staff-panel-head menu-panel-heading"><div><h2>Menu items</h2><p>Search for an item, open it, then save the changes you want customers to see.</p></div><button className="staff-button" onClick={() => setAddingProduct((current) => !current)}>{addingProduct ? "Cancel" : "+ Add menu item"}</button></div>
+      {addingProduct ? <NewProduct categories={dashboard.categories} onCreate={async (body) => {
+        const result = await complete(() => configRequest(body), "Item created and kept hidden. Review it, then publish when ready.") as { id?: string } | undefined;
+        if (result?.id) { setNewProductId(result.id); setAddingProduct(false); setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }
+        return result;
+      }} /> : null}
+      <div className="menu-product-tools">
+        <label className="menu-search"><span>Search items</span><input type="search" placeholder="Try “pepperoni” or “wings”" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        <label><span>Category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">All categories</option>{dashboard.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+        <label><span>Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">All statuses</option><option value="live">Live and orderable</option><option value="attention">Sold out / setup needed</option><option value="hidden">Hidden from menu</option></select></label>
+      </div>
+      <p className="menu-results-count">Showing {filteredProducts.length} of {dashboard.products.length} items</p>
+      <div className="product-admin-cards">{filteredProducts.map((product) => <ProductEditor key={`${product.id}-${product.id === newProductId ? "new" : "existing"}`} product={product} categories={dashboard.categories} variations={dashboard.variations.filter((variation) => variation.product_id === product.id)} toppings={dashboard.toppings} defaultOpen={product.id === newProductId} onSave={(body, success) => complete(() => configRequest(body), success)} />)}</div>
+      {!filteredProducts.length ? <div className="staff-empty">No items match these filters. Clear the search or choose a different status.</div> : null}
+    </section> : null}
+    {section === "categories" ? <section className="staff-panel"><div className="staff-panel-head menu-panel-heading"><div><h2>Menu categories</h2><p>Categories create the sections customers browse. Hiding a category hides all of its items at once.</p></div><span className="live-chip">Names · order · visibility</span></div><div className="category-admin-list">{dashboard.categories.map((category) => <CategoryEditor key={category.id} category={category} onSave={(body) => complete(() => configRequest(body), `${category.name} category saved.`)} />)}</div><NewCategory onSave={(body) => complete(() => configRequest(body), "Category created.")} /></section> : null}
+    {section === "toppings" ? <section className="staff-panel"><div className="staff-panel-head menu-panel-heading"><div><h2>Toppings &amp; halal options</h2><p>These choices are shared by every pizza. Kitchen labels are the short names printed on tickets.</p></div><span className="live-chip">Shared pizza choices</span></div><div className="product-admin-cards">{dashboard.toppings.map((topping) => <ToppingEditor key={topping.id} topping={topping} onSave={(body) => complete(() => configRequest(body), `${topping.name} saved.`)} />)}</div><NewTopping onSave={(body) => complete(() => configRequest(body), "Topping created.")} /></section> : null}
     {message ? <p className="admin-message" role="status">{message}</p> : null}
   </div>;
 }
@@ -428,17 +476,22 @@ function NewCategory({ onSave }: { onSave: (body: Record<string, unknown>) => vo
   return <div className="admin-create-row"><strong>Add category</strong><input placeholder="Category name" value={name} onChange={(event) => setName(event.target.value)} /><button className="staff-button" disabled={!name.trim()} onClick={() => { onSave({ action: "category.upsert", name, active: true, displayOrder: 10000 }); setName(""); }}>Create</button></div>;
 }
 
-function ProductEditor({ product, categories, variations, toppings, onSave }: { product: Product; categories: Category[]; variations: Variation[]; toppings: Topping[]; onSave: (body: Record<string, unknown>, success: string) => void }) {
-  const [name, setName] = useState(product.name); const [description, setDescription] = useState(product.description); const [categoryId, setCategoryId] = useState(product.category_id); const [productType, setProductType] = useState(product.product_type); const [price, setPrice] = useState(String(product.base_price_cents / 100)); const [imageUrl, setImageUrl] = useState(product.image_url ?? ""); const [active, setActive] = useState(Boolean(product.active)); const [soldOut, setSoldOut] = useState(Boolean(product.sold_out)); const [pickup, setPickup] = useState(Boolean(product.pickup_eligible)); const [delivery, setDelivery] = useState(Boolean(product.delivery_eligible)); const [taxable, setTaxable] = useState(Boolean(product.taxable)); const [halal, setHalal] = useState(Boolean(product.halal_capable)); const [order, setOrder] = useState(String(product.display_order)); const [configuration, setConfiguration] = useState<Record<string, unknown>>({ ...product.configuration }); const [uploading, setUploading] = useState(false);
+function ProductEditor({ product, categories, variations, toppings, defaultOpen, onSave }: { product: Product; categories: Category[]; variations: Variation[]; toppings: Topping[]; defaultOpen?: boolean; onSave: (body: Record<string, unknown>, success: string) => Promise<unknown> }) {
+  const [open, setOpen] = useState(Boolean(defaultOpen)); const [name, setName] = useState(product.name); const [description, setDescription] = useState(product.description); const [categoryId, setCategoryId] = useState(product.category_id); const [productType, setProductType] = useState(product.product_type); const [price, setPrice] = useState(String(product.base_price_cents / 100)); const [imageUrl, setImageUrl] = useState(product.image_url ?? ""); const [active, setActive] = useState(Boolean(product.active)); const [soldOut, setSoldOut] = useState(Boolean(product.sold_out)); const [pickup, setPickup] = useState(Boolean(product.pickup_eligible)); const [delivery, setDelivery] = useState(Boolean(product.delivery_eligible)); const [taxable, setTaxable] = useState(Boolean(product.taxable)); const [halal, setHalal] = useState(Boolean(product.halal_capable)); const [order, setOrder] = useState(String(product.display_order)); const [configuration, setConfiguration] = useState<Record<string, unknown>>({ ...product.configuration });
   const sections = (Array.isArray(configuration.sections) ? configuration.sections : []) as ModifierSection[];
   const availability = (configuration.availability as { weekdays?: number[]; startMinute?: number; endMinute?: number; timeZone?: string; label?: string } | undefined);
-  const upload = async (file: File) => { setUploading(true); try { const data = new FormData(); data.set("file", file); const response = await fetch("/api/uploads", { method: "POST", body: data }); const result = await response.json() as { url?: string; error?: string }; if (!response.ok || !result.url) throw new Error(result.error ?? "Upload failed."); setImageUrl(result.url); } finally { setUploading(false); } };
   const updateSection = (index: number, next: ModifierSection) => setConfiguration({ ...configuration, sections: sections.map((section, current) => current === index ? next : section) });
   const setAvailability = (next?: typeof availability) => { const copy = { ...configuration }; if (next) copy.availability = next; else delete copy.availability; setConfiguration(copy); };
-  return <details className="product-admin-card"><summary><span><strong>{product.name}</strong><small>{categories.find((category) => category.id === product.category_id)?.name} · {product.product_type} · {formatMoney(product.base_price_cents)}</small></span><span>{product.active ? product.sold_out ? "Sold out" : "Live" : "Hidden"}</span></summary><div className="product-editor">
+  const productBody = (visible = active) => ({ action: "product.update", productId: product.id, categoryId, name, description, productType, basePriceCents: moneyToCents(price), imageUrl: imageUrl || null, active: visible, soldOut, pickupEligible: pickup, deliveryEligible: delivery, taxable, halalCapable: halal, displayOrder: Number(order), configuration });
+  const status = !product.active ? "Hidden" : product.setup_required ? "Needs setup" : product.sold_out ? "Sold out" : "Live";
+  return <details className="product-admin-card menu-product-card" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span className={`menu-item-thumb${product.image_url ? " has-image" : ""}`} style={product.image_url ? { backgroundImage: `url(${product.image_url})` } : undefined}>{product.image_url ? null : product.name.slice(0, 1).toUpperCase()}</span><span className="menu-item-summary"><strong>{product.name}</strong><small>{categories.find((category) => category.id === product.category_id)?.name} · {productTypeLabel(product.product_type)} · {formatMoney(product.base_price_cents)}</small></span><span className={`menu-status menu-status--${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span><span className="menu-edit-label">Edit item <b aria-hidden="true">⌄</b></span></summary><div className="product-editor">
+    <div className="editor-section-heading"><span>1</span><div><h3>Item details</h3><p>This is the name, description and starting price shown on the menu card.</p></div></div>
     <div className="settings-form"><Field label="Product name" value={name} onChange={setName} /><label>Category<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{categories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label><label>Product type<select value={productType} onChange={(event) => setProductType(event.target.value as Product["product_type"])}><option value="simple">Simple item</option><option value="pizza">Pizza with price options</option><option value="bundle">Deal / bundle</option><option value="configurable">Configurable item</option></select></label><Field label="Card price · C$" type="number" value={price} onChange={setPrice} /><Field label="Display order" type="number" value={order} onChange={setOrder} /><Field label="Description" wide multiline value={description} onChange={setDescription} /></div>
+    <p className="editor-hint menu-type-hint"><strong>{productTypeLabel(productType)}:</strong> {productTypeHelp(productType)}</p>
+    <div className="editor-section-heading"><span>2</span><div><h3>Where customers can order it</h3><p>“Sold out” keeps the item visible but disables ordering. “Visible” publishes or removes it.</p></div></div>
     <div className="admin-switch-grid"><Check label="Visible" checked={active} onChange={setActive} /><Check label="Sold out" checked={soldOut} onChange={setSoldOut} /><Check label="Pickup" checked={pickup} onChange={setPickup} /><Check label="Delivery" checked={delivery} onChange={setDelivery} /><Check label="Taxable" checked={taxable} onChange={setTaxable} /><Check label="Halal choices" checked={halal} onChange={setHalal} /></div>
-    <div className="image-admin"><div className="image-admin-preview">{imageUrl ? <span className="image-admin-thumb" style={{ backgroundImage: `url(${imageUrl})` }} /> : <span>No product image</span>}</div><label className="staff-button">{uploading ? "Uploading…" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); }} /></label><input aria-label="Product image URL" placeholder="Or paste an https image URL" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} /><button className="text-button" onClick={() => setImageUrl("")}>Remove image</button></div>
+    <div className="editor-section-heading"><span>3</span><div><h3>Menu photo</h3><p>Optional. The preview below matches the wide crop used on customer menu cards.</p></div></div>
+    <ProductImageField imageUrl={imageUrl} onChange={setImageUrl} />
     {productType === "pizza" ? <div className="config-editor"><h3>Pizza setup</h3><div className="settings-form">
       <Field label="Price-option label" value={String(configuration.variationLabel ?? "Choose your size")} onChange={(variationLabel) => setConfiguration({ ...configuration, variationLabel })} />
       <label>Order of the questions<select value={configuration.toppingsFirst ? "toppings" : "cheese"} onChange={(event) => setConfiguration({ ...configuration, toppingsFirst: event.target.value === "toppings" })}><option value="cheese">Cheese &amp; halal → crust &amp; sauce → toppings</option><option value="toppings">Cheese &amp; halal → toppings → crust &amp; sauce</option></select></label>
@@ -451,8 +504,60 @@ function ProductEditor({ product, categories, variations, toppings, onSave }: { 
     </div><p className="editor-hint">Halal is switched on with the “Halal choices” toggle above. Whatever is switched on is always asked in the order shown here.</p>{configuration.fixedRecipe ? <div className="recipe-toppings"><strong>Preselected recipe toppings</strong>{toppings.map((topping) => { const selected = (Array.isArray(configuration.recipeToppingIds) ? configuration.recipeToppingIds : []).includes(topping.id); return <Check key={topping.id} label={topping.name} checked={selected} onChange={(checked) => { const current = Array.isArray(configuration.recipeToppingIds) ? configuration.recipeToppingIds.map(String) : []; setConfiguration({ ...configuration, recipeToppingIds: checked ? [...current, topping.id] : current.filter((id) => id !== topping.id) }); }} />; })}</div> : null}</div> : <ModifierEditor sections={sections} toppingsFirst={Boolean(configuration.toppingsFirst)} onOrderChange={(toppingsFirst) => setConfiguration({ ...configuration, toppingsFirst })} onUpdate={updateSection} onRemove={(index) => setConfiguration({ ...configuration, sections: sections.filter((_, current) => current !== index) })} onAdd={() => setConfiguration({ ...configuration, sections: [...sections, { id: crypto.randomUUID(), label: "New choice", options: ["Option 1"], min: 0, max: 1, included: 1, extraPriceCents: 0 }] })} />}
     <div className="availability-editor"><Check label="Limit this product to advertised days and times" checked={Boolean(availability)} onChange={(checked) => setAvailability(checked ? { weekdays: [1, 2, 3, 4, 5], startMinute: 1020, endMinute: 1260, timeZone: "America/Toronto", label: "Mon–Fri · 5–9 PM" } : undefined)} />{availability ? <><div className="weekday-pills">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, index) => <label key={day}><input type="checkbox" checked={(availability.weekdays ?? []).includes(index)} onChange={(event) => setAvailability({ ...availability, weekdays: event.target.checked ? [...(availability.weekdays ?? []), index] : (availability.weekdays ?? []).filter((entry) => entry !== index) })} />{day}</label>)}</div><div className="settings-form"><Field label="Starts" type="time" value={minuteToTime(availability.startMinute ?? 0)} onChange={(value) => setAvailability({ ...availability, startMinute: timeToMinute(value) })} /><Field label="Ends" type="time" value={minuteToTime(availability.endMinute ?? 0)} onChange={(value) => setAvailability({ ...availability, endMinute: timeToMinute(value) })} /><Field label="Customer label" value={availability.label ?? ""} onChange={(label) => setAvailability({ ...availability, label })} /></div></> : null}</div>
     {productType === "pizza" ? <div className="variation-admin"><div className="subhead"><h3>Price options / sizes</h3><small>Included toppings are part of the listed price. Extras begin only after this allowance.</small></div>{variations.map((variation) => <VariationEditor key={variation.id} variation={variation} onSave={(body) => onSave(body, `${variation.name} pricing saved.`)} />)}<NewVariation productId={product.id} onSave={(body) => onSave(body, "Price option created.")} /></div> : null}
-    <button className="staff-button save-product" onClick={() => onSave({ action: "product.update", productId: product.id, categoryId, name, description, productType, basePriceCents: moneyToCents(price), imageUrl: imageUrl || null, active, soldOut, pickupEligible: pickup, deliveryEligible: delivery, taxable, halalCapable: halal, displayOrder: Number(order), configuration }, `${name} saved.`)}>Save entire product</button>
+    <div className="product-save-bar"><div><strong>{active ? "Currently set to appear on the menu" : "Currently hidden from customers"}</strong><small>Saving updates the live menu immediately.</small></div><div>{active ? <button className="staff-button staff-button--quiet-danger" onClick={() => { setActive(false); void onSave(productBody(false), `${name} hidden from the customer menu.`); }}>Hide from menu</button> : <button className="staff-button staff-button--secondary" onClick={() => { setActive(true); void onSave(productBody(true), `${name} published on the customer menu.`); }}>Publish on menu</button>}<button className="staff-button save-product" onClick={() => void onSave(productBody(), `${name} saved.`)}>Save changes</button></div></div>
   </div></details>;
+}
+
+function productTypeLabel(type: Product["product_type"]) {
+  if (type === "pizza") return "Pizza";
+  if (type === "bundle") return "Deal / bundle";
+  if (type === "configurable") return "Item with choices";
+  return "Simple item";
+}
+
+function productTypeHelp(type: Product["product_type"]) {
+  if (type === "pizza") return "Customers choose a size, crust, sauce and toppings. Add at least one price option before publishing.";
+  if (type === "bundle") return "Use this for combos or deals with several required selections.";
+  if (type === "configurable") return "Use this when an item needs choices such as flavour, drink or quantity.";
+  return "Best for drinks, dips and sides that can be added in one tap.";
+}
+
+function ProductImageField({ imageUrl, onChange }: { imageUrl: string; onChange: (value: string) => void }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [showUrl, setShowUrl] = useState(false);
+  const upload = async (file: File) => {
+    setError(""); setDimensions(null);
+    if (file.size > 5 * 1024 * 1024) { setError("That file is over 5 MB. Export a smaller JPG or WebP and try again."); return; }
+    setUploading(true);
+    try {
+      const data = new FormData(); data.set("file", file);
+      const response = await fetch("/api/uploads", { method: "POST", body: data });
+      const result = await response.json() as { url?: string; width?: number; height?: number; error?: string };
+      if (!response.ok || !result.url) throw new Error(result.error ?? "Upload failed.");
+      onChange(result.url);
+      if (result.width && result.height) setDimensions({ width: result.width, height: result.height });
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "That image could not be uploaded."); }
+    finally { setUploading(false); }
+  };
+  const ratioWarning = dimensions && (dimensions.width < 800 || dimensions.height < 450)
+    ? "This photo may look soft on larger screens. 1200 × 675 or larger is recommended."
+    : dimensions && Math.abs(dimensions.width / dimensions.height - 16 / 9) > .35
+      ? "This shape will be centre-cropped. Keep the food near the middle of the image."
+      : "";
+  return <div className="product-image-editor">
+    <div className={`product-image-crop${imageUrl ? " has-image" : ""}`} style={imageUrl ? { backgroundImage: `url(${imageUrl})` } : undefined}>
+      {!imageUrl ? <span><b>No photo yet</b><small>The menu uses a branded illustration until you add one.</small></span> : <em>Customer card crop</em>}
+    </div>
+    <div className="product-image-copy"><strong>Best result: 1200 × 675 px</strong><p>Use a landscape JPG or WebP under 5 MB. The original file is stored safely and displayed with a centred 16:9 crop—keep the food away from the edges.</p>
+      {dimensions ? <p className="image-file-status">Uploaded {dimensions.width} × {dimensions.height} px. Save the item to publish this photo.</p> : imageUrl ? <p className="image-file-status">Photo ready. Save the item to publish any change.</p> : null}
+      {ratioWarning ? <p className="image-warning">{ratioWarning}</p> : null}
+      {error ? <p className="image-error" role="alert">{error}</p> : null}
+      <div className="product-image-actions"><label className="staff-button">{uploading ? "Uploading…" : imageUrl ? "Replace photo" : "Choose photo"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void upload(file); }} /></label>{imageUrl ? <button type="button" className="text-button danger-text" onClick={() => { onChange(""); setDimensions(null); setError(""); }}>Remove photo</button> : null}<button type="button" className="text-button" onClick={() => setShowUrl((current) => !current)}>{showUrl ? "Hide image URL" : "Use an image URL instead"}</button></div>
+      {showUrl ? <label className="image-url-field">Secure image URL<input type="text" inputMode="url" placeholder="https://…" value={imageUrl} onChange={(event) => { onChange(event.target.value); setDimensions(null); }} /><small>Only use a permanent HTTPS address you control. Uploading is more reliable.</small></label> : null}
+    </div>
+  </div>;
 }
 
 function ModifierEditor({ sections, toppingsFirst, onOrderChange, onUpdate, onRemove, onAdd }: { sections: ModifierSection[]; toppingsFirst: boolean; onOrderChange: (toppingsFirst: boolean) => void; onUpdate: (index: number, section: ModifierSection) => void; onRemove: (index: number) => void; onAdd: () => void }) {
@@ -485,9 +590,23 @@ function NewVariation({ productId, onSave }: { productId: string; onSave: (body:
   return <div className="variation-row variation-row--new"><input placeholder="New option name" value={name} onChange={(event) => setName(event.target.value)} /><label>Menu price<input type="number" step=".01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label>Extra topping<input type="number" step=".01" value={extra} onChange={(event) => setExtra(event.target.value)} /></label><label>Included toppings<input type="number" value={included} onChange={(event) => setIncluded(event.target.value)} /></label><button className="staff-button" disabled={!name.trim()} onClick={() => onSave({ action: "variation.upsert", productId, name, basePriceCents: moneyToCents(price), extraToppingPriceCents: moneyToCents(extra), includedToppingUnitsBps: Number(included) * 10_000, active: true, displayOrder: 10000 })}>Add option</button></div>;
 }
 
-function NewProduct({ categories, onSave }: { categories: Category[]; onSave: (body: Record<string, unknown>) => void }) {
-  const [name, setName] = useState(""); const [categoryId, setCategoryId] = useState(categories[0]?.id ?? ""); const [type, setType] = useState("simple"); const [price, setPrice] = useState("0");
-  return <div className="admin-create-row"><strong>Add product</strong><input placeholder="Product name" value={name} onChange={(event) => setName(event.target.value)} /><select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{categories.filter((category) => category.active).map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value)}><option value="simple">Simple item</option><option value="pizza">Pizza</option><option value="bundle">Deal / bundle</option><option value="configurable">Configurable</option></select><input aria-label="Price" type="number" step=".01" value={price} onChange={(event) => setPrice(event.target.value)} /><button className="staff-button" disabled={!name.trim()} onClick={() => { onSave({ action: "product.create", name, categoryId, productType: type, basePriceCents: moneyToCents(price), description: "" }); setName(""); }}>Create</button></div>;
+function NewProduct({ categories, onCreate }: { categories: Category[]; onCreate: (body: Record<string, unknown>) => Promise<unknown> }) {
+  const activeCategories = categories.filter((category) => category.active);
+  const [name, setName] = useState(""); const [description, setDescription] = useState(""); const [categoryId, setCategoryId] = useState(activeCategories[0]?.id ?? ""); const [type, setType] = useState<Product["product_type"]>("simple"); const [price, setPrice] = useState(""); const [imageUrl, setImageUrl] = useState(""); const [busy, setBusy] = useState(false);
+  const create = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true);
+    try {
+      const result = await onCreate({ action: "product.create", name, categoryId, productType: type, basePriceCents: moneyToCents(price), description, imageUrl: imageUrl || null, active: false });
+      if (result) { setName(""); setDescription(""); setPrice(""); setImageUrl(""); }
+    } finally { setBusy(false); }
+  };
+  return <form className="menu-new-product" onSubmit={create}>
+    <div className="menu-new-product__head"><div><span className="menu-setup-eyebrow">New menu item</span><h3>Start with what customers will see</h3><p>The item is created hidden, so you can review its photo and choices before publishing it.</p></div><span className="menu-draft-chip">Saved as hidden</span></div>
+    <div className="settings-form"><Field label="Product name" value={name} onChange={setName} /><label>Category<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)} required>{activeCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label><label>How customers order it<select value={type} onChange={(event) => setType(event.target.value as Product["product_type"])}><option value="simple">One-tap simple item</option><option value="pizza">Pizza with sizes &amp; toppings</option><option value="bundle">Deal / bundle with choices</option><option value="configurable">Item with choices</option></select></label><Field label="Starting price · C$" type="number" value={price} onChange={setPrice} /><Field label="Menu description · optional" wide multiline value={description} onChange={setDescription} /></div>
+    <p className="editor-hint menu-type-hint"><strong>{productTypeLabel(type)}:</strong> {productTypeHelp(type)}</p>
+    <ProductImageField imageUrl={imageUrl} onChange={setImageUrl} />
+    <div className="menu-new-product__footer"><p>{type === "pizza" ? "After creating it, add at least one size and price before you publish." : "After creating it, the full editor opens so you can check availability and choices."}</p><button className="staff-button" disabled={busy || name.trim().length < 2 || !categoryId || !Number.isFinite(Number(price)) || Number(price) < 0}>{busy ? "Creating…" : "Create hidden item"}</button></div>
+  </form>;
 }
 
 function ToppingEditor({ topping, onSave }: { topping: Topping; onSave: (body: Record<string, unknown>) => void }) {
