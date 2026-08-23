@@ -72,6 +72,11 @@ locals {
       # Behind App Service the forwarded chain is trustworthy on the last hop.
       TRUST_PROXY_HEADERS = "true"
 
+      # Azure terminates TLS before forwarding the request to Vinext. Trust its
+      # X-Forwarded-Proto header so request.url keeps the public https scheme;
+      # Twilio signs the exact public callback URL and rejects an http mismatch.
+      VINEXT_TRUST_PROXY = "1"
+
       # The dispatcher runs on a timer with no request to derive an origin from,
       # and Twilio needs a URL it can reach for the keypress callback. Points at
       # the default hostname until a custom domain is configured.
