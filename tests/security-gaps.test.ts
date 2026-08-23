@@ -12,6 +12,12 @@
  * anyone who found the URL. Rate limiting bounds how fast that can be scraped;
  * it does not stop it being read.
  *
+ * **The catalogue published the settings table.** `/api/catalog` is what the
+ * storefront loads before anyone signs in, and it returned every settings row
+ * there was — the developer alert addresses, the restaurant's own order-alert
+ * inbox, and the `dataMigration:*` bookkeeping. None of it is a credential; all
+ * of it was readable by anyone who knew the URL. It now publishes an allow-list.
+ *
  * **H-15 — tokens in URLs.** The audit found full tokenised URLs in the runtime
  * access log. The link in an email still has to carry the token, but nothing
  * after that does.
@@ -27,6 +33,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { inspectImage, ImageRejected } = await import("@/lib/image-validation");
 const { GET: rosterRoute } = await import("@/app/api/timeclock/kiosk/route");
+const { GET: catalogRoute } = await import("@/app/api/catalog/route");
 const { GET: trackRoute } = await import("@/app/api/orders/track/route");
 const { hashOpaqueToken, generateOpaqueToken } = await import("@/lib/domain");
 const { securityHeadersFor, isTokenBearingPath, APPLE_PAY_ASSOCIATION_PATH } = await import("@/lib/security-headers");
@@ -170,6 +177,39 @@ withDb("stores only the hash of the device token", async () => {
   );
   const row = await getPool().query<{ value_json: string }>("SELECT value_json FROM settings WHERE key = 'kiosk'");
   assert.ok(!row.rows[0].value_json.includes(token));
+});
+
+// --- The catalogue is a public document ------------------------------------
+
+withDb("publishes only the settings the storefront renders", async () => {
+  const body = (await (await catalogRoute()).json()) as {
+    settings: Record<string, { value: Record<string, unknown> }>;
+  };
+  const published = Object.keys(body.settings);
+
+  // The two that started this: alert recipients, and the migration bookkeeping
+  // that tells a reader exactly which data fixes this deployment has had.
+  assert.ok(!published.includes("alerts"), `alerts must not be public: ${published.join(", ")}`);
+  assert.ok(
+    !published.some((key) => key.startsWith("dataMigration:")),
+    `migration markers must not be public: ${published.join(", ")}`,
+  );
+  // The kiosk pairing row lives in the same table and is nobody's business.
+  assert.ok(!published.includes("kiosk"));
+
+  // An allow-list, so anything seeded later is private until it is listed.
+  for (const key of published) {
+    assert.ok(
+      ["business", "ordering", "delivery", "taxAndTips", "content", "hours", "featureFlags", "operations"].includes(key),
+      `unexpected public settings key: ${key}`,
+    );
+  }
+
+  // The restaurant's order-alert inbox is a recipient, not a contact address —
+  // the storefront shows the phone number. It must not ride along inside a key
+  // that is otherwise public.
+  assert.equal(body.settings.business?.value.email, undefined);
+  assert.ok(body.settings.business?.value.phone, "the phone number is still published");
 });
 
 // --- H-15: tokens out of URLs ------------------------------------------------

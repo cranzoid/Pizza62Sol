@@ -11,6 +11,76 @@ import { loadActiveClosures } from "@/lib/closures";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * What an anonymous visitor is allowed to read.
+ *
+ * `listSettings()` returns the whole settings table, and this endpoint is
+ * unauthenticated — so every row in it was a public document. That included
+ * `alerts.developerEmails`, the restaurant's own `business.email`, and the
+ * `dataMigration:*` bookkeeping markers, none of which the storefront reads.
+ * None of them is a credential, but an address that otherwise only appears
+ * behind the admin login should not be readable by anyone who knows the URL.
+ *
+ * An allow-list rather than a deny-list, deliberately: a settings key added
+ * later stays private until somebody decides it should not be, instead of
+ * shipping to every visitor the moment it is seeded.
+ */
+const PUBLIC_SETTING_KEYS = [
+  "business",
+  "ordering",
+  "delivery",
+  "taxAndTips",
+  "content",
+  "hours",
+  "featureFlags",
+  "operations",
+] as const;
+
+/**
+ * Two of those keys carry fields the storefront never reads.
+ *
+ * `business.email` is where new-order alerts are sent, not a contact address
+ * for customers — the site shows the phone number. `operations` is mostly
+ * back-office (payroll period, feedback delay, low-rating threshold); only the
+ * halal notice and the half-topping rule are rendered to a customer.
+ *
+ * Keys absent from this map are published whole.
+ */
+const PUBLIC_SETTING_FIELDS: Record<string, readonly string[]> = {
+  business: [
+    "name",
+    "phone",
+    "locale",
+    "currency",
+    "timeZone",
+    "address",
+    "latitude",
+    "longitude",
+    "googleReviewUrl",
+  ],
+  operations: ["halalNotice", "halalSurchargeType", "halalSurchargeAmount", "halfToppingUnitsBps"],
+};
+
+function publicSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const published: Record<string, unknown> = {};
+  for (const key of PUBLIC_SETTING_KEYS) {
+    const record = settings[key] as { value: unknown } | undefined;
+    if (!record) continue;
+    const fields = PUBLIC_SETTING_FIELDS[key];
+    // `hours` is an array, so only narrow the keys that are known objects.
+    if (!fields || Array.isArray(record.value) || typeof record.value !== "object" || record.value === null) {
+      published[key] = record;
+      continue;
+    }
+    const source = record.value as Record<string, unknown>;
+    published[key] = {
+      ...record,
+      value: Object.fromEntries(fields.filter((field) => field in source).map((field) => [field, source[field]])),
+    };
+  }
+  return published;
+}
+
 export async function GET() {
   await ensureDatabase();
   const database = getD1();
@@ -55,7 +125,7 @@ export async function GET() {
       })),
       variations: variationResult.results,
       toppings: toppingResult.results,
-      settings,
+      settings: publicSettings(settings),
       // H-08: sent to the browser so the store banner can say *why* it is shut
       // and when it reopens, rather than falling back to the weekly schedule and
       // telling a customer the store opens at 11 on a day it is closed all day.
