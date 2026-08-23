@@ -99,3 +99,26 @@ output "apex_a_record_command" {
   DESC
   value       = "az webapp config hostname get-external-ip -g ${azurerm_resource_group.main.name} --webapp-name ${azurerm_linux_web_app.main.name} -o tsv"
 }
+
+output "github_actions_variables" {
+  description = <<-DESC
+    The repository variables `.github/workflows/deploy.yml` reads.
+
+    Every one of them is an identifier, not a secret — the trust is the subject
+    claim on the federated credential, which is why these are Actions
+    *variables* and there is no service principal password anywhere.
+
+    Set them with:
+
+      terraform output -json github_actions_variables \
+        | jq -r 'to_entries[] | "\\(.key)=\\(.value)"' \
+        | while IFS='=' read -r name value; do gh variable set "$name" -b "$value"; done
+  DESC
+  value = var.github_repository == "" ? {} : {
+    AZURE_CLIENT_ID       = azurerm_user_assigned_identity.github_actions[0].client_id
+    AZURE_TENANT_ID       = data.azurerm_client_config.current.tenant_id
+    AZURE_SUBSCRIPTION_ID = data.azurerm_client_config.current.subscription_id
+    AZURE_RESOURCE_GROUP  = azurerm_resource_group.main.name
+    AZURE_APP_NAME        = azurerm_linux_web_app.main.name
+  }
+}

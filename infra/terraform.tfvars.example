@@ -31,3 +31,18 @@ email_provider = "resend"
 
 # Sandbox until a test order has been through end to end.
 clover_environment = "sandbox"
+
+# ---------------------------------------------------------------------------
+# The deploy pipeline
+#
+# Setting this creates the user-assigned identity the GitHub Actions workflow
+# signs in as, plus the two federated credentials Azure checks its token
+# against: one for a push to `main`, one for the `production` environment the
+# deploy job runs in. Nothing here is a secret — there is no password to leak,
+# only a trust relationship scoped to this repository.
+#
+# After applying, `terraform output github_actions_variables` prints the five
+# repository variables `.github/workflows/deploy.yml` reads. Without them the
+# workflow cannot sign in, and a push to `main` deploys nothing.
+# ---------------------------------------------------------------------------
+github_repository = "cranzoid/Pizza62Sol"
