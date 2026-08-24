@@ -552,7 +552,9 @@ export const timeClockEvents = pgTable(
   },
   (table) => [
     index("clock_user_time_idx").on(table.staffUserId, table.occurredAt),
+    uniqueIndex("clock_event_exact_uq").on(table.staffUserId, table.action, table.occurredAt),
     check("clock_events_action", inList("action", ["clock_in", "clock_out", "break_start", "break_end"])),
+    check("clock_events_source", inList("source", ["self_service", "kiosk", "manager"])),
   ],
 );
 
@@ -701,17 +703,22 @@ export const analyticsEvents = pgTable(
 
 // C-06: single-row-per-employee clock state used as a compare-and-swap guard so
 // concurrent transitions (e.g. two simultaneous clock-ins) cannot both succeed.
-export const timeClockState = pgTable("time_clock_state", {
-  staffUserId: text("staff_user_id")
-    .primaryKey()
-    .references(() => staffUsers.id, { onDelete: "cascade", onUpdate: "cascade" }),
-  state: text("state").notNull(),
-  sessionId: text("session_id"),
-  // C-06: identifies the transition that last won the compare-and-swap, so the
-  // matching clock event is inserted in the same batch only by the winning request.
-  transitionId: text("transition_id"),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const timeClockState = pgTable(
+  "time_clock_state",
+  {
+    staffUserId: text("staff_user_id")
+      .primaryKey()
+      .references(() => staffUsers.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    state: text("state").notNull(),
+    sessionId: text("session_id"),
+    transitionId: text("transition_id"),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  () => [
+    check("clock_state_value", inList("state", ["clocked_out", "working", "on_break"])),
+    check("clock_state_session", sql`state = 'clocked_out' OR session_id IS NOT NULL`),
+  ],
+);
 
 // Time clock: pay, kiosk PIN and the work-week rules that drive overtime. Kept
 // separate from staff_users so payroll data is not loaded on every auth check.

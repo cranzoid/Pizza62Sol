@@ -2,20 +2,23 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { BrandLogo } from "@/app/BrandLogo";
-import { formatMoney } from "@/lib/domain";
+import { formatMoney, zonedDateTimeToUtc } from "@/lib/domain";
 
 export type ClockUser = { id: string; email: string; name: string; role: string; permissions: string[] };
 
 type TimesheetDay = { date: string; paidMs: number; breakMs: number; firstIn: number | null; lastOut: number | null; open: boolean };
+type WorkSession = { clockIn: number; clockOut: number | null; breakMs: number; paidMs: number; open: boolean };
 type Shift = { id: string; staff_user_id: string | null; role: string | null; starts_at: number; ends_at: number; unpaid_break_minutes: number; notes: string | null; published: number };
 type ClockEvent = { id: string; action: string; occurred_at: number; session_id: string; source: string };
 
 export type EmployeeClockData = {
   user: ClockUser;
+  asOf: number;
   state: "clocked_out" | "working" | "on_break";
+  clockIssue: string | null;
   period: { start: number; end: number; label: string; timeZone: string; offset: number };
   profile: { jobTitle: string | null; employmentType: string; wageCents: number; weeklyOvertimeMinutes: number; hasPin: boolean; availability: Array<{ weekday: number; available: boolean; startMinute: number; endMinute: number }> };
-  timesheet: { days: TimesheetDay[]; totalPaidMs: number; totalBreakMs: number; regularMs: number; overtimeMs: number; grossPayCents: number; openSession: boolean; weeks: Array<{ weekStart: string; paidMs: number; regularMs: number; overtimeMs: number }> };
+  timesheet: { days: TimesheetDay[]; sessions: WorkSession[]; totalPaidMs: number; totalBreakMs: number; regularMs: number; overtimeMs: number; grossPayCents: number; openSession: boolean; weeks: Array<{ weekStart: string; paidMs: number; regularMs: number; overtimeMs: number }> };
   shifts: Shift[];
   events: ClockEvent[];
   corrections: Array<Record<string, unknown>>;
@@ -35,7 +38,18 @@ const clockTime = (value: number, timeZone: string) =>
 const dayLabel = (value: number | string, timeZone: string) =>
   new Date(typeof value === "string" ? `${value}T12:00:00Z` : value)
     .toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric", timeZone: typeof value === "string" ? "UTC" : timeZone });
-const dateInput = (value: number) => new Date(value - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+const dateInput = (value: number, timeZone: string) => {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone,
+  }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+const dateInputValue = (value: string, timeZone: string) => {
+  const [date, time] = value.split("T");
+  if (!date || !time) return Number.NaN;
+  const [hour, minute] = time.split(":").map(Number);
+  return zonedDateTimeToUtc(date, hour * 60 + minute, timeZone);
+};
 const minuteToTime = (value: number) => `${String(Math.floor(value / 60) % 24).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
 const timeToMinute = (value: string) => { const [hour, minute] = value.split(":").map(Number); return hour * 60 + minute; };
 
@@ -45,6 +59,7 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
   const [data, setData] = useState<EmployeeClockData | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"clock" | "schedule" | "timesheet" | "requests">("clock");
   const [periodOffset, setPeriodOffset] = useState(0);
   const [now, setNow] = useState(() => Date.now());
@@ -62,18 +77,31 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
   }, [load]);
   const act = async (action: string, body: Record<string, unknown> = {}) => {
     setError(""); setMessage("");
-    const response = await fetch("/api/timeclock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...body }) });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) { setError(result.error ?? "That did not work."); return false; }
-    setMessage("Saved.");
-    await load();
-    return true;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/timeclock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...body }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { setError(result.error ?? "That did not work."); return false; }
+      const confirmations: Record<string, string> = {
+        clock_in: "You are clocked in.", break_start: "Your unpaid break has started.",
+        break_end: "Your break is over. You are back on shift.", clock_out: "You are clocked out.",
+      };
+      setMessage(confirmations[action] ?? "Saved.");
+      await load();
+      return true;
+    } finally {
+      setBusy(false);
+    }
   };
   const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
   const timeZone = data?.period.timeZone ?? "America/Toronto";
   // The paid total already includes any shift in progress — the server measures an
   // open session up to now — so the screen matches the clock on the wall.
-  const todayShift = data?.shifts.find((shift) => shift.starts_at < now + 12 * 3_600_000 && shift.ends_at > now - 3_600_000);
+  const nextShift = data?.shifts.filter((shift) => shift.ends_at > now).sort((left, right) => left.starts_at - right.starts_at)[0];
+  const currentSession = data?.timesheet.sessions.at(-1)?.open ? data.timesheet.sessions.at(-1) : null;
+  const currentShiftMs = currentSession
+    ? currentSession.paidMs + (data?.state === "working" ? Math.max(0, now - data.asOf) : 0)
+    : 0;
 
   return <div className="staff-shell">
     <aside className="staff-sidebar">
@@ -97,41 +125,49 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
       {error ? <div className="form-error" role="alert">{error}</div> : null}
       {message ? <p className="admin-message" role="status">{message}</p> : null}
       {!data ? <div className="staff-panel" role="status">Loading your time record…</div> : <>
-        {tab === "clock" ? <div className="clock-layout">
-          <section className="clock-hero">
-            <span className="live-chip"><i /> {data.state.replaceAll("_", " ")}</span>
-            <div className="clock-state"><strong>{data.state === "working" ? "On shift" : data.state === "on_break" ? "On break" : "Off shift"}</strong></div>
-            <div className="clock-time">{formatDuration(data.timesheet.totalPaidMs)}</div>
-            <p className="clock-caption">Paid time this {data.period.label} pay period</p>
-            <div className="clock-actions">
-              <button className="primary" disabled={data.state !== "clocked_out"} onClick={() => void act("clock_in")}>Clock in</button>
-              <button disabled={data.state !== "working"} onClick={() => void act("break_start")}>Start break</button>
-              <button disabled={data.state !== "on_break"} onClick={() => void act("break_end")}>End break</button>
-              <button disabled={data.state !== "working"} onClick={() => void act("clock_out")}>Clock out</button>
+        {tab === "clock" ? <div className="clock-dashboard">
+          {data.clockIssue ? <section className="clock-integrity-alert" role="alert"><b>Clock paused for review</b><span>{data.clockIssue} Ask a manager to review your punch history.</span></section> : null}
+          <section className={`clock-command clock-command--${data.state}`}>
+            <div className="clock-command-head">
+              <span className="clock-status-dot" aria-hidden="true" />
+              <div><small>Your current status</small><h2>{data.state === "working" ? "You are on shift" : data.state === "on_break" ? "You are on an unpaid break" : "You are off shift"}</h2></div>
+              <time>{new Date(now).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}</time>
             </div>
-            {todayShift ? <p className="clock-caption">Scheduled {clockTime(todayShift.starts_at, timeZone)} – {clockTime(todayShift.ends_at, timeZone)}{todayShift.role ? ` · ${todayShift.role}` : ""}</p> : null}
-          </section>
-          <section className="staff-panel">
-            <div className="staff-panel-head"><h2>This pay period</h2><span className="live-chip">{dayLabel(data.period.start, timeZone)} – {dayLabel(data.period.end - 1, timeZone)}</span></div>
-            <dl className="viz-facts">
-              <div><dt>Paid hours</dt><dd>{formatDuration(data.timesheet.totalPaidMs)}</dd></div>
-              <div><dt>Regular</dt><dd>{formatDuration(data.timesheet.regularMs)}</dd></div>
-              <div><dt>Overtime</dt><dd>{formatDuration(data.timesheet.overtimeMs)}</dd></div>
-              <div><dt>Unpaid breaks</dt><dd>{formatDuration(data.timesheet.totalBreakMs)}</dd></div>
-              {data.profile.wageCents ? <div><dt>Estimated gross</dt><dd>{formatMoney(data.timesheet.grossPayCents)}</dd></div> : null}
-            </dl>
-            {data.timesheet.overtimeMs > 0 ? <p className="editor-hint">Overtime starts after {Math.round(data.profile.weeklyOvertimeMinutes / 60)} hours in a week.</p> : null}
-          </section>
-          <section className="staff-panel">
-            <div className="staff-panel-head"><h2>Recent punches</h2><span className="live-chip">Exact time</span></div>
-            <div className="clock-events">
-              {data.events.slice(-8).reverse().map((event) => <div className="clock-event" key={event.id}>
-                <strong>{event.action.replaceAll("_", " ")}{event.source === "manager" ? " · edited" : event.source === "kiosk" ? " · kiosk" : ""}</strong>
-                <span>{new Date(event.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })}</span>
-              </div>)}
-              {!data.events.length ? <div className="staff-empty">No clock events yet.</div> : null}
+            <div className="clock-command-body">
+              <div className="current-shift-time"><span>{currentSession ? "Paid this shift" : "Ready when you are"}</span><strong>{currentSession ? formatDuration(currentShiftMs) : "—"}</strong><small>Exact time · no automatic rounding</small></div>
+              <div className="clock-primary-actions">
+                {data.state === "clocked_out" ? <button className="clock-big-action" disabled={busy || Boolean(data.clockIssue)} onClick={() => void act("clock_in")}><span aria-hidden="true">▶</span><b>{busy ? "Recording…" : "Clock in"}</b><small>Start paid time now</small></button> : null}
+                {data.state === "working" ? <>
+                  <button className="clock-big-action clock-big-action--break" disabled={busy || Boolean(data.clockIssue)} onClick={() => void act("break_start")}><span aria-hidden="true">Ⅱ</span><b>Start break</b><small>Pause paid time</small></button>
+                  <button className="clock-big-action clock-big-action--out" disabled={busy || Boolean(data.clockIssue)} onClick={() => void act("clock_out")}><span aria-hidden="true">■</span><b>Clock out</b><small>End this shift</small></button>
+                </> : null}
+                {data.state === "on_break" ? <button className="clock-big-action" disabled={busy || Boolean(data.clockIssue)} onClick={() => void act("break_end")}><span aria-hidden="true">▶</span><b>End break</b><small>Resume paid time</small></button> : null}
+              </div>
             </div>
           </section>
+
+          <section className="clock-summary-grid">
+            <article className="clock-summary-card"><span>Pay period</span><strong>{formatDuration(data.timesheet.totalPaidMs)}</strong><small>{dayLabel(data.period.start, timeZone)} – {dayLabel(data.period.end - 1, timeZone)}</small></article>
+            <article className="clock-summary-card"><span>Unpaid breaks</span><strong>{formatDuration(data.timesheet.totalBreakMs)}</strong><small>Excluded from paid time</small></article>
+            <article className="clock-summary-card"><span>Overtime</span><strong>{formatDuration(data.timesheet.overtimeMs)}</strong><small>After {Math.round(data.profile.weeklyOvertimeMinutes / 60)}h per week</small></article>
+            {data.profile.wageCents ? <article className="clock-summary-card"><span>Estimated gross</span><strong>{formatMoney(data.timesheet.grossPayCents)}</strong><small>Before deductions</small></article> : null}
+          </section>
+
+          <div className="clock-detail-grid">
+            <section className="staff-panel next-shift-panel">
+              <div className="staff-panel-head"><h2>Next scheduled shift</h2><button className="text-button" onClick={() => setTab("schedule")}>View schedule</button></div>
+              {nextShift ? <div className="next-shift-card"><div className="next-shift-date"><b>{new Date(nextShift.starts_at).toLocaleDateString("en-CA", { day: "numeric", timeZone })}</b><span>{new Date(nextShift.starts_at).toLocaleDateString("en-CA", { month: "short", timeZone })}</span></div><div><strong>{dayLabel(nextShift.starts_at, timeZone)}</strong><p>{clockTime(nextShift.starts_at, timeZone)} – {clockTime(nextShift.ends_at, timeZone)}{nextShift.role ? ` · ${nextShift.role}` : ""}</p><small>{nextShift.unpaid_break_minutes ? `${nextShift.unpaid_break_minutes} min planned unpaid break` : "No planned break"}</small></div></div> : <div className="staff-empty">No published shift is coming up. Check with your manager if you expected one.</div>}
+            </section>
+            <section className="staff-panel">
+              <div className="staff-panel-head"><h2>Recent activity</h2><button className="text-button" onClick={() => setTab("timesheet")}>View all hours</button></div>
+              <div className="clock-timeline">
+                {data.events.slice(-5).reverse().map((event) => <div className="clock-timeline-row" key={event.id}><i aria-hidden="true" /><div><strong>{event.action.replaceAll("_", " ")}</strong><small>{event.source === "manager" ? "Manager entry" : event.source === "kiosk" ? "Shared kiosk" : "My clock"}</small></div><time>{new Date(event.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })}</time></div>)}
+                {!data.events.length ? <div className="staff-empty">Your first punch will appear here.</div> : null}
+              </div>
+            </section>
+          </div>
+
+          <section className="clock-help-strip"><b>Simple sequence</b><span>Clock in</span><i>→</i><span>Start break</span><i>→</i><span>End break</span><i>→</i><span>Clock out</span><small>Made a mistake? Use Requests → Fix a punch.</small></section>
         </div> : null}
 
         {tab === "schedule" ? <>
@@ -171,7 +207,7 @@ export function EmployeeTimeClock({ user, onLogout }: { user: ClockUser; onLogou
               {!data.timesheet.days.length ? <tr><td colSpan={5} className="staff-empty">No hours recorded in this period.</td></tr> : null}
             </tbody>
           </table></div>
-          {data.approvals.length ? <p className="editor-hint">Approved periods: {data.approvals.map((row) => new Date(Number(row.period_start)).toLocaleDateString("en-CA")).join(", ")}</p> : null}
+          {data.approvals.some((row) => row.status === "approved") ? <p className="editor-hint">Approved periods: {data.approvals.filter((row) => row.status === "approved").map((row) => new Date(Number(row.period_start)).toLocaleDateString("en-CA", { timeZone })).join(", ")}</p> : null}
         </section> : null}
 
         {tab === "requests" ? <RequestsPanel data={data} timeZone={timeZone} onAct={act} /> : null}
@@ -211,14 +247,14 @@ function RequestsPanel({ data, timeZone, onAct }: { data: EmployeeClockData; tim
     <section className="staff-panel">
       <div className="staff-panel-head"><h2>Fix a punch</h2></div>
       <div className="settings-form">
-        <label>Which punch<select value={eventId} onChange={(event) => { setEventId(event.target.value); const match = data.events.find((entry) => entry.id === event.target.value); if (match) setCorrectedTime(dateInput(match.occurred_at)); }}>
+        <label>Which punch<select value={eventId} onChange={(event) => { setEventId(event.target.value); const match = data.events.find((entry) => entry.id === event.target.value); if (match) setCorrectedTime(dateInput(match.occurred_at, timeZone)); }}>
           <option value="">Choose a punch…</option>
           {[...data.events].reverse().map((event) => <option key={event.id} value={event.id}>{event.action.replaceAll("_", " ")} · {new Date(event.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })}</option>)}
         </select></label>
         <label>Correct time<input type="datetime-local" value={correctedTime} onChange={(event) => setCorrectedTime(event.target.value)} /></label>
         <label className="field-wide">Why<textarea value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder="I forgot to clock out at the end of my shift." /></label>
       </div>
-      <button className="staff-button" disabled={!eventId || !correctedTime || reason.trim().length < 5} onClick={() => void onAct("correction.request", { eventId, requestedTime: new Date(correctedTime).getTime(), reason })}>Send to your manager</button>
+      <button className="staff-button" disabled={!eventId || !correctedTime || reason.trim().length < 5} onClick={() => void onAct("correction.request", { eventId, requestedTime: dateInputValue(correctedTime, timeZone), reason })}>Send to your manager</button>
       <div className="setup-list">
         {data.corrections.map((row) => <div className="setup-item" key={String(row.id)}><b>{String(row.status) === "approved" ? "✓" : String(row.status) === "declined" ? "×" : "·"}</b><div><strong>{new Date(Number(row.requested_time)).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })}</strong><p>{String(row.status)}{row.reviewer_note ? ` — ${String(row.reviewer_note)}` : ""}</p></div></div>)}
       </div>
@@ -229,10 +265,10 @@ function RequestsPanel({ data, timeZone, onAct }: { data: EmployeeClockData; tim
         <label>From<input type="date" value={timeOffStart} onChange={(event) => setTimeOffStart(event.target.value)} /></label>
         <label>To<input type="date" value={timeOffEnd} onChange={(event) => setTimeOffEnd(event.target.value)} /></label>
         <label>Note<textarea value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} /></label>
-        <button className="staff-button" disabled={!timeOffStart || !timeOffEnd} onClick={() => void onAct("timeoff.request", { startsAt: new Date(`${timeOffStart}T12:00:00`).getTime(), endsAt: new Date(`${timeOffEnd}T12:00:00`).getTime(), partialDay: false, note })}>Request time off</button>
+        <button className="staff-button" disabled={!timeOffStart || !timeOffEnd} onClick={() => void onAct("timeoff.request", { startsAt: zonedDateTimeToUtc(timeOffStart, 12 * 60, timeZone), endsAt: zonedDateTimeToUtc(timeOffEnd, 12 * 60, timeZone), partialDay: false, note })}>Request time off</button>
       </div>
       <div className="setup-list">
-        {data.timeOff.map((row) => <div className="setup-item" key={String(row.id)}><b>{String(row.status) === "approved" ? "✓" : String(row.status) === "declined" ? "×" : "·"}</b><div><strong>{new Date(Number(row.starts_at)).toLocaleDateString("en-CA")} — {new Date(Number(row.ends_at)).toLocaleDateString("en-CA")}</strong><p>{String(row.status)}{row.reviewer_note ? ` — ${String(row.reviewer_note)}` : ""}</p></div></div>)}
+        {data.timeOff.map((row) => <div className="setup-item" key={String(row.id)}><b>{String(row.status) === "approved" ? "✓" : String(row.status) === "declined" ? "×" : "·"}</b><div><strong>{new Date(Number(row.starts_at)).toLocaleDateString("en-CA", { timeZone })} — {new Date(Number(row.ends_at)).toLocaleDateString("en-CA", { timeZone })}</strong><p>{String(row.status)}{row.reviewer_note ? ` — ${String(row.reviewer_note)}` : ""}</p></div></div>)}
         {!data.timeOff.length ? <div className="staff-empty">No time-off requests.</div> : null}
       </div>
     </section>
@@ -321,7 +357,10 @@ export function TimeClockKiosk() {
     try {
       const response = await fetch("/api/timeclock/kiosk", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-kiosk-token": window.localStorage.getItem("p62_kiosk_token") ?? "",
+        },
         body: JSON.stringify({ staffUserId: selected.id, pin, action }),
       });
       const payload = await response.json().catch(() => ({}));

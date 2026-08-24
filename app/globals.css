@@ -325,6 +325,63 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .manual-punch{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin:14px 0;padding:12px;border:1px solid #e6e9e5;border-radius:9px;font-size:10px}
 .manual-punch strong{font-size:10px;margin-right:4px}
 .manual-punch input,.manual-punch select{border:1px solid #d9ded9;border-radius:7px;padding:8px;font-size:10px}
+
+/* A shift is a high-frequency, high-consequence workflow. These surfaces keep
+   the primary action unmistakable while leaving payroll detail one level down. */
+.clock-dashboard{display:grid;gap:18px}
+.clock-integrity-alert,.timesheet-integrity{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border:1px solid #e5a89f;border-radius:11px;background:#fff3f0;color:#822c20}
+.clock-integrity-alert b,.timesheet-integrity b{flex:0 0 auto;font-size:12px}
+.clock-integrity-alert span,.timesheet-integrity span{font-size:11px;line-height:1.45}
+.clock-command{overflow:hidden;border-radius:18px;background:#173b2c;color:white;box-shadow:0 20px 45px rgba(23,59,44,.18)}
+.clock-command--on_break{background:#62470d}
+.clock-command--clocked_out{background:#26322c}
+.clock-command-head{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:13px;padding:21px 24px;border-bottom:1px solid rgba(255,255,255,.12)}
+.clock-command-head small{display:block;margin-bottom:4px;color:rgba(255,255,255,.62);font-size:9px;font-weight:900;letter-spacing:.7px;text-transform:uppercase}
+.clock-command-head h2{margin:0;font-family:Georgia,serif;font-size:25px;line-height:1.1}
+.clock-command-head time{font-family:Georgia,serif;font-size:30px;font-variant-numeric:tabular-nums}
+.clock-status-dot{width:13px;height:13px;border-radius:50%;background:#54d184;box-shadow:0 0 0 6px rgba(84,209,132,.14)}
+.clock-command--clocked_out .clock-status-dot{background:#a9b2ac;box-shadow:0 0 0 6px rgba(255,255,255,.08)}
+.clock-command--on_break .clock-status-dot{background:#f0b636;box-shadow:0 0 0 6px rgba(240,182,54,.15)}
+.clock-command-body{display:grid;grid-template-columns:minmax(190px,.55fr) minmax(340px,1.45fr);gap:26px;align-items:center;padding:24px}
+.current-shift-time{display:grid;gap:5px}
+.current-shift-time span{color:rgba(255,255,255,.67);font-size:10px;font-weight:800}
+.current-shift-time strong{font-family:Georgia,serif;color:#f4c34e;font-size:38px;line-height:1;font-variant-numeric:tabular-nums}
+.current-shift-time small{color:rgba(255,255,255,.52);font-size:9px}
+.clock-primary-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.clock-primary-actions>.clock-big-action:only-child{grid-column:1/-1}
+.clock-big-action{min-height:94px;display:grid;grid-template-columns:42px 1fr;grid-template-rows:auto auto;align-content:center;column-gap:11px;padding:16px 20px;border:0;border-radius:13px;background:#f0b636;color:#18251d;text-align:left;cursor:pointer;box-shadow:0 7px 18px rgba(0,0,0,.16)}
+.clock-big-action>span{grid-row:1/3;width:40px;height:40px;display:grid;place-items:center;border-radius:50%;background:rgba(23,59,44,.1);font-size:14px}
+.clock-big-action b{font-size:17px}
+.clock-big-action small{font-size:10px;opacity:.68}
+.clock-big-action--break{background:#fff;color:#1a3528}
+.clock-big-action--out{background:#b53a2a;color:white}
+.clock-big-action:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}
+.clock-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+.clock-summary-card{display:grid;gap:6px;padding:17px;border:1px solid #dfe5df;border-radius:12px;background:white}
+.clock-summary-card span{color:#6b776e;font-size:9px;font-weight:900;letter-spacing:.6px;text-transform:uppercase}
+.clock-summary-card strong{font-family:Georgia,serif;font-size:24px;font-variant-numeric:tabular-nums}
+.clock-summary-card small{color:#77827a;font-size:9px;line-height:1.35}
+.clock-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.panel-subtitle{margin:4px 0 0;color:#738078;font-size:10px}
+.next-shift-card{display:grid;grid-template-columns:auto 1fr;gap:15px;align-items:center;padding:13px;border-radius:11px;background:#f4f6f3}
+.next-shift-date{width:55px;height:58px;display:grid;place-content:center;text-align:center;border-radius:9px;background:#173b2c;color:white}
+.next-shift-date b{font-family:Georgia,serif;font-size:23px;line-height:1}
+.next-shift-date span{margin-top:3px;font-size:8px;font-weight:900;text-transform:uppercase}
+.next-shift-card>div:last-child{display:grid;gap:4px}.next-shift-card strong{font-size:12px}.next-shift-card p{margin:0;font-size:11px}.next-shift-card small{color:#6e7971;font-size:9px}
+.clock-timeline{display:grid}
+.clock-timeline-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;padding:10px 2px;border-bottom:1px solid #edf0ed}
+.clock-timeline-row:last-child{border:0}.clock-timeline-row>i{width:8px;height:8px;border-radius:50%;background:#2b6946;box-shadow:0 0 0 4px #e8f1eb}.clock-timeline-row>div{display:grid;gap:2px}.clock-timeline-row strong{font-size:10px;text-transform:capitalize}.clock-timeline-row small{color:#77827a;font-size:8px}.clock-timeline-row time{color:#4d5b52;font-size:9px;text-align:right}
+.clock-help-strip{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;padding:14px;border:1px dashed #cbd4cc;border-radius:11px;background:#fafbf9;font-size:10px}
+.clock-help-strip>b{color:#173b2c}.clock-help-strip>span{padding:6px 8px;border-radius:6px;background:#eaf0eb;font-weight:800}.clock-help-strip>i{color:#8a958d;font-style:normal}.clock-help-strip>small{flex-basis:100%;color:#6d786f;text-align:center}
+
+/* Manager time clock. Status is conveyed with text and shape as well as colour. */
+.timeclock-manager-header{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:25px 28px;border-radius:16px;background:#173b2c;color:white;position:relative;overflow:hidden}
+.timeclock-manager-header::after{content:"62";position:absolute;right:22%;bottom:-72px;color:rgba(255,255,255,.04);font-family:Georgia,serif;font-size:160px;font-weight:900;pointer-events:none}
+.timeclock-manager-header>div{position:relative;z-index:1}.manager-eyebrow{color:#f3c34e;font-size:9px;font-weight:900;letter-spacing:1px;text-transform:uppercase}.timeclock-manager-header h2{margin:5px 0 6px;font-family:Georgia,serif;font-size:34px}.timeclock-manager-header p{margin:0;max-width:600px;color:rgba(255,255,255,.68);font-size:11px;line-height:1.5}.manager-live-summary{display:grid;justify-items:end;gap:6px}.manager-live-summary small{color:rgba(255,255,255,.55);font-size:9px}
+.timeclock-tabs{padding:7px;border:1px solid #dfe5df;border-radius:12px;background:white}
+.manager-alert-chip,.manager-ready-chip{padding:7px 10px;border-radius:99px;font-size:9px;font-weight:900}.manager-alert-chip{background:#fff0ed;color:#a22f20}.manager-ready-chip{background:#e8f3eb;color:#25613e}
+.team-clock-panel{overflow:visible}.team-clock-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.team-clock-card{display:grid;gap:14px;padding:17px;border:1px solid #dfe5df;border-top:4px solid #aab3ad;border-radius:12px;background:white}.team-clock-card--working{border-top-color:#2d8a55}.team-clock-card--on_break{border-top-color:#d39d20}.team-clock-card--issue{border-color:#e8b5ac;border-top-color:#b53a2a;background:#fffafa}.team-clock-person{display:flex;align-items:center;gap:10px}.team-avatar{width:38px;height:38px;flex:0 0 auto;display:grid;place-items:center;border-radius:10px;background:#eaf0eb;color:#173b2c;font-family:Georgia,serif;font-size:13px;font-weight:900}.team-clock-person>div{display:grid;gap:3px;min-width:0}.team-clock-person strong{overflow:hidden;text-overflow:ellipsis;font-size:12px;white-space:nowrap}.team-clock-person small{color:#748078;font-size:9px}.team-state-badge{width:max-content;display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:99px;background:#edf0ee;color:#566159;font-size:9px;font-weight:900}.team-state-badge i{width:6px;height:6px;border-radius:50%;background:currentColor}.team-state-badge--working{background:#e5f4e9;color:#22623c}.team-state-badge--on_break{background:#fff1cf;color:#775708}.team-state-badge--issue{background:#ffebe7;color:#a32e20}.team-clock-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px}.team-clock-meta span{display:grid;gap:4px}.team-clock-meta small{color:#7b857e;font-size:8px;text-transform:uppercase}.team-clock-meta b{font-size:10px;line-height:1.4}.team-clock-actions{display:flex;gap:7px;margin-top:auto}.team-clock-actions button{flex:1;min-height:37px;border:0;border-radius:7px;background:#173b2c;color:white;font-size:9px;font-weight:900;cursor:pointer}.team-clock-actions button.secondary{border:1px solid #d8dfd9;background:white;color:#314239}.team-clock-actions button:disabled{opacity:.45;cursor:not-allowed}.team-clock-issue{margin:0;padding:9px;border-radius:7px;background:#ffebe7;color:#8e2a1e;font-size:9px;line-height:1.45}
+.summary-status--issue{background:#ffebe7!important;color:#9c2d20!important}.timesheet-integrity{align-items:flex-start}.punch-history{display:grid;gap:7px;padding:15px;border:1px solid #e0e5e1;border-radius:11px;background:#fafbf9}.punch-history .subhead{align-items:center;margin:0 0 3px}.punch-history .subhead h3{margin:0;font-family:Georgia,serif;font-size:17px}.punch-history .subhead>span{color:#68746c;font-size:9px;font-weight:900}.punch-history-row{display:grid;grid-template-columns:100px minmax(160px,1fr) minmax(180px,.75fr) auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid #e3e7e3;border-radius:8px;background:white}.punch-history-row>div{display:grid;gap:3px}.punch-history-row strong{font-size:10px}.punch-history-row small{color:#768179;font-size:8px}.punch-history-row input{min-width:0}.punch-history-row .text-button{font-size:9px}.punch-action{width:max-content;padding:6px 7px;border-radius:5px;background:#eaf0eb;color:#204e38;font-size:8px;font-weight:900;text-transform:capitalize}.punch-action--clock_out{background:#ecefed;color:#4e5a52}.punch-action--break_start{background:#fff0ce;color:#715408}.punch-action--break_end{background:#e8f2ea;color:#27603f}.timesheet-approval-bar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 16px;border-radius:10px;background:#eef3ef}.timesheet-approval-bar>span{display:grid;gap:3px}.timesheet-approval-bar strong{font-size:11px}.timesheet-approval-bar small{color:#6e7a71;font-size:9px}
 .kiosk-shell{min-height:100vh;display:grid;place-items:center;background:#173b2c;padding:20px}
 .kiosk-card{width:min(430px,100%);background:var(--paper);border-radius:20px;padding:28px;display:grid;justify-items:center;gap:14px;box-shadow:0 30px 80px rgba(0,0,0,.3)}
 .kiosk-clock{font-family:Georgia,serif;font-size:52px;line-height:1;letter-spacing:-2px}
@@ -980,6 +1037,11 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .staff-nav button,
   .staff-nav a { padding: 11px 10px; text-align: left; }
   .viz-pair { grid-template-columns: 1fr; }
+  .clock-command-body { grid-template-columns: 1fr; }
+  .clock-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .team-clock-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .punch-history-row { grid-template-columns: 90px minmax(145px, 1fr) minmax(175px, .8fr); }
+  .punch-history-row .text-button { justify-self:start; }
 }
 
 @media (max-width: 700px) {
@@ -1060,6 +1122,23 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .publish-bar > div:last-child { width: 100%; justify-content: space-between; }
   .integration-field-label { align-items: flex-start; flex-direction: column; }
   .kiosk-shell { padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  .clock-command-head { grid-template-columns:auto 1fr; padding:18px; }
+  .clock-command-head time { grid-column:2; font-size:24px; }
+  .clock-command-body { padding:18px; }
+  .clock-primary-actions { grid-template-columns:1fr; }
+  .clock-primary-actions>.clock-big-action:only-child { grid-column:auto; }
+  .clock-summary-grid,.clock-detail-grid,.team-clock-grid { grid-template-columns:1fr; }
+  .clock-help-strip { justify-content:flex-start; }
+  .timeclock-manager-header { align-items:flex-start; flex-direction:column; padding:22px; }
+  .manager-live-summary { justify-items:start; }
+  .timeclock-tabs { align-items:stretch; flex-direction:column; }
+  .timeclock-tabs .segmented-range { width:100%; overflow-x:auto; }
+  .timeclock-tabs .segmented-range button { white-space:nowrap; }
+  .punch-history-row { grid-template-columns:1fr auto; }
+  .punch-history-row>div,.punch-history-row>input { grid-column:1/-1; }
+  .punch-history-row .punch-action { grid-column:1; }
+  .timesheet-approval-bar { align-items:stretch; flex-direction:column; }
+  .timesheet-approval-bar .staff-button { width:100%; }
 
   /* A 16px control font prevents iOS Safari from zooming the whole page when a
      staff member or customer focuses a field. */

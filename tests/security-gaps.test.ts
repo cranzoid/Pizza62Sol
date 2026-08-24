@@ -32,7 +32,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
 
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { inspectImage, ImageRejected } = await import("@/lib/image-validation");
-const { GET: rosterRoute } = await import("@/app/api/timeclock/kiosk/route");
+const { GET: rosterRoute, POST: kioskPunchRoute } = await import("@/app/api/timeclock/kiosk/route");
 const { GET: catalogRoute } = await import("@/app/api/catalog/route");
 const { GET: trackRoute } = await import("@/app/api/orders/track/route");
 const { hashOpaqueToken, generateOpaqueToken } = await import("@/lib/domain");
@@ -133,6 +133,18 @@ withDb("refuses the staff roster to an unpaired device", async () => {
   const body = await response.text();
   // The names must not be in the body of the refusal either.
   assert.ok(!body.includes('"employees"'));
+});
+
+withDb("refuses a kiosk punch from an unpaired device", async () => {
+  const response = await kioskPunchRoute(
+    new Request("https://order.pizza62.test/api/timeclock/kiosk", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-azure-clientip": nextClientIp() },
+      body: JSON.stringify({ staffUserId: "not-a-real-employee", pin: "1234", action: "clock_in" }),
+    }),
+  );
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /not paired/i);
 });
 
 withDb("refuses a wrong device token", async () => {

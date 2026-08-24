@@ -4,6 +4,7 @@ import { ONTARIO_WEEKLY_OVERTIME_MINUTES, hasPermission, type ClockAction } from
 import {
   csvCell,
   hoursFromMs,
+  loadClockEvents,
   loadProfile,
   loadShifts,
   resolvePeriod,
@@ -11,7 +12,15 @@ import {
   timesheetFor,
   type StaffProfile,
 } from "@/lib/timeclock";
-import { PunchError, recordPunch } from "@/lib/timeclock-punch";
+import {
+  PunchError,
+  adjustManagerClockEvent,
+  deleteManagerClockEvent,
+  insertManagerClockEvent,
+  inspectCurrentClockState,
+  recordPunch,
+  resolveClockCorrection,
+} from "@/lib/timeclock-punch";
 
 type TeamMember = { id: string; name: string; email: string; role: string; active: number };
 
@@ -45,19 +54,19 @@ export async function GET(request: Request) {
     const weekTo = weekFrom + 21 * 86_400_000;
     const members = await team();
     const profiles = await profilesFor(members.map((member) => member.id));
-    const [timesheets, shifts, onClock, corrections, timeOff, approvals] = await Promise.all([
-      Promise.all(members.filter((member) => member.active).map(async (member) => ({
-        member,
-        summary: await timesheetFor(member.id, period, settings, profiles.get(member.id)!, now),
-      }))),
+    const [timesheets, shifts, corrections, timeOff, approvals] = await Promise.all([
+      Promise.all(members.filter((member) => member.active).map(async (member) => {
+        const [summary, clock, events] = await Promise.all([
+          timesheetFor(member.id, period, settings, profiles.get(member.id)!, now),
+          inspectCurrentClockState(member.id),
+          // A legacy issue can live outside the selected pay period. Managers need
+          // the complete punch history in this repair view, not a slice that hides
+          // the event causing payroll to be blocked.
+          loadClockEvents(member.id, 0, now + 1),
+        ]);
+        return { member, summary, clock, events };
+      })),
       loadShifts(weekFrom, weekTo),
-      getD1()
-        .prepare(
-          `SELECT u.id, u.name, s.state, s.updated_at
-           FROM time_clock_state s JOIN staff_users u ON u.id = s.staff_user_id
-           WHERE s.state != 'clocked_out'`,
-        )
-        .all(),
       getD1()
         .prepare(
           `SELECT c.*, u.name AS staff_name, e.action, e.occurred_at
@@ -94,7 +103,7 @@ export async function GET(request: Request) {
           availability: JSON.parse(profile.availability_json || "[]"),
         };
       }),
-      timesheets: timesheets.map(({ member, summary }) => ({
+      timesheets: timesheets.map(({ member, summary, clock, events }) => ({
         staffUserId: member.id,
         name: member.name,
         days: summary.days,
@@ -104,10 +113,24 @@ export async function GET(request: Request) {
         overtimeMs: summary.overtimeMs,
         grossPayCents: summary.grossPayCents,
         openSession: summary.openSession,
-        approved: approvals.results.some((row) => String((row as Record<string, unknown>).staff_user_id) === member.id),
+        integrityIssues: summary.integrityIssues,
+        clockIssue: clock.issues[0]?.message ?? null,
+        state: clock.state,
+        events,
+        approved: approvals.results.some((row) => {
+          const approval = row as Record<string, unknown>;
+          return String(approval.staff_user_id) === member.id && approval.status === "approved";
+        }),
       })),
       shifts,
-      onClock: onClock.results,
+      onClock: timesheets
+        .filter(({ clock }) => !clock.issues.length && clock.state !== "clocked_out")
+        .map(({ member, clock, events }) => ({
+          id: member.id,
+          name: member.name,
+          state: clock.state,
+          updated_at: events.at(-1)?.occurred_at ?? now,
+        })),
       corrections: corrections.results,
       timeOff: timeOff.results,
       approvals: approvals.results,
@@ -289,65 +312,29 @@ export async function POST(request: Request) {
         if (!["clock_in", "break_start", "break_end", "clock_out"].includes(punch) || !Number.isSafeInteger(occurredAt)) {
           return Response.json({ error: "Choose a punch type and a time." }, { status: 400 });
         }
-        // A manager-inserted punch keeps the session of the nearest earlier event so
-        // the timesheet still reads as one shift.
-        const neighbour = await database
-          .prepare("SELECT session_id FROM time_clock_events WHERE staff_user_id = ? AND occurred_at <= ? ORDER BY occurred_at DESC LIMIT 1")
-          .bind(staffUserId, occurredAt)
-          .first<{ session_id: string }>();
-        const id = crypto.randomUUID();
-        await database
-          .prepare(
-            `INSERT INTO time_clock_events (id, staff_user_id, session_id, action, occurred_at, source, created_at)
-             VALUES (?, ?, ?, ?, ?, 'manager', ?)`,
-          )
-          .bind(id, staffUserId, neighbour?.session_id ?? crypto.randomUUID(), punch, occurredAt, now)
-          .run();
-        await writeAudit({ actorId: user.id, action: "timeclock.event.insert", targetType: "clock_event", targetId: id, next: { staffUserId, punch, occurredAt } });
+        const { id } = await insertManagerClockEvent({ actorId: user.id, staffUserId, action: punch, occurredAt });
         return Response.json({ ok: true, id });
       }
       const eventId = String(body.eventId ?? "");
-      const previous = await database.prepare("SELECT * FROM time_clock_events WHERE id = ?").bind(eventId).first<Record<string, unknown>>();
-      if (!previous) return Response.json({ error: "That clock entry no longer exists." }, { status: 404 });
       if (action === "event.delete") {
-        await database.prepare("DELETE FROM time_clock_events WHERE id = ?").bind(eventId).run();
-        await writeAudit({ actorId: user.id, action: "timeclock.event.delete", targetType: "clock_event", targetId: eventId, previous });
+        await deleteManagerClockEvent({ actorId: user.id, eventId });
         return Response.json({ ok: true });
       }
       const occurredAt = Number(body.occurredAt);
       if (!Number.isSafeInteger(occurredAt)) return Response.json({ error: "Enter a valid time." }, { status: 400 });
-      await database
-        .prepare("UPDATE time_clock_events SET occurred_at = ?, source = 'manager' WHERE id = ?")
-        .bind(occurredAt, eventId)
-        .run();
-      await writeAudit({ actorId: user.id, action: "timeclock.event.adjust", targetType: "clock_event", targetId: eventId, previous, next: { occurredAt } });
+      await adjustManagerClockEvent({ actorId: user.id, eventId, occurredAt });
       return Response.json({ ok: true });
     }
 
     if (action === "correction.resolve") {
       requirePermission("approve_correction_requests");
       const id = String(body.id ?? "");
-      const approve = Boolean(body.approve);
-      const requestRow = await database.prepare("SELECT * FROM correction_requests WHERE id = ?").bind(id).first<Record<string, unknown>>();
-      if (!requestRow || requestRow.status !== "pending") {
-        return Response.json({ error: "That request has already been handled." }, { status: 409 });
-      }
-      const statements = [
-        database
-          .prepare("UPDATE correction_requests SET status = ?, reviewer_id = ?, reviewer_note = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
-          .bind(approve ? "approved" : "declined", user.id, body.note ? String(body.note).slice(0, 500) : null, now, id),
-      ];
-      // Approving is what actually moves the punch, so both rows commit together.
-      if (approve) {
-        statements.push(
-          database
-            .prepare("UPDATE time_clock_events SET occurred_at = ?, source = 'manager' WHERE id = ?")
-            .bind(Number(requestRow.requested_time), String(requestRow.event_id)),
-        );
-      }
-      const [update] = await database.batch(statements);
-      if (!update.meta.changes) return Response.json({ error: "That request has already been handled." }, { status: 409 });
-      await writeAudit({ actorId: user.id, action: "timeclock.correction.resolve", targetType: "correction_request", targetId: id, previous: requestRow, next: { approve } });
+      await resolveClockCorrection({
+        actorId: user.id,
+        requestId: id,
+        approve: Boolean(body.approve),
+        note: body.note ? String(body.note) : undefined,
+      });
       return Response.json({ ok: true });
     }
 
@@ -370,6 +357,9 @@ export async function POST(request: Request) {
       const period = resolvePeriod(now, settings, Math.max(-26, Math.min(0, Number(body.periodOffset ?? 0) || 0)));
       const profile = await loadProfile(staffUserId);
       const summary = await timesheetFor(staffUserId, period, settings, profile, now);
+      if (summary.integrityIssues.length) {
+        return Response.json({ error: "Repair this employee's punch history before approving the timesheet." }, { status: 409 });
+      }
       if (summary.openSession) {
         return Response.json({ error: "That timesheet still has an open shift. Close it before approving." }, { status: 409 });
       }
@@ -396,7 +386,7 @@ export async function POST(request: Request) {
       if (!["clock_in", "break_start", "break_end", "clock_out"].includes(punch)) {
         return Response.json({ error: "Choose a clock action." }, { status: 400 });
       }
-      const result = await recordPunch(staffUserId, punch, "manager");
+      const result = await recordPunch(staffUserId, punch, "manager", user.id);
       return Response.json({ ok: true, state: result.state });
     }
 
@@ -421,9 +411,21 @@ export async function PUT(request: Request) {
     const period = resolvePeriod(now, settings, Math.max(-26, Math.min(0, Number(body.periodOffset ?? 0) || 0)));
     const members = (await team()).filter((member) => member.active);
     const profiles = await profilesFor(members.map((member) => member.id));
-    const rows = await Promise.all(members.map(async (member) => {
+    const summaries = await Promise.all(members.map(async (member) => ({
+      member,
+      summary: await timesheetFor(member.id, period, settings, profiles.get(member.id)!, now),
+    })));
+    const damagedNames = summaries
+      .filter(({ summary }) => summary.integrityIssues.length)
+      .map(({ member }) => member.name);
+    if (damagedNames.length) {
+      return Response.json(
+        { error: `Repair the punch history for ${damagedNames.join(", ")} before exporting payroll.` },
+        { status: 409 },
+      );
+    }
+    const rows = await Promise.all(summaries.map(async ({ member, summary }) => {
       const profile = profiles.get(member.id)!;
-      const summary = await timesheetFor(member.id, period, settings, profile, now);
       const approval = await getD1()
         .prepare("SELECT status, approved_at FROM timesheet_approvals WHERE staff_user_id = ? AND period_start = ?")
         .bind(member.id, period.start)
