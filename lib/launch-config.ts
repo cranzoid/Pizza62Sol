@@ -74,6 +74,29 @@ export const LAUNCH_SETTINGS = {
       "Halal meat options are available for selected toppings. Pizza 62 uses a shared kitchen, so please tell our team about allergies or preparation concerns before ordering.",
   },
   /**
+   * The thank-you that goes out after someone fills in the feedback form.
+   *
+   * **Everyone who answers gets it, whatever they scored us.** That is not
+   * politeness, it is the difference between thanking customers for their time
+   * and paying for good reviews — and paying for good reviews is against
+   * Google's policy and worth nothing anyway, because the ratings it buys are
+   * not information. A one-star answer is the most useful mail we will get all
+   * week; it earns the same garlic bread as a five.
+   *
+   * The value of the offer is *not* recorded here. `feedbackRewardCode` names a
+   * promotion, and the promotion row is what decides what the code is worth,
+   * what it needs to be spent on, and when it stops working. Copying the amount
+   * into a settings blob is how an email comes to promise C$3.99 off while the
+   * code at the till gives C$5 — so the mail reads the promotion and quotes it.
+   * No promotion, no mail: the queue parks the row rather than sending a code
+   * that does nothing at checkout.
+   */
+  rewards: {
+    feedbackRewardEnabled: true,
+    feedbackRewardCode: "THANKS62",
+    feedbackRewardOffer: "a free garlic bread or four pops",
+  },
+  /**
    * Who hears about it when the software itself is in trouble.
    *
    * Deliberately separate from `business.email`: the restaurant wants to know an
@@ -135,18 +158,6 @@ export const PIZZA_SIZES = [
   { id: "slab", name: "Slab", basePriceCents: 2149, threeToppingPriceCents: 2729, extraToppingPriceCents: 290 },
 ] as const;
 
-export const INITIAL_WING_FLAVOURS = [
-  "Mild",
-  "Medium",
-  "Hot",
-  "Suicide",
-  "Honey Garlic",
-  "BBQ",
-  "Cajun",
-  "Lemon Pepper",
-  "None",
-] as const;
-
 export const CONFIRMED_OFFERS = [
   {
     id: "pickup-large-wings",
@@ -197,18 +208,4 @@ export const CONFIRMED_OFFERS = [
     fulfilments: ["pickup", "delivery"],
     description: "2 X-Large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and dip.",
   },
-] as const;
-
-export const CANNED_DRINKS = [
-  "Pepsi",
-  "Diet Pepsi",
-  "Coke",
-  "Diet Coke",
-  "Coke Zero",
-  "Gingerale",
-  "Crush Orange",
-  "Brisk Ice Tea",
-  "Sprite",
-  "Dr. Peppers",
-  "Fanta Grape",
 ] as const;

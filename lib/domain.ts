@@ -231,6 +231,54 @@ export const DEFAULT_CRUST_OPTION = "Regular Crust";
 export const BAKE_SAUCE_OPTIONS = ["Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"] as const;
 export const HALAL_OPTION = "Halal meat toppings";
 
+/**
+ * The cans in the fridge, and the wing sauces on the board.
+ *
+ * These live here rather than in `lib/menu.ts` because they are not seed data —
+ * they are what a `source: "drinks"` or `source: "wing_flavours"` option group
+ * *means*, resolved fresh every time a section is rendered or an order is
+ * validated. Deals store the group, never the list, so changing a flavour here
+ * changes every deal at once without touching a single product row.
+ *
+ * There were four copies of the pop list — the seed, the launch config, the
+ * customizer's fallback and the server's validator — and they had already
+ * drifted: the storefront offered a flavour the till had never heard of. One
+ * list, imported by both sides, is the only arrangement where that cannot
+ * happen again.
+ *
+ * Owner's list, 2026-08-24. Names are the ones on the can, so what the customer
+ * taps is what the person at the fridge is looking for.
+ */
+export const DRINK_OPTIONS = [
+  "Pepsi",
+  "Diet Pepsi",
+  "Coke",
+  "Diet Coke",
+  "Coke Zero",
+  "Brisk",
+  "Root Beer",
+  "Fanta Orange",
+  "Fanta Pineapple",
+  "Sprite",
+  "Canada Dry",
+  "Crush Grape",
+  "Crush Cream Soda",
+  "Mountain Dew",
+  "Dr Pepper",
+] as const;
+
+export const WING_FLAVOURS = [
+  "Mild",
+  "Medium",
+  "Hot",
+  "Suicide",
+  "Honey Garlic",
+  "BBQ",
+  "Cajun",
+  "Lemon Pepper",
+  "None",
+] as const;
+
 export type ModifierSource =
   | "toppings"
   | "wing_flavours"

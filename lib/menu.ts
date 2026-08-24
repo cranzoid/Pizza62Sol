@@ -1,6 +1,12 @@
 import { PIZZA_SIZES } from "@/lib/launch-config";
 import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection } from "@/lib/domain";
 
+// The pop and wing-sauce lists are not seed data: an option group stores the
+// group, never its options, so both sides resolve the live list at render and at
+// validation time. They live in lib/domain.ts, which the browser already
+// imports, and are re-exported here so the seed reads in one place.
+export { DRINK_OPTIONS, WING_FLAVOURS } from "@/lib/domain";
+
 export type ModifierSectionSeed = ModifierSection;
 
 export type MenuProductSeed = {
@@ -74,32 +80,6 @@ export const PIZZA_BASE_OPTIONS = [
   "Well Done",
   "Easy on the Sauce",
   "Extra Sauce",
-] as const;
-
-export const WING_FLAVOURS = [
-  "Mild",
-  "Medium",
-  "Hot",
-  "Suicide",
-  "Honey Garlic",
-  "BBQ",
-  "Cajun",
-  "Lemon Pepper",
-  "None",
-] as const;
-
-export const DRINK_OPTIONS = [
-  "Pepsi",
-  "Diet Pepsi",
-  "Coke",
-  "Diet Coke",
-  "Coke Zero",
-  "Gingerale",
-  "Crush Orange",
-  "Brisk Ice Tea",
-  "Sprite",
-  "Dr. Peppers",
-  "Fanta Grape",
 ] as const;
 
 const slug = (value: string) =>
