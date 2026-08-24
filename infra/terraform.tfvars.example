@@ -46,3 +46,10 @@ clover_environment = "sandbox"
 # workflow cannot sign in, and a push to `main` deploys nothing.
 # ---------------------------------------------------------------------------
 github_repository = "cranzoid/Pizza62Sol"
+
+# GitHub now puts numeric ids in the OIDC subject claim, so the deploy identity
+# needs a federated credential in that form too. Leave empty to skip them.
+#   gh api users/<owner> --jq .id
+#   gh api repos/<owner>/<repo> --jq .id
+github_owner_id      = ""
+github_repository_id = ""
