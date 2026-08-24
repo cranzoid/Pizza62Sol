@@ -706,3 +706,46 @@ withDb("never tells a cancelled order's customer that it is on its way", async (
   await dispatchOutbox({ limit: 50 });
   assert.equal((await readRow(outboxId)).status, "failed");
 });
+
+// --- the feedback thank-you --------------------------------------------------
+
+/**
+ * The coupon is looked up at send time, not carried in the payload.
+ *
+ * That is the property worth a test: it is what makes the code in the email and
+ * the discount at the till the same fact rather than two copies of one. An owner
+ * who changes their mind between the customer pressing Send and the queue
+ * draining changes the email too — and if they switch the offer off entirely,
+ * the row waits rather than posting a code the checkout would refuse.
+ */
+withDb("emails the thank-you code, quoting the promotion as it stands at send time", async () => {
+  const { outboxId, recipient } = await seedOutbox({ kind: "feedback_reward", status: "pending" });
+  const { calls } = stubProviders();
+  await getPool().query("UPDATE promotions SET amount = 450 WHERE id = 'feedback-thank-you'");
+  try {
+    await dispatchOutbox({ limit: 50 });
+    assert.equal((await readRow(outboxId)).status, "sent");
+    const sent = calls.find((call) => call.body.includes(recipient));
+    assert.ok(sent, "the coupon must reach the customer who left the feedback");
+    assert.match(sent.body, /THANKS62/, "the code has to be in the message");
+    assert.match(sent.body, /4\.50/, "the value must come from the promotion, not a stored copy");
+  } finally {
+    await getPool().query("UPDATE promotions SET amount = 399 WHERE id = 'feedback-thank-you'");
+  }
+});
+
+withDb("parks the thank-you rather than mailing a code that no longer works", async () => {
+  const { outboxId } = await seedOutbox({ kind: "feedback_reward", status: "pending" });
+  stubProviders();
+  await getPool().query("UPDATE promotions SET active = 0 WHERE id = 'feedback-thank-you'");
+  try {
+    await dispatchOutbox({ limit: 50 });
+    const row = await readRow(outboxId);
+    // Parked, not failed: the owner has almost certainly paused the offer for a
+    // week, and `failed` is a status nobody comes back to.
+    assert.equal(row.status, "pending_provider_setup");
+    assert.equal(row.attempt_count, 0, "waiting on the owner is not an attempt");
+  } finally {
+    await getPool().query("UPDATE promotions SET active = 1 WHERE id = 'feedback-thank-you'");
+  }
+});

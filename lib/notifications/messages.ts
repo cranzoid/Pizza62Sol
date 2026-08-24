@@ -30,6 +30,7 @@
  */
 import { formatMoney } from "@/lib/domain";
 import { publicBaseUrl } from "@/lib/notifications/config";
+import type { FeedbackReward } from "@/lib/rewards";
 import {
   loadOrderItemDetails,
   summariseItems,
@@ -506,5 +507,66 @@ export async function renderFeedbackRequest(
     smsBody: link
       ? `Pizza 62: how did we do with ${order.order_number}? ${link}`
       : `Pizza 62: how did we do with order ${order.order_number}?`,
+  };
+}
+
+// --- customer: thank you for telling us -------------------------------------
+
+/**
+ * The coupon that goes out to everyone who fills the form in.
+ *
+ * **The offer is read from the promotion, never from the payload.** What the
+ * code is worth, what it has to be spent on and when it stops working live on
+ * one row, and that row is the thing the till will actually honour — so the mail
+ * quotes it rather than describing it from a second copy that can drift. An
+ * email promising C$3.99 off against a code the checkout gives C$5 for is a
+ * small embarrassment; the other direction is a customer told at the counter
+ * that their thank-you is worth less than we said.
+ *
+ * The dispatcher will not call this without a live promotion, so `reward` is
+ * always the real one.
+ */
+export async function renderFeedbackReward(
+  order: OrderSnapshot,
+  reward: FeedbackReward,
+): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const worth = reward.worth;
+  const conditions = [
+    reward.minimumCents > 0 ? `On orders of ${money(reward.minimumCents)} or more.` : "On any order.",
+    reward.endsAt
+      ? `Valid until ${new Date(reward.endsAt).toLocaleDateString("en-CA", { day: "numeric", month: "long", year: "numeric", timeZone: TORONTO })}.`
+      : "No expiry date — use it whenever you are next in.",
+    "One code per order. Pickup or delivery.",
+  ];
+
+  const sections: Section[] = [
+    {
+      type: "paragraph",
+      text: `Thank you, ${firstName(order.customer_name)}. Someone here reads every one of these, and what you told us about order ${order.order_number} goes straight to the people who made it.`,
+    },
+    {
+      type: "paragraph",
+      text: `Have ${reward.offer} on us next time. Enter this code at checkout, or read it out to whoever answers the phone.`,
+    },
+    { type: "callout", label: "Your code", value: reward.code, note: worth, tone: "good" },
+    { type: "note", title: "The small print", lines: conditions },
+  ];
+  if (base) sections.push({ type: "button", label: "Order again", href: base });
+
+  const { emailHtml, emailText } = build({
+    eyebrow: "Thank you",
+    heading: `Have ${reward.offer} on us`,
+    tone: "feedback",
+    preheader: `${reward.code} — ${worth} on your next Pizza 62 order.`,
+    baseUrl: base,
+    sections,
+  });
+
+  return {
+    emailSubject: `Thanks for the feedback — have ${reward.offer} on us`,
+    emailText,
+    emailHtml,
+    smsBody: `Pizza 62: thanks for the feedback. Code ${reward.code} takes ${worth} your next order.`,
   };
 }

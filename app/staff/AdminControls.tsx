@@ -57,6 +57,7 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   const tax = settings.taxAndTips.value;
   const business = settings.business.value;
   const operations = settings.operations.value;
+  const rewards = settings.rewards?.value ?? {};
   const initialContent = settings.content?.value ?? {};
   const initialHours = (settings.hours.value as unknown as Array<{ weekday: number; label: string; openMinute: number; closeMinute: number }>).map((row) => ({ ...row }));
   const [message, setMessage] = useState("");
@@ -66,11 +67,12 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   const [taxForm, setTaxForm] = useState({ rate: String(Number(tax.taxRateBps) / 100), tippingEnabled: Boolean(tax.tippingEnabled), presets: (tax.tipPresetBps as number[]).map((entry) => entry / 100).join(", "), customTipEnabled: Boolean(tax.customTipEnabled) });
   const [operationsForm, setOperationsForm] = useState({ cancellation: String(operations.cancellationRequestWindowMinutes), feedbackDelay: String(operations.feedbackDelayMinutes), halalNotice: String(operations.halalNotice ?? ""), halfToppingUnitsBps: String(operations.halfToppingUnitsBps ?? 10_000) });
   const [content, setContent] = useState({ heroEyebrow: String(initialContent.heroEyebrow ?? ""), heroHeadline: String(initialContent.heroHeadline ?? ""), heroAccent: String(initialContent.heroAccent ?? ""), heroDescription: String(initialContent.heroDescription ?? ""), dealEyebrow: String(initialContent.dealEyebrow ?? ""), dealHeadline: String(initialContent.dealHeadline ?? ""), dealDescription: String(initialContent.dealDescription ?? ""), footerTagline: String(initialContent.footerTagline ?? "") });
+  const [rewardForm, setRewardForm] = useState({ enabled: Boolean(rewards.feedbackRewardEnabled), code: String(rewards.feedbackRewardCode ?? ""), offer: String(rewards.feedbackRewardOffer ?? "") });
   const [hours, setHours] = useState(initialHours);
   const save = async (key: string, value: Record<string, unknown> | typeof hours) => {
     setMessage("");
     try {
-      await configRequest({ action: "settings.update", key, value, expectedVersion: settings[key].version, reason: "Updated by owner in admin" });
+      await configRequest({ action: "settings.update", key, value, expectedVersion: settings[key]?.version, reason: "Updated by owner in admin" });
       setMessage("Saved. The customer website now uses these settings.");
       await onSaved();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not save."); }
@@ -131,6 +133,19 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
       <Field label="Deal headline" value={content.dealHeadline} onChange={(dealHeadline) => setContent({ ...content, dealHeadline })} />
       <Field label="Deal description" wide multiline value={content.dealDescription} onChange={(dealDescription) => setContent({ ...content, dealDescription })} />
       <Field label="Footer tagline" wide value={content.footerTagline} onChange={(footerTagline) => setContent({ ...content, footerTagline })} />
+    </SettingsCard>
+    {/* The coupon that goes out after someone fills in the feedback form.
+        What it is *worth* is not here on purpose: the code names a promotion in
+        History & offers, and that promotion is the single place the amount, the
+        minimum spend and the expiry live — so the email and the till can never
+        quote different terms. Everyone who answers gets it, whatever they rated
+        us; rewarding only the good scores buys stars and learns nothing, and
+        Google's review policy forbids it. */}
+    <SettingsCard title="Feedback thank-you" onSave={() => save("rewards", { ...rewards, feedbackRewardEnabled: rewardForm.enabled, feedbackRewardCode: rewardForm.code.trim().toUpperCase(), feedbackRewardOffer: rewardForm.offer.trim() })}>
+      <Check label="Email a coupon after feedback" checked={rewardForm.enabled} onChange={(enabled) => setRewardForm({ ...rewardForm, enabled })} />
+      <Field label="Coupon code" value={rewardForm.code} onChange={(code) => setRewardForm({ ...rewardForm, code })} />
+      <Field label="What they get · e.g. a free garlic bread or four pops" wide value={rewardForm.offer} onChange={(offer) => setRewardForm({ ...rewardForm, offer })} />
+      <p className="editor-hint field-wide">Sent to everyone who answers, whatever they rated us. The code has to match a live offer under <strong>History &amp; offers</strong> — that offer decides what it is worth, the minimum spend and when it stops working, and the email quotes it. No matching offer, no email.</p>
     </SettingsCard>
     <SettingsCard title="Regular opening hours" onSave={() => save("hours", hours)}>
       <div className="hours-admin">{hours.map((row, index) => <div key={row.weekday}><strong>{row.label}</strong><input aria-label={`${row.label} opening time`} type="time" value={minuteToTime(row.openMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, openMinute: timeToMinute(event.target.value) } : entry))} /><span>to</span><select aria-label={`${row.label} closing time`} value={String(row.closeMinute)} onChange={(event) => setHours((current) => current.map((entry, currentIndex) => currentIndex === index ? { ...entry, closeMinute: Number(event.target.value) } : entry))}>{[...new Set([row.closeMinute, ...CLOSE_MINUTE_OPTIONS])].sort((a, b) => a - b).map((minute) => <option key={minute} value={minute}>{closeMinuteLabel(minute)}</option>)}</select></div>)}</div>

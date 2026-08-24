@@ -42,10 +42,12 @@ import {
   renderCustomerConfirmation,
   renderCustomerStatusUpdate,
   renderFeedbackRequest,
+  renderFeedbackReward,
   renderLowRatingAlert,
   renderRestaurantNewOrder,
   type OrderSnapshot,
 } from "@/lib/notifications/messages";
+import { activeFeedbackReward } from "@/lib/rewards";
 
 /** Statuses a dispatcher will pick up. Everything else is terminal or parked. */
 const CLAIMABLE = ["pending", "retrying"] as const;
@@ -272,6 +274,29 @@ async function deliver(row: OutboxRow): Promise<void> {
       const message = await renderFeedbackRequest(order, payload);
       const to = row.recipient ?? order.customer_email;
       if (!to) throw new PermanentFailure("no recipient address");
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
+    /**
+     * The thank-you coupon, sent to everyone who filled in the form.
+     *
+     * The offer is looked up here, at send time, rather than carried in the
+     * payload — so a code the owner has since renamed, revalued or switched off
+     * cannot go out quoting yesterday's terms. If it no longer resolves to a
+     * live promotion the row parks instead of failing: the owner has almost
+     * certainly just turned it off for a week, and a `failed` row is one nobody
+     * comes back to.
+     */
+    case "feedback_reward": {
+      if (!orderId) throw new PermanentFailure("reward payload has no orderId");
+      const order = await loadOrder(orderId);
+      if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
+      const to = row.recipient ?? order.customer_email;
+      if (!to) throw new PermanentFailure("no recipient address");
+      const reward = await activeFeedbackReward();
+      if (!reward) throw new ParkForSetup("no live promotion behind the feedback reward code");
+      const message = await renderFeedbackReward(order, reward);
       await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
       return;
     }

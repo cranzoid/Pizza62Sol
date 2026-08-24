@@ -41,9 +41,25 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
 - Pickup estimate: 15 minutes; delivery estimate: 30 minutes. Both are editable in Admin → Settings.
 - Address: 55 Parkdale Ave N, Hamilton, ON L8H 5W7.
 - Delivery addresses are manually entered and restaurant-confirmed; no third-party address-validation provider is used.
-- Pop is selectable only for products that include it. Water Bottle is a standalone C$1.60 item.
+- Pop is selectable only for products that include it, one flavour per included
+  can. The flavour list lives in `lib/domain.ts` (`DRINK_OPTIONS`) and is read
+  live by the storefront, the till and the server, so changing what is in the
+  fridge is a one-line edit rather than a migration. Water Bottle is a standalone
+  C$1.60 item.
 - Pizza toppings are selected normally for the full pizza. Placement requests can be written in special instructions.
 - Sauce and dry-rub choices appear together under “Sauces & dry rubs.”
+- The counter till (**Admin → Take an order**) mounts the same customizer the
+  website does, so every menu item — build-your-own pizzas, deals, wings, the
+  pops inside a combo — can be rung in by phone or at the counter, priced by the
+  same code and ticketed in the same shape.
+- Feedback asks about the crust, the sauce and the toppings when the order
+  contained pizza, and about the wings when it contained wings. A five-star
+  rating is thanked and walked to the Google review page; every other rating is
+  offered the same link without the countdown.
+- Everyone who answers the feedback form is emailed a coupon code, whatever they
+  rated us. The offer is a promotion row (Admin → History & offers) named by
+  **Admin → Settings → Feedback thank-you**; the email quotes that row, and no
+  live promotion means no email rather than a code the checkout would refuse.
 - Email credentials, Clover and Twilio are all set from **Admin → Integrations**,
   encrypted at rest. Until they are, orders still work: notifications park
   without spending a retry and go out the moment credentials arrive.

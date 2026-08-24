@@ -172,6 +172,18 @@ function settingValidation(key: string, value: Record<string, unknown>) {
     if (!Number.isInteger(halfTopping) || halfTopping < 0 || halfTopping > 10_000) {
       throw new Error("A half topping must count as between zero and one whole topping.");
     }
+  } else if (key === "rewards") {
+    // The code is checked against exactly the pattern `normalizeCouponCode`
+    // accepts at checkout. A code this screen allows and the order path rejects
+    // would be emailed to every customer who leaves feedback before anyone
+    // noticed it does nothing.
+    const code = String(value.feedbackRewardCode ?? "").trim().toUpperCase();
+    if (value.feedbackRewardEnabled && !/^[A-Z0-9][A-Z0-9-]{0,39}$/.test(code)) {
+      throw new Error("A reward code must be 1–40 letters, digits or hyphens, and cannot start with a hyphen.");
+    }
+    if (String(value.feedbackRewardOffer ?? "").length > 120) {
+      throw new Error("Describe the reward in 120 characters or fewer.");
+    }
   } else if (key === "hours") {
     if (!Array.isArray(value) || value.length !== 7 || value.some((row) => {
       if (!row || typeof row !== "object") return true;
