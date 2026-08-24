@@ -1,13 +1,26 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import Link from "next/link";
+import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
-import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel } from "@/app/staff/AdminControls";
+import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
+import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
+import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
+import { EmployeeTimeClock } from "@/app/staff/TimeClock";
+import { ManagerTimeClock } from "@/app/staff/TimeClockManager";
+import { AdminRecordsPanel } from "@/app/staff/AdminRecords";
+import { AdminIntegrationsPanel } from "@/app/staff/AdminIntegrations";
+import { StaffOrderEntry } from "@/app/staff/StaffOrderEntry";
 
 type User = { id: string; email: string; name: string; role: string; permissions: string[] };
 export type Dashboard = {
   user: User;
   orders: Array<Record<string, unknown>>;
+  // H-20a: checkouts that were started and never completed. A separate list from
+  // `orders` on purpose - they are not confirmed and must not reach the kitchen.
+  awaitingPayment: Array<Record<string, unknown>>;
   metrics: Record<string, unknown>;
   availabilityWarnings: { count?: number };
   clockedIn: Array<Record<string, unknown>>;
@@ -19,15 +32,8 @@ export type Dashboard = {
   variations: Array<{ id: string; product_id: string; name: string; base_price_cents: number; extra_topping_price_cents: number; included_topping_units_bps: number; active: number; display_order: number }>;
   staff: Array<{ id: string; email: string; name: string; role: string; permissions: string[]; active: number; last_login_at: number | null; created_at: number }>;
   promotions: Array<Record<string, unknown>>;
-  integrations: { stripeSecret: boolean; stripeWebhook: boolean; emailApiKey: boolean; emailProvider: string | null };
-};
-type ClockData = {
-  user: User;
-  state: "clocked_out" | "working" | "on_break";
-  paidMs: number;
-  events: Array<{ id: string; action: string; occurred_at: number; session_id: string }>;
-  corrections: Array<Record<string, unknown>>;
-  timeOff: Array<Record<string, unknown>>;
+  closures: Array<{ id: string; startsAt: number; endsAt: number; scope: "both" | "pickup" | "delivery"; reason: string; customerMessage: string | null }>;
+  integrations: { cloverCheckout: boolean; cloverWebhook: boolean; emailApiKey: boolean; emailProvider: string | null };
 };
 
 const permissionLabels = [
@@ -42,8 +48,21 @@ const permissionLabels = [
   ["export_payroll", "Export payroll"], ["manage_settings", "Manage settings"],
 ] as const;
 
-function StaffBrand() {
-  return <div className="staff-brand"><span className="pizza-mark"><span>62</span><i className="pizza-dot pizza-dot--one" /><i className="pizza-dot pizza-dot--two" /></span><span><strong>Pizza 62</strong><small>Operations</small></span></div>;
+const SECTION_TITLES: Record<string, string> = {
+  orders: "Live orders",
+  till: "Take an order",
+  analytics: "Analytics",
+  records: "History & offers",
+  website: "Website",
+  settings: "Settings",
+  integrations: "Integrations",
+  menu: "Menu setup",
+  team: "Team",
+  timeclock: "Time clock",
+};
+
+function StaffBrand({ label = "Operations" }: { label?: string }) {
+  return <div className="staff-brand"><BrandLogo name="Pizza 62" chip /><small>{label}</small></div>;
 }
 
 export default function StaffPortal({ mode }: { mode: "admin" | "kitchen" | "employee" }) {
@@ -55,9 +74,9 @@ export default function StaffPortal({ mode }: { mode: "admin" | "kitchen" | "emp
       .then((result) => setUser(result?.user ?? null))
       .finally(() => setChecking(false));
   }, []);
-  if (checking) return <div className="login-shell"><div className="login-panel"><div className="login-card" role="status">Checking secure staff access…</div></div></div>;
+  if (checking) return <div className="login-shell login-shell--checking"><div className="login-panel"><div className="login-card login-card--checking" role="status">Checking secure staff access…</div></div></div>;
   if (!user) return <StaffLogin mode={mode} onUser={setUser} />;
-  if (mode === "employee") return <EmployeePortal user={user} onLogout={() => setUser(null)} />;
+  if (mode === "employee") return <EmployeeTimeClock user={user} onLogout={() => setUser(null)} />;
   return <OperationsPortal mode={mode} user={user} onLogout={() => setUser(null)} />;
 }
 
@@ -70,7 +89,7 @@ function StaffLogin({ mode, onUser }: { mode: string; onUser: (user: User) => vo
       const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Sign-in failed."); onUser(result.user);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Sign-in failed."); setBusy(false); }
   };
-  return <div className="login-shell"><section className="login-art"><StaffBrand /><div><h1>Hot orders.<br />Cool heads.</h1><p>A focused operations hub for the Pizza 62 team—from the first alert to the final clock-out.</p></div><small>Private staff access · Every sensitive action is permission checked</small></section><section className="login-panel"><form className="login-card" onSubmit={submit}><StaffBrand /><h2>{bootstrap ? "Create owner access" : `${mode === "employee" ? "Team" : "Staff"} sign in`}</h2><p>{bootstrap ? "This one-time setup requires the secure secret configured in the hosting environment." : "Use your individual Pizza 62 email and password."}</p>{bootstrap ? <label>Owner name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></label> : null}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrap ? "new-password" : "current-password"} required /></label>{bootstrap ? <label>Owner setup secret<input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="off" required /></label> : null}{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="staff-button" disabled={busy}>{busy ? "Please wait…" : bootstrap ? "Create owner" : "Sign in"}</button><div className="bootstrap-note"><strong>{bootstrap ? "Already set up?" : "First-time owner setup"}</strong><p>{bootstrap ? "Return to normal sign in." : "An environment secret is required and no default password exists."}</p><button type="button" className="text-button" onClick={() => { setBootstrap(!bootstrap); setError(""); }}>{bootstrap ? "Back to sign in" : "Set up the first owner"}</button></div></form></section></div>;
+  return <div className="login-shell"><section className="login-art"><StaffBrand /><div><h1>Hot orders.<br />Cool heads.</h1><p>A focused operations hub for the Pizza 62 team—from the first alert to the final clock-out.</p></div><small>Private staff access · Every sensitive action is permission checked</small></section><section className="login-panel"><form className="login-card" onSubmit={submit}><StaffBrand /><h2>{bootstrap ? "Create owner access" : `${mode === "employee" ? "Team" : "Staff"} sign in`}</h2><p>{bootstrap ? "This one-time setup requires the secure secret configured in the hosting environment." : "Use your individual Pizza 62 email and password."}</p>{bootstrap ? <label>Owner name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></label> : null}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrap ? "new-password" : "current-password"} required /></label>{bootstrap ? <label>Owner setup secret<input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="off" required /></label> : null}{error ? <div className="form-error" role="alert">{error}</div> : null}<button className="staff-button" disabled={busy}>{busy ? "Please wait…" : bootstrap ? "Create owner" : "Sign in"}</button><div className="bootstrap-note"><strong>{bootstrap ? "Already set up?" : "First-time owner setup"}</strong><p>{bootstrap ? "Return to normal sign in." : "An environment secret is required and no default password exists."}</p><button type="button" className="text-button" onClick={() => { setBootstrap(!bootstrap); setError(""); }}>{bootstrap ? "Back to sign in" : "Set up the first owner"}</button></div><Link className="login-back-link" href="/">← Back to the customer site</Link></form></section></div>;
 }
 
 function OperationsPortal({ mode, user, onLogout }: { mode: "admin" | "kitchen"; user: User; onLogout: () => void }) {
@@ -105,14 +124,14 @@ function OperationsPortal({ mode, user, onLogout }: { mode: "admin" | "kitchen";
     setError(""); const response = await fetch("/api/admin/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) setError(result.error ?? "Action failed."); else void load();
   };
   const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
-  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><a href="/employee"><span>Time clock</span></a></> : <><button className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : section.replace("_", " ")}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}</div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
-    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
+  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button aria-pressed={section === "overview"} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button aria-pressed={section === "orders"} className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button aria-pressed={section === "till"} className={section === "till" ? "active" : ""} onClick={() => setSection("till")}><span>Take an order</span></button><button aria-pressed={section === "analytics"} className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}><span>Analytics</span></button><button aria-pressed={section === "records"} className={section === "records" ? "active" : ""} onClick={() => setSection("records")}><span>History &amp; offers</span></button><button aria-pressed={section === "website"} className={section === "website" ? "active" : ""} onClick={() => setSection("website")}><span>Website</span></button><button aria-pressed={section === "settings"} className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button aria-pressed={section === "integrations"} className={section === "integrations" ? "active" : ""} onClick={() => setSection("integrations")}><span>Integrations</span></button><button aria-pressed={section === "menu"} className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button aria-pressed={section === "team"} className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><button aria-pressed={section === "timeclock"} className={section === "timeclock" ? "active" : ""} onClick={() => setSection("timeclock")}><span>Time clock</span></button><a href="/employee"><span>My clock</span></a></> : <><button aria-pressed="true" className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : SECTION_TITLES[section] ?? section}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}<button className="mobile-signout" onClick={logout}>Sign out</button></div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
+    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <>{mode === "kitchen" ? null : <AwaitingPaymentPanel dashboard={dashboard} />}<OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /></> : section === "till" ? <StaffOrderEntry dashboard={dashboard} onPlaced={load} /> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "integrations" ? <AdminIntegrationsPanel /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
   </main></div>;
 }
 
 function AdminOverview({ dashboard, action }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void> }) {
   const metrics = dashboard.metrics; const ordering = dashboard.settings.ordering?.value ?? {};
-  return <><div className={ordering.paused ? "danger-banner" : "danger-banner"}><span><strong>{ordering.paused ? "Online ordering is paused" : "Online ordering is live"}</strong> · Pickup {String(ordering.pickupEstimateMinutes ?? 15)} min · Delivery {String(ordering.deliveryEstimateMinutes ?? 30)} min</span><button onClick={() => action({ action: "ordering.pause", paused: !ordering.paused, reason: "Changed from operations overview" })}>{ordering.paused ? "Resume ordering" : "Pause ordering"}</button></div><section className="stats-grid"><Stat label="Sales · today" value={formatMoney(Number(metrics.sales_cents ?? 0))} note="Paid orders · Toronto day" /><Stat label="Orders · today" value={String(metrics.order_count ?? 0)} note="Paid · Toronto day" /><Stat label="Average order" value={formatMoney(Math.round(Number(metrics.average_cents ?? 0)))} note="Paid orders today" /><Stat label="Team on clock" value={String(dashboard.clockedIn.length)} note="Live clock status" /></section><div className="staff-grid"><OrdersPanel dashboard={dashboard} action={action} compact /><aside className="staff-panel"><div className="staff-panel-head"><h2>Launch status</h2></div><div className="setup-list"><SetupItem title="Actual menu loaded" text={`${dashboard.products.filter((product) => product.active).length} current menu items are available to manage.`} /><SetupItem title="Stripe" text={dashboard.integrations.stripeSecret && dashboard.integrations.stripeWebhook ? "Payment and webhook secrets are configured." : "Add STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET before online payment."} /><SetupItem title="Email" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Email"} credentials are configured.` : "Add EMAIL_PROVIDER and EMAIL_API_KEY when you choose a provider."} /><SetupItem title="Owner setup" text={`${dashboard.availabilityWarnings.count ?? 0} active items are sold out or need attention.`} /></div></aside></div></>;
+  return <><div className={ordering.paused ? "danger-banner" : "danger-banner"}><span><strong>{ordering.paused ? "Online ordering is paused" : "Online ordering is live"}</strong> · Pickup {String(ordering.pickupEstimateMinutes ?? 15)} min · Delivery {String(ordering.deliveryEstimateMinutes ?? 30)} min</span><button onClick={() => action({ action: "ordering.pause", paused: !ordering.paused, reason: "Changed from operations overview" })}>{ordering.paused ? "Resume ordering" : "Pause ordering"}</button></div><section className="stats-grid"><Stat label="Sales · today" value={formatMoney(Number(metrics.sales_cents ?? 0))} note="Paid orders · Toronto day" /><Stat label="Orders · today" value={String(metrics.order_count ?? 0)} note="Paid · Toronto day" /><Stat label="Average order" value={formatMoney(Math.round(Number(metrics.average_cents ?? 0)))} note="Paid orders today" /><Stat label="Team on clock" value={String(dashboard.clockedIn.length)} note="Live clock status" /></section><AwaitingPaymentPanel dashboard={dashboard} /><div className="staff-grid"><OrdersPanel dashboard={dashboard} action={action} compact /><aside className="staff-panel"><div className="staff-panel-head"><h2>Launch status</h2></div><div className="setup-list"><SetupItem title="Actual menu loaded" text={`${dashboard.products.filter((product) => product.active).length} current menu items are available to manage.`} /><SetupItem title="Clover" text={dashboard.integrations.cloverCheckout && dashboard.integrations.cloverWebhook ? "Payment and webhook secrets are configured." : "Add CLOVER_MERCHANT_ID, CLOVER_API_TOKEN and CLOVER_WEBHOOK_SECRET before online payment."} /><SetupItem title="Email" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Email"} credentials are configured.` : "Add EMAIL_PROVIDER and EMAIL_API_KEY when you choose a provider."} /><SetupItem title="Owner setup" text={`${dashboard.availabilityWarnings.count ?? 0} active items are sold out or need attention.`} /></div></aside></div></>;
 }
 function Stat({ label, value, note }: { label: string; value: string; note: string }) { return <article className="stat-card"><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 function SetupItem({ title, text }: { title: string; text: string }) { return <div className="setup-item"><b>!</b><div><strong>{title}</strong><p>{text}</p></div></div>; }
@@ -122,39 +141,216 @@ function SetupItem({ title, text }: { title: string; text: string }) { return <d
 // placement, extra cheese, halal, deal/wing modifier selections, per-item and order
 // notes, delivery address, and payment state. Contact fields honour C-03 (the API
 // only sends phone/email when the viewer has view_customer_contact).
+/**
+ * The kitchen ticket as it goes to paper.
+ *
+ * This is the day-one printing path, and it deliberately needs no hardware: the
+ * restaurant's Star TSP143IIILAN appears to the operating system as an ordinary
+ * printer, so `window.print()` against a receipt-shaped stylesheet gets a real
+ * ticket out of it today. The `print_jobs` queue and the raster/PassPRNT paths
+ * (R2.2) replace *how* the bytes arrive, not what the ticket says — so this is
+ * the thing that must never be blocked on the printer's IP address.
+ *
+ * It is a separate component from the on-screen `KitchenTicket` rather than the
+ * same one restyled, because the two are answering different questions. On
+ * screen the ticket sits inside a card that already shows the order number,
+ * customer and time, so it only lists items. On paper it is alone: it has to
+ * carry its own header, or the person holding it cannot tell which order it is.
+ *
+ * Rendered through a portal to `document.body` so the print stylesheet can hide
+ * every sibling with one rule. Without that it would be buried inside the app's
+ * root element and hiding its ancestors would hide it too.
+ */
+function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<string, unknown>; toppingNames: Map<string, string>; printedAt: number }) {
+  const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
+  const address = order.address as Record<string, string> | null;
+  const scheduled = order.schedule_type === "scheduled" && order.scheduled_for ? Number(order.scheduled_for) : null;
+  const time = (value: number) =>
+    new Date(value).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
+  const paid = String(order.payment_status ?? "") === "paid";
+
+  return <div className="print-root">
+    <div className="pt-head">
+      {/* The largest thing on the ticket. Everything else is detail; this is
+          what someone matches against a bag at the counter. */}
+      <div className="pt-number">{String(order.order_number ?? "").replace("P62-", "#")}</div>
+      <div className="pt-type">{String(order.fulfilment ?? "").toUpperCase()}</div>
+    </div>
+    <div className="pt-when">
+      {scheduled ? `SCHEDULED ${time(scheduled)}` : `ASAP — in by ${time(Number(order.created_at))}`}
+    </div>
+    <div className="pt-rule" />
+    <div className="pt-customer">
+      <strong>{String(order.customer_name ?? "")}</strong>
+      {order.customer_phone ? <div>{String(order.customer_phone)}</div> : null}
+      {/* Where it came from, so a counter query about "the phone order" can be
+          matched to paper without going back to a screen. */}
+      <div className="pt-origin">
+        {String(order.channel ?? "online") === "online" ? "WEBSITE" : String(order.channel).replaceAll("_", " ").toUpperCase()}
+        {" · "}
+        {String(order.payment_method ?? "").replaceAll("_", " ").toUpperCase()}
+      </div>
+    </div>
+    <div className="pt-rule" />
+    {items.map((item, index) => {
+      const snapshot = (item.snapshot as ItemSnapshot) ?? {};
+      // The same resolver the confirmation email uses, so paper and inbox
+      // describe the order in exactly the same words. A ticket that reads
+      // differently from what the customer was sent is how a correct order
+      // becomes a dispute nobody can settle.
+      const flags = snapshotFlags(snapshot);
+      const details = snapshotDetails(snapshot, toppingNames);
+      return <div className="pt-item" key={String(item.id ?? index)}>
+        <div className="pt-item-head">
+          <span className="pt-qty">{String(item.quantity)}&times;</span>
+          <span>{String(item.productName)}{item.variationName ? ` · ${String(item.variationName)}` : ""}</span>
+        </div>
+        {/* Halal, extra cheese and anything the customer asked us to leave off.
+            Called out rather than left to blend into the option list — H-03: an
+            omission the kitchen cannot see will not happen, which would make
+            enforcing the recipe server-side pointless. */}
+        {flags.map((flag) => <div className="pt-flag" key={flag}>** {flag.toUpperCase()} **</div>)}
+        {/* Every choice, labelled. Toppings arrive grouped by placement
+            (“LEFT HALF: …”) rather than suffixed per name, because a half-and-half
+            read off a list of suffixes at 9pm is a half-and-half made wrong. */}
+        {details.map((detail) => <div className="pt-sub" key={detail.label}>
+          <b>{detail.label.toUpperCase()}:</b> {detail.value}
+        </div>)}
+        {item.instructions ? <div className="pt-note">NOTE: {String(item.instructions)}</div> : null}
+      </div>;
+    })}
+    <div className="pt-rule" />
+    {address ? <div className="pt-address">
+      <strong>DELIVER TO</strong>
+      <div>{address.line1}{address.unit ? `, Unit ${address.unit}` : ""}</div>
+      <div>{address.city} {address.postalCode}</div>
+      {/* `orders.instructions` is where the buzzer note is kept — the address
+          JSON is normalised down to what the radius check needs — so it is
+          printed here, with the address, rather than adrift at the bottom. */}
+      {order.instructions ? <div className="pt-note">{String(order.instructions)}</div> : null}
+    </div> : <>{order.instructions ? <div className="pt-note">ORDER NOTE: {String(order.instructions)}</div> : null}</>}
+    <div className="pt-rule" />
+    {/* The full breakdown, not just the total. Someone reconciling the till at
+        close needs the same numbers the customer was charged, and a ticket that
+        shows only a grand total cannot answer “was the delivery fee taken?” */}
+    <div className="pt-money">
+      {totalRows({
+        subtotal_cents: Number(order.subtotal_cents ?? 0),
+        discount_cents: Number(order.discount_cents ?? 0),
+        tax_cents: Number(order.tax_cents ?? 0),
+        delivery_fee_cents: Number(order.delivery_fee_cents ?? 0),
+        tip_cents: Number(order.tip_cents ?? 0),
+        total_cents: Number(order.total_cents ?? 0),
+      }).filter((row) => !row.strong).map((row) => <div className="pt-money-row" key={row.label}>
+        <span>{row.label}</span><span>{row.value}</span>
+      </div>)}
+    </div>
+    {/* Whether to take money is the one thing a mistake on is expensive, so it
+        is stated in the imperative rather than as a status word. */}
+    <div className="pt-total">
+      <span>{paid ? "PAID ONLINE" : "COLLECT"}</span>
+      <span>{formatMoney(Number(order.total_cents ?? 0))}</span>
+    </div>
+    {/* Captured when the button was pressed, not read during render: the clock
+        is impure, and "when this was sent to print" is the honest meaning. */}
+    <div className="pt-footer">Pizza 62 · printed {time(printedAt)}</div>
+  </div>;
+}
+
 function KitchenTicket({ order, toppingNames }: { order: Record<string, unknown>; toppingNames: Map<string, string> }) {
   const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
   const address = order.address as Record<string, string> | null;
   const phone = order.customer_phone ? String(order.customer_phone) : null;
   return <div className="kitchen-ticket">
     {items.map((item, index) => {
-      const snapshot = (item.snapshot as Record<string, unknown>) ?? {};
-      const toppings = (snapshot.toppings as Array<{ toppingId: string; placement: string }> | undefined) ?? [];
-      const modifiers = (snapshot.modifiers as Array<{ label: string; values: Array<{ label: string }> }> | undefined) ?? [];
+      const snapshot = (item.snapshot as ItemSnapshot) ?? {};
+      // Shared with the printed ticket and the emails — see lib/order-presentation.ts.
+      const flags = snapshotFlags(snapshot);
+      const details = snapshotDetails(snapshot, toppingNames);
       return <div className="ticket-line" key={String(item.id ?? index)}>
-        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{snapshot.halal ? <span className="ticket-tag">HALAL</span> : null}{snapshot.extraCheese ? <span className="ticket-tag">Extra cheese</span> : null}</div>
-        {toppings.length ? <div className="ticket-toppings">{toppings.map((topping, toppingIndex) => <span key={toppingIndex}>{toppingNames.get(topping.toppingId) ?? topping.toppingId}{topping.placement === "left" ? " (L)" : topping.placement === "right" ? " (R)" : ""}</span>)}</div> : null}
-        {modifiers.map((modifier, modifierIndex) => <div className="ticket-modifier" key={modifierIndex}><em>{modifier.label}:</em> {modifier.values.map((value) => value.label).join(", ")}</div>)}
+        <div className="ticket-line-head"><strong>{String(item.quantity)}× {String(item.productName)}</strong>{item.variationName ? <span> · {String(item.variationName)}</span> : null}{flags.map((flag) => <span className={`ticket-tag${flag.startsWith("No ") ? " ticket-tag--warn" : ""}`} key={flag}>{flag}</span>)}</div>
+        {details.map((detail) => <div className="ticket-modifier" key={detail.label}><em>{detail.label}:</em> {detail.value}</div>)}
         {item.instructions ? <div className="ticket-note">Note: {String(item.instructions)}</div> : null}
       </div>;
     })}
-    {address ? <div className="ticket-address"><strong>Deliver to:</strong> {address.line1}{address.unit ? `, Unit ${address.unit}` : ""}, {address.city} {address.postalCode}{address.instructions ? ` — ${address.instructions}` : ""}</div> : null}
+    {address ? <div className="ticket-address"><strong>Deliver to:</strong> {address.line1}{address.unit ? `, Unit ${address.unit}` : ""}, {address.city} {address.postalCode}{order.instructions ? ` — ${String(order.instructions)}` : ""}</div> : null}
     <div className="ticket-payment">{String(order.payment_method ?? "").replaceAll("_", " ")} · {String(order.payment_status ?? "").replaceAll("_", " ")}{phone ? ` · ${phone}` : order.contactRedacted ? " · contact hidden" : ""}</div>
-    {order.instructions ? <div className="ticket-note">Order note: {String(order.instructions)}</div> : null}
+    {!address && order.instructions ? <div className="ticket-note">Order note: {String(order.instructions)}</div> : null}
   </div>;
+}
+
+/**
+ * H-20a: checkouts that started and never finished.
+ *
+ * These orders exist, hold a real cart, and belong to a real customer, but they
+ * were absent from every screen — the live queue filters them out and the
+ * history filter had no option for the status. So the one case that most needs a
+ * human, a customer whose card was charged but whose confirmation never arrived,
+ * was the one case nobody could see.
+ *
+ * Deliberately read-only and visually quiet: it is a watchlist, not a work
+ * queue. Most rows here are abandoned carts that the payment reaper will cancel
+ * on its own. What matters is that a row which *stays* becomes visible.
+ */
+function AwaitingPaymentPanel({ dashboard }: { dashboard: Dashboard }) {
+  const waiting = dashboard.awaitingPayment ?? [];
+  if (waiting.length === 0) return null;
+  return <section className="staff-panel">
+    <div className="staff-panel-head">
+      <h2>Awaiting payment</h2>
+      <span className="live-chip">{waiting.length} unconfirmed</span>
+    </div>
+    <p className="editor-hint">Checkout was started but never confirmed. Nothing has been cooked and no payment is recorded. Most of these are abandoned carts and expire on their own — one that lingers may mean a payment went through without reaching us.</p>
+    {waiting.map((order) => <article className="ops-order" key={String(order.id)}>
+      <div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div>
+      <div>
+        <h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3>
+        <p>Started {new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })} · {formatMoney(Number(order.total_cents))}</p>
+        <span className="status-pill">{String(order.payment_status).replaceAll("_", " ")}</span>
+      </div>
+    </article>)}
+  </section>;
 }
 
 function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void>; compact?: boolean; kitchen?: boolean }) {
   const orders = compact ? dashboard.orders.slice(0, 6) : dashboard.orders;
   const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
-  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions">{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}</section>;
+  // The order currently being sent to paper. Exactly one at a time: the print
+  // stylesheet hides everything except the ticket, so a second one on the page
+  // would come out on the same receipt.
+  const [printJob, setPrintJob] = useState<{ order: Record<string, unknown>; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!printJob) return;
+    const finished = () => setPrintJob(null);
+    window.addEventListener("afterprint", finished);
+    // Deferred a tick so React has painted the ticket before the print dialog
+    // reads the DOM — window.print() is synchronous and would otherwise capture
+    // the page as it was before this render.
+    const timer = window.setTimeout(() => window.print(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("afterprint", finished);
+    };
+  }, [printJob]);
+  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => setPrintJob({ order, at: Date.now() })}>Print ticket</button>{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
+    {/* Portalled to document.body so the print stylesheet can hide every sibling
+        with one rule; nested inside the app root, hiding its ancestors would
+        hide the ticket too. */}
+    {printJob && typeof document !== "undefined"
+      ? createPortal(
+          <PrintableTicket order={printJob.order} toppingNames={toppingNames} printedAt={printJob.at} />,
+          document.body,
+        )
+      : null}
+  </section>;
 }
 
 export function LegacySettingsPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const deliveryRecord = dashboard.settings.delivery; const orderingRecord = dashboard.settings.ordering; const taxRecord = dashboard.settings.taxAndTips; const businessRecord = dashboard.settings.business;
   const [radius, setRadius] = useState(String(deliveryRecord.value.radiusKm ?? 10)); const [fee, setFee] = useState(String(Number(deliveryRecord.value.feeCents ?? 350) / 100)); const [minimum, setMinimum] = useState(String(Number(deliveryRecord.value.minimumCents ?? 0) / 100)); const [pickupEstimate, setPickupEstimate] = useState(String(orderingRecord.value.pickupEstimateMinutes ?? 15)); const [deliveryEstimate, setDeliveryEstimate] = useState(String(orderingRecord.value.deliveryEstimateMinutes ?? 30)); const [tax, setTax] = useState(String(Number(taxRecord.value.taxRateBps ?? 1300) / 100)); const [address, setAddress] = useState(String(businessRecord.value.address ?? "")); const [latitude, setLatitude] = useState(String(businessRecord.value.latitude ?? "")); const [longitude, setLongitude] = useState(String(businessRecord.value.longitude ?? "")); const [reviewUrl, setReviewUrl] = useState(String(businessRecord.value.googleReviewUrl ?? "")); const [status, setStatus] = useState("");
   const save = async (key: string, value: Record<string, unknown>, expectedVersion: number) => { setStatus(""); const response = await fetch("/api/admin/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "settings.update", key, value, expectedVersion, reason: "Updated in admin settings" }) }); const result = await response.json(); setStatus(response.ok ? "Settings saved and audited." : result.error); if (response.ok) await onSaved(); };
-  return <div className="admin-stack"><div className="staff-grid"><section className="staff-panel"><div className="staff-panel-head"><h2>Delivery & ordering</h2></div><div className="settings-form"><label>Radius · km<input type="number" min="0.1" max="100" step="0.1" value={radius} onChange={(event) => setRadius(event.target.value)} /></label><label>Delivery fee · C$<input type="number" min="0" step="0.01" value={fee} onChange={(event) => setFee(event.target.value)} /></label><label>Minimum · C$<input type="number" min="0" step="0.01" value={minimum} onChange={(event) => setMinimum(event.target.value)} /></label><label>Pickup estimate · min<input type="number" min="5" max="240" value={pickupEstimate} onChange={(event) => setPickupEstimate(event.target.value)} /></label><label>Delivery estimate · min<input type="number" min="5" max="360" value={deliveryEstimate} onChange={(event) => setDeliveryEstimate(event.target.value)} /></label></div><button className="staff-button" onClick={() => save("delivery", { ...deliveryRecord.value, radiusKm: Number(radius), feeCents: Math.round(Number(fee) * 100), minimumCents: Math.round(Number(minimum) * 100) }, deliveryRecord.version)}>Save delivery</button> <button className="staff-button" onClick={() => save("ordering", { ...orderingRecord.value, pickupEstimateMinutes: Number(pickupEstimate), deliveryEstimateMinutes: Number(deliveryEstimate) }, orderingRecord.version)}>Save estimates</button></section><section className="staff-panel"><div className="staff-panel-head"><h2>Restaurant details</h2></div><div className="settings-form"><label>Address<input value={address} onChange={(event) => setAddress(event.target.value)} /></label><label>Google review URL<input value={reviewUrl} onChange={(event) => setReviewUrl(event.target.value)} /></label><label>Latitude<input type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} /></label><label>Longitude<input type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} /></label></div><button className="staff-button" onClick={() => save("business", { ...businessRecord.value, address, latitude: Number(latitude), longitude: Number(longitude), googleReviewUrl: reviewUrl }, businessRecord.version)}>Save restaurant details</button></section></div><div className="staff-grid"><section className="staff-panel"><div className="staff-panel-head"><h2>Tax & tip</h2></div><div className="settings-form"><label>Menu HST · %<input type="number" min="0" max="30" step="0.01" value={tax} onChange={(event) => setTax(event.target.value)} /></label><label>Delivery fee taxable<input type="text" value={taxRecord.value.deliveryFeeTaxable ? "Yes" : "No"} readOnly /></label></div><button className="staff-button" onClick={() => save("taxAndTips", { ...taxRecord.value, taxRateBps: Math.round(Number(tax) * 100) }, taxRecord.version)}>Save tax settings</button></section><section className="staff-panel"><div className="staff-panel-head"><h2>Provider keys</h2></div><div className="setup-list"><SetupItem title="Stripe secret" text={dashboard.integrations.stripeSecret ? "Configured" : "Add STRIPE_SECRET_KEY in Azure or Sites."} /><SetupItem title="Stripe webhook" text={dashboard.integrations.stripeWebhook ? "Configured" : "Add STRIPE_WEBHOOK_SECRET and point Stripe to /api/payments/stripe/webhook."} /><SetupItem title="Email provider" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Provider"} API key configured.` : "When selected, add EMAIL_PROVIDER, EMAIL_API_KEY and EMAIL_FROM as secrets."} /></div></section></div>{status ? <p className="staff-empty" role="status">{status}</p> : null}</div>;
+  return <div className="admin-stack"><div className="staff-grid"><section className="staff-panel"><div className="staff-panel-head"><h2>Delivery & ordering</h2></div><div className="settings-form"><label>Radius · km<input type="number" min="0.1" max="100" step="0.1" value={radius} onChange={(event) => setRadius(event.target.value)} /></label><label>Delivery fee · C$<input type="number" min="0" step="0.01" value={fee} onChange={(event) => setFee(event.target.value)} /></label><label>Minimum · C$<input type="number" min="0" step="0.01" value={minimum} onChange={(event) => setMinimum(event.target.value)} /></label><label>Pickup estimate · min<input type="number" min="5" max="240" value={pickupEstimate} onChange={(event) => setPickupEstimate(event.target.value)} /></label><label>Delivery estimate · min<input type="number" min="5" max="360" value={deliveryEstimate} onChange={(event) => setDeliveryEstimate(event.target.value)} /></label></div><button className="staff-button" onClick={() => save("delivery", { ...deliveryRecord.value, radiusKm: Number(radius), feeCents: Math.round(Number(fee) * 100), minimumCents: Math.round(Number(minimum) * 100) }, deliveryRecord.version)}>Save delivery</button> <button className="staff-button" onClick={() => save("ordering", { ...orderingRecord.value, pickupEstimateMinutes: Number(pickupEstimate), deliveryEstimateMinutes: Number(deliveryEstimate) }, orderingRecord.version)}>Save estimates</button></section><section className="staff-panel"><div className="staff-panel-head"><h2>Restaurant details</h2></div><div className="settings-form"><label>Address<input value={address} onChange={(event) => setAddress(event.target.value)} /></label><label>Google review URL<input value={reviewUrl} onChange={(event) => setReviewUrl(event.target.value)} /></label><label>Latitude<input type="number" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} /></label><label>Longitude<input type="number" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} /></label></div><button className="staff-button" onClick={() => save("business", { ...businessRecord.value, address, latitude: Number(latitude), longitude: Number(longitude), googleReviewUrl: reviewUrl }, businessRecord.version)}>Save restaurant details</button></section></div><div className="staff-grid"><section className="staff-panel"><div className="staff-panel-head"><h2>Tax & tip</h2></div><div className="settings-form"><label>Menu HST · %<input type="number" min="0" max="30" step="0.01" value={tax} onChange={(event) => setTax(event.target.value)} /></label><label>Delivery fee taxable<input type="text" value={taxRecord.value.deliveryFeeTaxable ? "Yes" : "No"} readOnly /></label></div><button className="staff-button" onClick={() => save("taxAndTips", { ...taxRecord.value, taxRateBps: Math.round(Number(tax) * 100) }, taxRecord.version)}>Save tax settings</button></section><section className="staff-panel"><div className="staff-panel-head"><h2>Provider keys</h2></div><div className="setup-list"><SetupItem title="Clover checkout" text={dashboard.integrations.cloverCheckout ? "Configured" : "Add CLOVER_MERCHANT_ID and CLOVER_API_TOKEN in Azure."} /><SetupItem title="Clover webhook" text={dashboard.integrations.cloverWebhook ? "Configured" : "Add CLOVER_WEBHOOK_SECRET and point Clover to /api/payments/clover/webhook."} /><SetupItem title="Email provider" text={dashboard.integrations.emailApiKey ? `${dashboard.integrations.emailProvider ?? "Provider"} API key configured.` : "When selected, add EMAIL_PROVIDER, EMAIL_API_KEY and EMAIL_FROM as secrets."} /></div></section></div>{status ? <p className="staff-empty" role="status">{status}</p> : null}</div>;
 }
 
 export function LegacyMenuPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
@@ -180,17 +376,4 @@ export function LegacyTeamPanel({ onSaved }: { onSaved: () => Promise<void> }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [permissions, setPermissions] = useState<string[]>(["view_orders", "acknowledge_orders", "change_order_status"]); const [message, setMessage] = useState("");
   const submit = async (event: FormEvent) => { event.preventDefault(); const response = await fetch("/api/admin/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "staff.create", name, email, password, role: "employee", permissions }) }); const result = await response.json(); setMessage(response.ok ? "Employee access created." : result.error); if (response.ok) { setName(""); setEmail(""); setPassword(""); await onSaved(); } };
   return <div className="staff-grid"><form className="staff-panel employee-form" onSubmit={submit}><div className="staff-panel-head"><h2>Create employee access</h2></div><label>Name<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>Temporary password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} required /></label><div className="settings-form">{permissionLabels.map(([key, label]) => <label key={key}><span><input type="checkbox" checked={permissions.includes(key)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, key] : current.filter((entry) => entry !== key))} /> {label}</span></label>)}</div><button className="staff-button">Create employee</button>{message ? <p className="staff-empty" role="status">{message}</p> : null}</form><aside className="staff-panel"><div className="staff-panel-head"><h2>Permission boundaries</h2></div><div className="setup-list"><SetupItem title="Refunds are separate" text="Refund, cancellation, payroll and employee-management access are independently grantable." /><SetupItem title="No shared passwords" text="Every employee signs in with an individual email and password." /><SetupItem title="Revocation-ready" text="Disabled users no longer pass server-side session checks." /></div></aside></div>;
-}
-
-function EmployeePortal({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [data, setData] = useState<ClockData | null>(null); const [error, setError] = useState(""); const [timeOffStart, setTimeOffStart] = useState(""); const [timeOffEnd, setTimeOffEnd] = useState(""); const [note, setNote] = useState("");
-  const load = useCallback(async () => { const response = await fetch("/api/timeclock"); if (response.status === 401) { onLogout(); return; } const result = await response.json(); if (!response.ok) setError(result.error); else setData(result); }, [onLogout]);
-  useEffect(() => {
-    const initial = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(initial);
-  }, [load]);
-  const act = async (action: string, extra: Record<string, unknown> = {}) => { setError(""); const response = await fetch("/api/timeclock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...extra }) }); const result = await response.json(); if (!response.ok) setError(result.error); else await load(); };
-  const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); onLogout(); };
-  const paidHours = data ? data.paidMs / 3_600_000 : 0;
-  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav"><button className="active"><span>My time</span></button><a href="/kitchen"><span>Kitchen</span></a></nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>Your shift, accurately recorded</h1><p>Exact timestamps · Manual unpaid breaks · No automatic rounding</p></div><span className="live-chip"><i /> Secure session</span></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{!data ? <div className="staff-panel">Loading your time record…</div> : <div className="clock-layout"><section className="clock-hero"><span className="live-chip"><i /> {data.state.replaceAll("_", " ")}</span><div className="clock-state"><strong>{data.state === "working" ? "On shift" : data.state === "on_break" ? "On break" : "Off shift"}</strong></div><div className="clock-time">{paidHours.toFixed(2)} h</div><p style={{ textAlign: "center", fontSize: 9, color: "rgba(255,255,255,.55)" }}>Paid time visible in the last 30 days</p><div className="clock-actions"><button className="primary" disabled={data.state !== "clocked_out"} onClick={() => act("clock_in")}>Clock in</button><button disabled={data.state !== "working"} onClick={() => act("break_start")}>Start break</button><button disabled={data.state !== "on_break"} onClick={() => act("break_end")}>End break</button><button disabled={data.state !== "working"} onClick={() => act("clock_out")}>Clock out</button></div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Recent events</h2><span className="live-chip">Exact time</span></div><div className="clock-events">{data.events.slice(-8).reverse().map((event) => <div className="clock-event" key={event.id}><strong>{event.action.replaceAll("_", " ")}</strong><span>{new Date(event.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</span></div>)}{!data.events.length ? <div className="staff-empty">No clock events yet.</div> : null}</div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Request time off</h2></div><div className="timeoff-form"><label>Starts<input type="date" value={timeOffStart} onChange={(event) => setTimeOffStart(event.target.value)} /></label><label>Ends<input type="date" value={timeOffEnd} onChange={(event) => setTimeOffEnd(event.target.value)} /></label><label>Note<textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={500} /></label><button className="staff-button" onClick={() => act("timeoff.request", { startsAt: new Date(`${timeOffStart}T12:00:00`).getTime(), endsAt: new Date(`${timeOffEnd}T12:00:00`).getTime(), partialDay: false, note })}>Submit request</button></div></section><section className="staff-panel"><div className="staff-panel-head"><h2>Request status</h2></div><div className="setup-list">{data.timeOff.map((request) => <div className="setup-item" key={String(request.id)}><b>{String(request.status) === "approved" ? "✓" : "·"}</b><div><strong>{new Date(Number(request.starts_at)).toLocaleDateString("en-CA")} — {new Date(Number(request.ends_at)).toLocaleDateString("en-CA")}</strong><p>Status: {String(request.status)}</p></div></div>)}{!data.timeOff.length ? <div className="staff-empty">No time-off requests.</div> : null}</div></section></div>}</main></div>;
 }

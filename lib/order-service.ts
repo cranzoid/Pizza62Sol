@@ -1,22 +1,41 @@
-import { env } from "cloudflare:workers";
 import { ensureDatabase, getD1, getSetting, safeJson } from "@/db/runtime";
 import {
+  BAKE_SAUCE_OPTIONS,
+  CHEESE_OPTIONS,
+  CRUST_OPTIONS,
+  HALAL_OPTION,
   generateOpaqueToken,
   hashOpaqueToken,
   isWithinWeeklyAvailability,
+  modifierUnitsBps,
+  normalizeModifierValues,
+  orderModifierSections,
   priceCart,
   pricePizza,
+  priceToppingUnits,
   validateDelivery,
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
+  type ToppingPlacement,
   type ToppingSelection,
   type WeeklyAvailability,
 } from "@/lib/domain";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
+import { closureFor, closureMessage, loadActiveClosures } from "@/lib/closures";
+import {
+  createCloverCheckout,
+  createCloverCharge,
+  cloverCheckoutConfigured,
+  cloverIframeEnabled,
+  CloverDeclinedError,
+} from "@/lib/clover";
+import { applyPaymentApproved } from "@/lib/payment-completion";
+import { anyProviderConfigured } from "@/lib/notifications/config";
+import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
-type OrderRequest = {
+export type OrderRequest = {
   idempotencyKey?: string;
   fulfilment?: Fulfilment;
   customer?: { name?: string; phone?: string; email?: string };
@@ -25,14 +44,22 @@ type OrderRequest = {
     variationId?: string;
     quantity?: number;
     toppings?: ToppingSelection[];
+    /** H-03: recipe toppings the customer asked to leave off. Must be a subset. */
+    omitToppings?: string[];
     extraCheese?: boolean;
     halal?: boolean;
-    modifiers?: Array<{ id?: string; values?: string[] }>;
+    modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
     specialInstructions?: string;
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
   paymentMethod?: "pay_at_store" | "online";
+  /**
+   * A single-use card token minted by Clover's iframe in the customer's browser.
+   * Present only for inline card entry; its absence selects the hosted-checkout
+   * path. It is a token, never card data — the card itself never reaches us.
+   */
+  paymentToken?: string;
   tip?:
     | { type: "none" }
     | { type: "percentage"; valueBps: number }
@@ -133,16 +160,59 @@ type OperationSetting = {
 type ProductConfiguration = {
   sections?: ModifierSectionSeed[];
   pizzaBaseOptions?: string[];
+  crustOptions?: string[];
+  bakeSauceOptions?: string[];
+  cheeseEnabled?: boolean;
+  toppingsFirst?: boolean;
   freeDelivery?: boolean;
   availability?: WeeklyAvailability;
   [key: string]: unknown;
 };
 
-function normalizeCustomer(customer: OrderRequest["customer"]) {
+// Crust and bake/sauce are separate groups so a customer cannot pick both Thin and
+// Thick. Pizzas configured before the split still carry pizzaBaseOptions, which is
+// honoured as one combined group so existing products keep validating.
+function pizzaOptionSections(configuration: ProductConfiguration): ModifierSectionSeed[] {
+  const sections: ModifierSectionSeed[] = [];
+  if (configuration.crustOptions?.length) {
+    sections.push({ id: "pizza-crust", label: "Crust", source: "crust", options: configuration.crustOptions, min: 0, max: 1 });
+  }
+  if (configuration.bakeSauceOptions?.length) {
+    sections.push({ id: "pizza-bake-sauce", label: "Bake & sauce", source: "bake_sauce", options: configuration.bakeSauceOptions, min: 0, max: 2 });
+  }
+  if (!sections.length && configuration.pizzaBaseOptions?.length) {
+    sections.push({ id: "pizza-base", label: "Crust, bake & sauce", source: "pizza_base", options: configuration.pizzaBaseOptions, min: 0, max: 2 });
+  }
+  return sections;
+}
+
+/**
+ * Contact details, with different rules for a customer and for the counter.
+ *
+ * Online, all three are required: the email is how the confirmation and the
+ * tracking link reach the customer, and without it the order is unreachable.
+ *
+ * At the counter, a name is enough. Someone ordering two slices has not given an
+ * email address, and demanding one produces `x@x.com` typed by a member of staff
+ * to get past the form — a worse outcome than an empty field, because it looks
+ * like data. An order with no email simply gets no confirmation email.
+ */
+function normalizeCustomer(customer: OrderRequest["customer"], staffEntry = false) {
   const name = customer?.name?.trim() ?? "";
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
   const email = customer?.email?.trim().toLowerCase() ?? "";
-  if (name.length < 2 || name.length > 100) throw new OrderValidationError("Enter your full name.");
+  if (name.length < 2 || name.length > 100) {
+    throw new OrderValidationError(staffEntry ? "Give the order a name so staff can call it out." : "Enter your full name.");
+  }
+  if (staffEntry) {
+    if (phone && (phone.length < 10 || phone.length > 16)) {
+      throw new OrderValidationError("That phone number does not look right.");
+    }
+    if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
+      throw new OrderValidationError("That email address does not look right.");
+    }
+    return { name, phone, email };
+  }
   if (phone.length < 10 || phone.length > 16) throw new OrderValidationError("Enter a valid phone number.");
   if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) {
     throw new OrderValidationError("Enter a valid email address.");
@@ -194,47 +264,91 @@ function modifierOptions(
     section.source === "wing_flavours" ? [...WING_FLAVOURS]
       : section.source === "drinks" ? [...DRINK_OPTIONS]
         : section.source === "pizza_base" ? [...PIZZA_BASE_OPTIONS]
-          : []
+          : section.source === "crust" ? [...CRUST_OPTIONS]
+            : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
+              : section.source === "cheese" ? [...CHEESE_OPTIONS]
+                : section.source === "halal" ? [HALAL_OPTION]
+                  : []
   );
   return new Map(options.map((value) => [value, value]));
 }
 
+type ModifierSnapshot = {
+  id: string;
+  label: string;
+  group?: string;
+  values: Array<{ value: string; label: string; placement?: ToppingPlacement }>;
+};
+
 function validateModifiers(
-  input: Array<{ id?: string; values?: string[] }> | undefined,
+  input: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }> | undefined,
   sections: ModifierSectionSeed[],
   toppingNames: Map<string, string>,
-): { snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }>; extraCents: number } {
+  halfToppingUnitsBps: number,
+): { snapshot: ModifierSnapshot[]; extraCents: number } {
   const provided = new Map((input ?? []).map((entry) => [entry.id ?? "", entry.values ?? []]));
   if ([...provided.keys()].some((id) => !sections.some((section) => section.id === id))) {
     throw new OrderValidationError("An unsupported item option was submitted.");
   }
-  const snapshot: Array<{ id: string; label: string; values: Array<{ value: string; label: string }> }> = [];
+  const snapshot: ModifierSnapshot[] = [];
+  const sharedUnits = new Map<string, number>();
+  let extraCents = 0;
   for (const section of sections) {
-    const values = provided.get(section.id) ?? [];
-    const unique = [...new Set(values)];
+    const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
+    const optionPrices = section.optionPrices ?? {};
+    if (section.source === "toppings") {
+      // Topping groups carry a placement per selection, so a half topping consumes
+      // only part of the included allowance and is charged proportionally.
+      let normalized;
+      try {
+        normalized = normalizeModifierValues(raw);
+      } catch {
+        throw new OrderValidationError(`Choose valid options for ${section.label}.`);
+      }
+      if (normalized.length < section.min || normalized.length > section.max || normalized.some((entry) => !allowed.has(entry.value))) {
+        throw new OrderValidationError(`Choose valid options for ${section.label}.`);
+      }
+      const unitsBps = modifierUnitsBps(normalized, halfToppingUnitsBps);
+      if (section.sharedGroup) {
+        sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + unitsBps);
+      } else {
+        extraCents += priceToppingUnits(unitsBps, (section.included ?? 0) * 10_000, section.extraPriceCents ?? 0);
+      }
+      extraCents += normalized.reduce((sum, entry) => sum + (optionPrices[entry.value] ?? 0), 0);
+      if (normalized.length) {
+        snapshot.push({
+          id: section.id,
+          label: section.label,
+          group: section.group,
+          values: normalized.map((entry) => ({
+            value: entry.value,
+            label: allowed.get(entry.value) ?? entry.value,
+            placement: entry.placement,
+          })),
+        });
+      }
+      continue;
+    }
+    const values = raw.map((entry) => (typeof entry === "string" ? entry : String(entry?.value ?? "")));
+    const unique = [...new Set(values)];
     if (unique.length !== values.length || unique.length < section.min || unique.length > section.max || unique.some((value) => !allowed.has(value))) {
       throw new OrderValidationError(`Choose valid options for ${section.label}.`);
     }
+    extraCents += Math.max(0, unique.length - (section.included ?? section.max)) * (section.extraPriceCents ?? 0);
+    extraCents += unique.reduce((sum, value) => sum + (optionPrices[value] ?? 0), 0);
     if (unique.length) {
       snapshot.push({
         id: section.id,
         label: section.label,
+        group: section.group,
         values: unique.map((value) => ({ value, label: allowed.get(value) ?? value })),
       });
     }
   }
-  let extraCents = sections
-    .filter((section) => !section.sharedGroup)
-    .reduce(
-      (sum, section) => sum + Math.max(0, (provided.get(section.id)?.length ?? 0) - (section.included ?? section.max)) * (section.extraPriceCents ?? 0),
-      0,
-    );
-  const sharedGroups = new Set(sections.flatMap((section) => section.sharedGroup ? [section.sharedGroup] : []));
-  for (const group of sharedGroups) {
+  for (const [group, unitsBps] of sharedUnits) {
     const grouped = sections.filter((section) => section.sharedGroup === group);
-    const selected = grouped.reduce((sum, section) => sum + (provided.get(section.id)?.length ?? 0), 0);
-    extraCents += Math.max(0, selected - (grouped[0]?.sharedIncluded ?? 0)) * (grouped[0]?.extraPriceCents ?? 0);
+    extraCents += priceToppingUnits(unitsBps, (grouped[0]?.sharedIncluded ?? 0) * 10_000, grouped[0]?.extraPriceCents ?? 0);
   }
   return { snapshot, extraCents };
 }
@@ -355,6 +469,48 @@ async function validateItems(
       if (toppings.length > 100 || toppings.some((entry) => !allowedToppings.has(entry.toppingId))) {
         throw new OrderValidationError("One or more selected toppings are unavailable.");
       }
+
+      // H-03: a specialty pizza has to arrive as its recipe. The client could
+      // previously drop recipe toppings and the server priced and accepted
+      // whatever it was sent, so a "Meat Lovers" could reach the kitchen with no
+      // meat on it — at the Meat Lovers price, under the Meat Lovers name.
+      //
+      // Omissions are still allowed, because "hold the mushrooms" is a normal
+      // request. They are just made explicit: named, checked against the recipe,
+      // and recorded on the snapshot so the kitchen ticket can print NO
+      // MUSHROOMS. What is not allowed is a recipe topping quietly going missing.
+      //
+      // The price does not move for an omission. Leaving an ingredient off is not
+      // a discount, and treating it as one would let a customer pay less for the
+      // same named product by removing something and adding it back as an extra.
+      const recipeOmissions: string[] = [];
+      if (productConfiguration.fixedRecipe) {
+        const recipe = Array.isArray(productConfiguration.recipeToppingIds)
+          ? productConfiguration.recipeToppingIds.map(String)
+          : [];
+        const omitted = new Set((input.omitToppings ?? []).map(String));
+        for (const toppingId of omitted) {
+          if (!recipe.includes(toppingId)) {
+            throw new OrderValidationError(
+              `${product.name} does not include that topping, so it cannot be left off.`,
+            );
+          }
+          recipeOmissions.push(toppingNames.get(toppingId) ?? toppingId);
+        }
+        const present = new Set(
+          toppings.filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
+        );
+        const missing = recipe.filter((toppingId) => !present.has(toppingId) && !omitted.has(toppingId));
+        if (missing.length) {
+          throw new OrderValidationError(
+            `${product.name} is made to a set recipe. ${missing
+              .map((toppingId) => toppingNames.get(toppingId) ?? toppingId)
+              .join(", ")} cannot be removed without asking us to leave it off.`,
+            422,
+            "RECIPE_INCOMPLETE",
+          );
+        }
+      }
       if (input.halal && !product.halal_capable) {
         throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
       }
@@ -375,10 +531,12 @@ async function validateItems(
         halalSurchargeCents,
       });
       unitPriceCents = pizza.totalCents;
-      const pizzaBaseSections: ModifierSectionSeed[] = productConfiguration.pizzaBaseOptions?.length
-        ? [{ id: "pizza-base", label: "Crust, bake & sauce", options: productConfiguration.pizzaBaseOptions, min: 0, max: 2 }]
-        : [];
-      const validatedModifiers = validateModifiers(input.modifiers, pizzaBaseSections, toppingNames);
+      const validatedModifiers = validateModifiers(
+        input.modifiers,
+        pizzaOptionSections(productConfiguration),
+        toppingNames,
+        operations.halfToppingUnitsBps,
+      );
       snapshot = {
         ...snapshot,
         variationId: variation.id,
@@ -389,14 +547,36 @@ async function validateItems(
         paidUnitsBps: pizza.paidUnitsBps,
         extraCheese: Boolean(input.extraCheese),
         halal: Boolean(input.halal),
+        // Only present when something was deliberately left off, so the kitchen
+        // ticket can print it and a reader can tell "no omissions" from "field
+        // not written by an older build".
+        ...(recipeOmissions.length ? { recipeOmissions } : {}),
         modifiers: validatedModifiers.snapshot,
       };
-    } else if (input.toppings?.length || input.extraCheese || input.halal) {
+    } else if (input.toppings?.length || input.extraCheese) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
     } else {
-      const validatedModifiers = validateModifiers(input.modifiers, productConfiguration.sections ?? [], toppingNames);
+      // H-05: deals are marked halal-capable but the generic customizer offered
+      // no halal control, and the server rejected the flag outright — so the
+      // advertised preference could not be ordered on the products that
+      // advertise it. Accepted here, gated on the same `halal_capable` flag the
+      // pizza branch uses, and carried into the snapshot the kitchen reads.
+      if (input.halal && !product.halal_capable) {
+        throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
+      }
+      const validatedModifiers = validateModifiers(
+        input.modifiers,
+        orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
+        toppingNames,
+        operations.halfToppingUnitsBps,
+      );
       unitPriceCents += validatedModifiers.extraCents;
-      snapshot = { ...snapshot, modifiers: validatedModifiers.snapshot, modifierExtraCents: validatedModifiers.extraCents };
+      snapshot = {
+        ...snapshot,
+        halal: Boolean(input.halal),
+        modifiers: validatedModifiers.snapshot,
+        modifierExtraCents: validatedModifiers.extraCents,
+      };
     }
     validated.push({
       id: crypto.randomUUID(),
@@ -436,9 +616,15 @@ async function activePromotions(
   const now = Date.now();
   const result = await getD1()
     .prepare(
-      `SELECT id, name, code, type, amount, priority, combinable, exclusive, stack_group, rule_json
+      `SELECT id, name, code, type, amount, priority, combinable, exclusive, stack_group, rule_json,
+              min_subtotal_cents, fulfilment, usage_limit, per_customer_limit, usage_count
        FROM promotions WHERE active = 1 AND (starts_at IS NULL OR starts_at <= ?)
-       AND (ends_at IS NULL OR ends_at >= ?) ORDER BY priority DESC, id`,
+       AND (ends_at IS NULL OR ends_at >= ?)
+       -- An offer that has been redeemed its full number of times is spent. Read
+       -- here as well as enforced at redemption so an exhausted code says so
+       -- immediately rather than being accepted and then failing at checkout.
+       AND (usage_limit IS NULL OR usage_count < usage_limit)
+       ORDER BY priority DESC, id`,
     )
     .bind(now, now)
     .all<Record<string, unknown>>();
@@ -451,6 +637,13 @@ async function activePromotions(
       couponMatched = true;
     }
     const rule = safeJson<Record<string, unknown>>(row.rule_json as string, {});
+    // The columns win over `rule_json` where both exist. The JSON blob predates
+    // the columns and is still read so older promotions keep working, but what
+    // the owner edits on screen is the column, and a stale JSON value silently
+    // overriding it would make the admin form appear not to save.
+    const columnFulfilment = row.fulfilment === "pickup" || row.fulfilment === "delivery"
+      ? [row.fulfilment as Fulfilment]
+      : undefined;
     rules.push({
       id: row.id as string,
       name: row.name as string,
@@ -460,8 +653,8 @@ async function activePromotions(
       combinable: Boolean(row.combinable),
       exclusive: Boolean(row.exclusive),
       stackGroup: row.stack_group as string | null,
-      fulfilments: (rule.fulfilments as Fulfilment[] | undefined) ?? [fulfilment],
-      minimumCents: rule.minimumCents as number | undefined,
+      fulfilments: columnFulfilment ?? (rule.fulfilments as Fulfilment[] | undefined) ?? [fulfilment],
+      minimumCents: Number(row.min_subtotal_cents ?? 0) || (rule.minimumCents as number | undefined),
       productIds: rule.productIds as string[] | undefined,
       categoryIds: rule.categoryIds as string[] | undefined,
     });
@@ -472,67 +665,373 @@ async function activePromotions(
   return rules;
 }
 
-async function createStripeCheckout(input: {
-  origin: string;
-  orderId: string;
-  orderNumber: string;
-  trackingToken: string;
-  customerEmail: string;
-  totalCents: number;
-}): Promise<{ id: string; url: string }> {
-  const secret = (env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY;
-  if (!secret) {
-    throw new OrderValidationError(
-      "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
-      503,
-      "PAYMENT_SETUP_REQUIRED",
-    );
-  }
-  const successUrl = new URL("/track", input.origin);
-  successUrl.searchParams.set("order", input.orderNumber);
-  successUrl.searchParams.set("token", input.trackingToken);
-  successUrl.searchParams.set("payment", "success");
-  const cancelUrl = new URL("/", input.origin);
-  cancelUrl.searchParams.set("checkout", "cancelled");
-  const form = new URLSearchParams({
-    mode: "payment",
-    success_url: successUrl.toString(),
-    cancel_url: cancelUrl.toString(),
-    customer_email: input.customerEmail,
-    client_reference_id: input.orderId,
-    "metadata[order_id]": input.orderId,
-    "metadata[order_number]": input.orderNumber,
-    "line_items[0][price_data][currency]": "cad",
-    "line_items[0][price_data][unit_amount]": String(input.totalCents),
-    "line_items[0][price_data][product_data][name]": `Pizza 62 order ${input.orderNumber}`,
-    "line_items[0][quantity]": "1",
-  });
-  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${secret}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: form,
-  });
-  const result = await response.json() as { id?: string; url?: string; error?: { message?: string } };
-  if (!response.ok || !result.id || !result.url) {
-    throw new Error(result.error?.message ?? "Stripe checkout session could not be created");
-  }
-  return { id: result.id, url: result.url };
-}
-
 export class OrderValidationError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-    public code = "ORDER_VALIDATION_FAILED",
-  ) {
+  // Explicit fields rather than parameter properties: Node's strip-only type
+  // loader cannot compile the latter, and it is what runs scripts/*.ts. The
+  // payment reaper (R1.3) has to import this module to cancel stale orders.
+  readonly status: number;
+  readonly code: string;
+
+  constructor(message: string, status = 400, code = "ORDER_VALIDATION_FAILED") {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
-export async function createOrder(body: OrderRequest, origin: string) {
+// --- quoting ----------------------------------------------------------------
+
+export type QuoteIssue = {
+  /** Index into the submitted cart, or null for a problem with the order itself. */
+  index: number | null;
+  productId: string | null;
+  code: string;
+  message: string;
+};
+
+export type OrderQuote = {
+  /** False when something would stop this cart being ordered as submitted. */
+  ok: boolean;
+  fulfilment: Fulfilment;
+  currency: string;
+  lines: Array<{
+    index: number;
+    productId: string;
+    name: string;
+    variationName: string | null;
+    quantity: number;
+    unitPriceCents: number;
+    lineTotalCents: number;
+  }>;
+  totals: {
+    menuSubtotalCents: number;
+    discountCents: number;
+    discountedMenuSubtotalCents: number;
+    taxCents: number;
+    deliveryFeeCents: number;
+    tipCents: number;
+    totalCents: number;
+  };
+  taxRateBps: number;
+  deliveryFeeTaxable: boolean;
+  appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
+  coupon: { code: string; accepted: boolean; message: string | null } | null;
+  delivery: {
+    minimumCents: number;
+    /** How much more food is needed to reach the minimum. Zero once it is met. */
+    shortfallCents: number;
+    feeCents: number;
+    meetsMinimum: boolean;
+  } | null;
+  estimateMinutes: number;
+  issues: QuoteIssue[];
+};
+
+/**
+ * Prices a cart without creating anything.
+ *
+ * **The reason this exists as its own export.** The checkout page used to
+ * compute its own subtotal, HST and total in the browser and label them
+ * "estimated", because nothing on the server would tell it otherwise until the
+ * order was submitted. Two implementations of tax arithmetic drift — and when
+ * they do, the customer consents to one number and is charged another. This runs
+ * the *same* pricing path `createOrder` runs, so the figure on the review screen
+ * is the figure that will be charged, and there is no second implementation to
+ * keep in step.
+ *
+ * **It reports rather than throws.** `createOrder` must refuse a bad cart
+ * outright; a quote has to describe every problem at once so the cart can show
+ * all of them (H-23) instead of surfacing them one refusal at a time. So
+ * validation failures come back in `issues` with `ok: false`, and only genuinely
+ * unusable input (no cart at all) throws.
+ *
+ * Read-only: no order, no payment, no idempotency key, nothing persisted.
+ */
+export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
+  await ensureDatabase();
+  const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
+  const [ordering, delivery, taxTips, operations] = await Promise.all([
+    getSetting<OrderingSetting>("ordering"),
+    getSetting<DeliverySetting>("delivery"),
+    getSetting<TaxTipSetting>("taxAndTips"),
+    getSetting<OperationSetting>("operations"),
+  ]);
+
+  const issues: QuoteIssue[] = [];
+  const submitted = body.items ?? [];
+  if (!submitted.length) throw new OrderValidationError("Your cart is empty.");
+  if (submitted.length > 50) throw new OrderValidationError("Your cart is too large.");
+
+  // The happy path is one call. Only when it refuses do we pay for per-line
+  // validation to find out *which* lines are the problem — that is the rare
+  // case, and it keeps `validateItems` (the most safety-critical function here)
+  // completely unchanged rather than reworked to collect errors.
+  let items: ValidatedItem[] = [];
+  try {
+    items = await validateItems(submitted, fulfilment, operations);
+  } catch {
+    for (const [index, line] of submitted.entries()) {
+      try {
+        const [validated] = await validateItems([line], fulfilment, operations);
+        items.push(validated);
+      } catch (error) {
+        issues.push({
+          index,
+          productId: line.productId ?? null,
+          code: error instanceof OrderValidationError ? error.code : "ITEM_UNAVAILABLE",
+          message: error instanceof Error ? error.message : "This item cannot be ordered.",
+        });
+      }
+    }
+  }
+
+  const couponCode = normalizeCouponCode(body.couponCode);
+  let promotions: PromotionRule[] = [];
+  let coupon: OrderQuote["coupon"] = null;
+  try {
+    promotions = await activePromotions(fulfilment, couponCode);
+    if (couponCode) coupon = { code: couponCode, accepted: true, message: null };
+  } catch (error) {
+    // A bad code must not stop the rest of the cart being priced — the customer
+    // needs to see their total *and* that the code did not apply.
+    promotions = await activePromotions(fulfilment, null);
+    coupon = {
+      code: couponCode ?? "",
+      accepted: false,
+      message: error instanceof Error ? error.message : "That promo code isn't valid right now.",
+    };
+  }
+  if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
+    promotions.push({
+      id: "included-free-delivery",
+      name: "Included free delivery",
+      type: "free_delivery",
+      amount: 0,
+      priority: 10_000,
+      combinable: true,
+      exclusive: false,
+    });
+  }
+
+  const cartLines: CartLinePrice[] = items.map((item) => ({
+    id: item.id,
+    productId: item.productId,
+    categoryId: item.categoryId,
+    quantity: item.quantity,
+    unitPriceCents: item.unitPriceCents,
+    taxable: item.taxable,
+    promotionEligible: item.promotionEligible,
+  }));
+
+  let price;
+  try {
+    price = priceCart({
+      lines: cartLines,
+      promotions,
+      fulfilment,
+      deliveryFeeCents: delivery.feeCents,
+      taxRateBps: taxTips.taxRateBps,
+      deliveryFeeTaxable: delivery.feeTaxable,
+      tip: taxTips.tippingEnabled ? body.tip ?? { type: "none" } : { type: "none" },
+      customTipMaxCents: taxTips.customTipMaxCents,
+      customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
+    });
+  } catch (error) {
+    // Almost always the tip: a custom amount above the configured ceiling. Report
+    // it and price the cart without one rather than returning no total at all.
+    issues.push({
+      index: null,
+      productId: null,
+      code: "TIP_INVALID",
+      message: error instanceof Error ? error.message : "That tip could not be applied.",
+    });
+    price = priceCart({
+      lines: cartLines,
+      promotions,
+      fulfilment,
+      deliveryFeeCents: delivery.feeCents,
+      taxRateBps: taxTips.taxRateBps,
+      deliveryFeeTaxable: delivery.feeTaxable,
+      tip: { type: "none" },
+    });
+  }
+
+  // The delivery minimum is checked against the pre-tax menu subtotal, so a
+  // customer cannot reach it with the fee or a tip. Reported as a shortfall
+  // rather than a refusal: "add $4.01 more" is actionable, "not eligible" is not.
+  let deliveryQuote: OrderQuote["delivery"] = null;
+  if (fulfilment === "delivery") {
+    const shortfall = Math.max(0, (delivery.minimumCents ?? 0) - price.menuSubtotalCents);
+    deliveryQuote = {
+      minimumCents: delivery.minimumCents ?? 0,
+      shortfallCents: shortfall,
+      feeCents: price.deliveryFeeCents,
+      meetsMinimum: shortfall === 0,
+    };
+    if (shortfall > 0) {
+      issues.push({
+        index: null,
+        productId: null,
+        code: "DELIVERY_BELOW_MINIMUM",
+        message: `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax. Add ${formatDeliveryMinimum(shortfall)} more to your order.`,
+      });
+    }
+  }
+
+  if (!ordering.enabled || ordering.paused) {
+    issues.push({ index: null, productId: null, code: "ORDERING_PAUSED", message: ordering.pauseMessage });
+  }
+  if (
+    (fulfilment === "pickup" && !ordering.pickupEnabled) ||
+    (fulfilment === "delivery" && !ordering.deliveryEnabled)
+  ) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "FULFILMENT_UNAVAILABLE",
+      message: `${fulfilment === "delivery" ? "Delivery" : "Pickup"} ordering is currently unavailable.`,
+    });
+  }
+
+  // The payment method, checked against the same rules `createOrder` applies.
+  //
+  // These were missed on the first pass and the quote said `ok: true` for a
+  // delivery order paying at the store, which the API refuses outright. Same
+  // class of bug as the schedule check: `ok` has to mean "this will be
+  // accepted", and every rule `createOrder` enforces has to be mirrored here or
+  // the review screen enables a button that cannot work.
+  //
+  // Only checked when a payment method was actually named — the cart is quoted
+  // long before the customer has chosen one.
+  if (body.paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "PAYMENT_METHOD_UNAVAILABLE",
+      message: "Pay at store is available for pickup orders only.",
+    });
+  }
+  if (body.paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "PAYMENT_SETUP_REQUIRED",
+      message: "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",
+    });
+  }
+
+  const estimateMinutes =
+    fulfilment === "delivery" ? ordering.deliveryEstimateMinutes ?? 30 : ordering.pickupEstimateMinutes;
+
+  // `ok` has to mean "this will be accepted", not "the arithmetic worked". A
+  // quote that says yes to a time the store is shut leaves the review screen
+  // enabling a button guaranteed to fail — the same class of problem as quoting
+  // the wrong total, just further down the funnel.
+  //
+  // Checked unconditionally, and defaulting to ASAP exactly as `createOrder`
+  // does when no schedule is supplied. An earlier version only checked when a
+  // schedule was present, which meant a quote with none omitted the check that
+  // `createOrder` would then apply anyway — and at 4am, with the store shut, the
+  // quote said yes to an order the API refused.
+  // The time this order is *for*. For a scheduled order that is the chosen slot;
+  // for ASAP it is now plus the current lead time.
+  const wantedAt =
+    body.schedule?.type === "scheduled" && Number.isSafeInteger(body.schedule.scheduledFor)
+      ? Number(body.schedule.scheduledFor)
+      : Date.now() + estimateMinutes * 60_000;
+
+  // H-08, checked first and independently of the schedule.
+  //
+  // Order matters here. Both checks can fail at once — during a holiday the
+  // store is also outside its weekly hours — and "we are closed for Christmas"
+  // is a far more useful thing to be told than "that time is outside the
+  // restaurant's configured hours". Running the closure check inside the same
+  // try as `validateSchedule` meant the schedule error was thrown first and the
+  // closure was never looked at, so the customer got the unhelpful message.
+  const closure = closureFor(wantedAt, await loadActiveClosures(), fulfilment);
+  if (closure) {
+    issues.push({ index: null, productId: null, code: "STORE_CLOSED", message: closureMessage(closure) });
+  }
+
+  try {
+    const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
+    validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+  } catch (error) {
+    // Suppressed when a closure already explained it: two refusals for one cause
+    // reads as two separate problems to fix.
+    if (!closure) {
+      issues.push({
+        index: null,
+        productId: null,
+        code: error instanceof OrderValidationError ? error.code : "SCHEDULE_INVALID",
+        message: error instanceof Error ? error.message : "That order time cannot be accepted.",
+      });
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    fulfilment,
+    currency: "CAD",
+    lines: items.map((item, index) => ({
+      index,
+      productId: item.productId,
+      name: item.productName,
+      variationName: item.variationName,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      lineTotalCents: item.unitPriceCents * item.quantity,
+    })),
+    totals: {
+      menuSubtotalCents: price.menuSubtotalCents,
+      discountCents: price.discountCents,
+      discountedMenuSubtotalCents: price.discountedMenuSubtotalCents,
+      taxCents: price.taxCents,
+      deliveryFeeCents: price.deliveryFeeCents,
+      tipCents: price.tipCents,
+      totalCents: price.totalCents,
+    },
+    taxRateBps: taxTips.taxRateBps,
+    deliveryFeeTaxable: Boolean(delivery.feeTaxable),
+    appliedPromotions: price.appliedPromotions.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      discountCents: entry.discountCents,
+    })),
+    coupon,
+    delivery: deliveryQuote,
+    estimateMinutes,
+    issues,
+  };
+}
+
+// `origin` used to be a parameter here: Stripe's success_url was built per
+// session and needed the caller's host. Clover's return URL is configured once
+// in its merchant dashboard and is the same for every order, so there is nothing
+// left for a request origin to influence — the browser stashes the tracking
+// credentials before redirecting instead (see /order/return).
+/**
+ * Options only a trusted caller may set.
+ *
+ * Deliberately a second argument rather than fields on `OrderRequest`: the
+ * public route hands the parsed request body straight to `createOrder`, so
+ * anything reachable from `body` is settable by whoever is on the internet.
+ * `channel: "walk_in"` from a stranger would make the owner's in-store figures a
+ * fiction, and `staffEntry` would let them skip having to give an email address.
+ */
+export type CreateOrderContext = {
+  /** Where the order was taken. Defaults to the customer web app. */
+  channel?: "online" | "phone" | "walk_in";
+  /**
+   * True when a member of staff is keying this in at the counter or on the
+   * phone. Relaxes the contact requirements — a walk-in customer has not given
+   * an email address and should not be invented one — and records who took it.
+   */
+  staffEntry?: boolean;
+  staffUserId?: string;
+};
+
+export async function createOrder(body: OrderRequest, context: CreateOrderContext = {}) {
   await ensureDatabase();
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
@@ -585,7 +1084,7 @@ export async function createOrder(body: OrderRequest, origin: string) {
     };
   }
   try {
-    const customer = normalizeCustomer(body.customer);
+    const customer = normalizeCustomer(body.customer, context.staffEntry);
     const fulfilment = body.fulfilment;
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
       throw new OrderValidationError("Choose pickup or delivery.");
@@ -605,20 +1104,44 @@ export async function createOrder(body: OrderRequest, origin: string) {
       throw new OrderValidationError(`${fulfilment} ordering is currently unavailable.`, 409);
     }
     const paymentMethod = body.paymentMethod;
+    // Trimmed to a bounded string: it is forwarded to Clover, so an oversized or
+    // whitespace-only value should be rejected here rather than becoming a
+    // confusing failure at the charge call.
+    const paymentToken = typeof body.paymentToken === "string" ? body.paymentToken.trim() : "";
+    if (paymentToken.length > 500) {
+      throw new OrderValidationError("That payment could not be read.", 400, "INVALID_PAYMENT_TOKEN");
+    }
     if (paymentMethod !== "pay_at_store" && paymentMethod !== "online") {
       throw new OrderValidationError("Choose an available payment method.");
     }
-    if (paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+    // Paying on collection is a *public website* setting, and the website only
+    // offers it on pickup: a stranger promising to pay a driver at a door is a
+    // risk the restaurant did not agree to take.
+    //
+    // A member of staff keying in a phone delivery is not that. They have the
+    // customer on the line, they decide whether to take the card number now or
+    // send the machine out with the driver, and refusing them here is what kept
+    // phone deliveries on paper and out of the books entirely. The relaxation is
+    // gated on `staffEntry`, which is a trusted context argument set after
+    // authentication and unreachable from a request body — see CreateOrderContext.
+    if (paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
       throw new OrderValidationError("Pay at store is available for pickup orders only.");
     }
-    if (paymentMethod === "online" && !(env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY) {
+    if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
       throw new OrderValidationError(
-        "Online payment is ready for the restaurant's Stripe key. No payment was taken.",
+        "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",
         503,
         "PAYMENT_SETUP_REQUIRED",
       );
     }
     const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
+    // A driver with no number to call is a delivery that fails at the door. The
+    // website asks every customer for a phone number, but staff entry does not
+    // (see normalizeCustomer on why demanding one at a counter produces junk), so
+    // the requirement is reinstated for the one case that cannot do without it.
+    if (fulfilment === "delivery" && !customer.phone) {
+      throw new OrderValidationError("A delivery needs a phone number the driver can call.");
+    }
     const items = await validateItems(body.items, fulfilment, operations);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
@@ -658,7 +1181,15 @@ export async function createOrder(body: OrderRequest, origin: string) {
       // before any order/payment is created. Free-delivery items never widen the
       // radius — they only zero the fee for an already-eligible address.
       const hasFreeDeliveryItem = items.some((item) => item.freeDelivery);
-      const point = resolveDeliveryPoint(deliveryAddress.postalCode);
+      // H-06b: geocodes the full street address through Azure Maps, falling back
+      // to the coarse FSA centroid only if Maps cannot answer.
+      const point = await resolveDeliveryPoint({
+        line1: deliveryAddress.line1,
+        unit: deliveryAddress.unit,
+        city: deliveryAddress.city,
+        province: deliveryAddress.province,
+        postalCode: deliveryAddress.postalCode,
+      });
       const eligibility = validateDelivery(
         {
           validated: point !== null,
@@ -687,6 +1218,19 @@ export async function createOrder(body: OrderRequest, origin: string) {
     const estimateMinutes = fulfilment === "delivery"
       ? ordering.deliveryEstimateMinutes ?? 30
       : ordering.pickupEstimateMinutes;
+    // H-08, before the schedule check rather than after it. During a holiday both
+    // fail, and "we are closed for Christmas" is far more useful than "that time
+    // is outside the restaurant's configured hours". Judged against the time the
+    // order is *for*, so a Christmas Day pickup ordered on the Monday is caught
+    // on the Monday.
+    const wantedAt =
+      body.schedule?.type === "scheduled" && Number.isSafeInteger(body.schedule.scheduledFor)
+        ? Number(body.schedule.scheduledFor)
+        : Date.now() + estimateMinutes * 60_000;
+    const closure = closureFor(wantedAt, await loadActiveClosures(), fulfilment);
+    if (closure) {
+      throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
+    }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
     const sequence = await getD1()
       .prepare(
@@ -700,12 +1244,23 @@ export async function createOrder(body: OrderRequest, origin: string) {
     const feedbackToken = generateOpaqueToken();
     const trackingTokenHash = await hashOpaqueToken(trackingToken);
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
+    // Only a trusted caller can say this is anything but a website order — see
+    // CreateOrderContext on why it is not reachable from the request body.
+    const channel = context.channel ?? "online";
     const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
     const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
-    const paymentProvider = paymentMethod === "online" ? "stripe" : "store";
+    const paymentProvider = paymentMethod === "online" ? "clover" : "store";
+    // An online order's notifications are parked until Clover confirms payment:
+    // confirming an order nobody paid for, and calling the kitchen about it, are
+    // both worse than saying nothing. The webhook releases them.
+    //
+    // `pending_provider_setup` is the no-credentials state. It exists so that a
+    // deployment without a provider does not burn every row's retry budget and
+    // bury real notifications in `failed` — the dispatcher leaves these alone
+    // until something can actually deliver.
     const outboxStatus = paymentMethod === "online"
       ? "waiting_payment"
-      : (env as unknown as Record<string, string | undefined>).EMAIL_API_KEY
+      : (await anyProviderConfigured())
         ? "pending"
         : "pending_provider_setup";
     const operationsBatch: D1PreparedStatement[] = [
@@ -713,10 +1268,10 @@ export async function createOrder(body: OrderRequest, origin: string) {
         .prepare(
           `INSERT INTO orders
            (id, order_number, tracking_token_hash, feedback_token_hash, customer_name, customer_phone,
-            customer_email, fulfilment, status, payment_status, payment_method, schedule_type,
+            customer_email, fulfilment, channel, status, payment_status, payment_method, schedule_type,
             scheduled_for, estimated_for, address_json, instructions, pricing_json, subtotal_cents,
             discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -727,6 +1282,7 @@ export async function createOrder(body: OrderRequest, origin: string) {
           customer.phone,
           customer.email,
           fulfilment,
+          channel,
           orderStatus,
           paymentStatus,
           paymentMethod,
@@ -773,31 +1329,118 @@ export async function createOrder(body: OrderRequest, origin: string) {
           orderId,
           orderStatus,
           paymentMethod === "online"
-            ? "Order validated; waiting for Stripe payment"
+            ? "Order validated; waiting for Clover payment"
             : "Order accepted after server validation",
           now,
         ),
+      // The alert that tells the restaurant an order exists at all. This is the
+      // audit's central finding: the queue had no row for it and no consumer.
       getD1()
         .prepare(
           `INSERT INTO notification_outbox
            (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-           VALUES (?, 'customer_order_confirmation', ?, ?, ?, 0, ?, ?, ?)`,
+           VALUES (?, 'restaurant_new_order', NULL, ?, ?, 0, ?, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
-          customer.email,
           JSON.stringify({ orderId, orderNumber }),
           outboxStatus,
           now,
           now,
           now,
         ),
+      // H-09: the post-order feedback request. Queued here rather than when the
+      // order completes, for the same reason the tracking token is — the
+      // feedback token cannot be recovered later, `orders` keeps only its hash,
+      // and the link in the customer's confirmation has to keep working, so
+      // minting a fresh one at completion is not an option.
+      //
+      // It sits in `waiting_completion` until staff actually complete the order,
+      // at which point it is released with the configured delay. An order that
+      // never completes leaves an inert row that no dispatcher will ever claim.
       getD1()
         .prepare(
           "UPDATE idempotency_keys SET resource_id = ?, status = 'completed' WHERE key_hash = ?",
         )
         .bind(orderId, keyHash),
     ];
+    // A usage limit is only meaningful if redemptions are counted. Incremented
+    // in the same batch that creates the order, so a promotion cannot be
+    // recorded as used by an order that then fails to commit.
+    //
+    // The guard is on the UPDATE rather than only in the earlier SELECT, so two
+    // orders racing for the last redemption cannot both take it. The counter can
+    // still be read as available and then found spent between the two — an
+    // over-issue is bounded by concurrency and is the right way round to fail:
+    // honouring one offer too many costs the discount, refusing a customer who
+    // was told it applied costs the customer.
+    //
+    // `included-free-delivery` is synthesised from a product flag rather than
+    // stored, so it has no row to count.
+    for (const promotion of price.appliedPromotions) {
+      if (promotion.id === "included-free-delivery") continue;
+      operationsBatch.push(
+        getD1()
+          .prepare(
+            `UPDATE promotions SET usage_count = usage_count + 1, updated_at = ?
+             WHERE id = ? AND (usage_limit IS NULL OR usage_count < usage_limit)`,
+          )
+          .bind(now, promotion.id),
+      );
+    }
+
+    // Both of these are addressed to the customer, so neither is queued when
+    // there is no address to send them to. A walk-in ordering two slices has not
+    // given an email, and queuing a message to nowhere produces one permanently
+    // failed row per counter order — noise in the exact place someone has to look
+    // to find a real delivery failure.
+    if (customer.email) {
+      operationsBatch.push(
+        getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'customer_order_confirmation', ?, ?, ?, 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            customer.email,
+            // The tracking token is handed over here because it cannot be
+            // recovered later: `orders` keeps only its hash. The dispatcher
+            // scrubs it from the payload once the message is sent — see
+            // lib/notifications/messages.ts for the trade this makes.
+            JSON.stringify({ orderId, orderNumber, trackingToken }),
+            outboxStatus,
+            now,
+            now,
+            now,
+          ),
+        // H-09: the post-order feedback request. Queued here rather than when
+        // the order completes, for the same reason the tracking token is — the
+        // feedback token cannot be recovered later, `orders` keeps only its
+        // hash, and the link in the customer's confirmation has to keep working,
+        // so minting a fresh one at completion is not an option.
+        //
+        // It sits in `waiting_completion` until staff actually complete the
+        // order, at which point it is released with the configured delay. An
+        // order that never completes leaves an inert row nothing will claim.
+        getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'feedback_request', ?, ?, 'waiting_completion', 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            customer.email,
+            JSON.stringify({ orderId, orderNumber, feedbackToken }),
+            now,
+            now,
+            now,
+          ),
+      );
+    }
+
     for (const item of items) {
       operationsBatch.push(
         getD1()
@@ -824,19 +1467,113 @@ export async function createOrder(body: OrderRequest, origin: string) {
       );
     }
     await getD1().batch(operationsBatch);
-    if (paymentMethod === "online") {
+    if (paymentMethod === "online" && paymentToken && (await cloverIframeEnabled())) {
+      // The inline path. Unlike the hosted one, the outcome is known inside this
+      // request: the order is paid before the customer is answered, so there is
+      // no `awaiting_payment` window for the reaper to cancel through and no
+      // dependence on a webhook arriving for anyone to be told what happened.
       try {
-        const checkout = await createStripeCheckout({
-          origin,
+        const charge = await createCloverCharge({
+          amountCents: price.totalCents,
+          sourceToken: paymentToken,
+          // The browser's durable checkout key, not a fresh one. It survives a
+          // refresh, a double tap and a retry after an ambiguous failure, so a
+          // second attempt presents the same key to Clover and resolves to the
+          // original charge instead of taking the money twice. That is the whole
+          // reason this is threaded through rather than generated here.
+          idempotencyKey: idempotencyKey,
+          orderNumber,
+          customerEmail: customer.email,
+        });
+        await applyPaymentApproved({
+          orderId,
+          note: `Clover charge approved (${charge.chargeId})`,
+          providerReference: charge.chargeId,
+        });
+        return {
+          duplicate: false,
           orderId,
           orderNumber,
           trackingToken,
+          feedbackToken,
+          status: "received",
+          paymentStatus: "paid",
+          estimateAt: schedule.estimatedFor,
+          price,
+        };
+      } catch (error) {
+        const declined = error instanceof CloverDeclinedError;
+        await getD1().batch([
+          getD1()
+            .prepare(
+              "UPDATE payments SET status = ?, failure_reason = ?, updated_at = ? WHERE order_id = ? AND provider = 'clover'",
+            )
+            .bind(
+              declined ? "declined" : "failed",
+              error instanceof Error ? error.message.slice(0, 500) : "Clover charge failed",
+              Date.now(),
+              orderId,
+            ),
+          getD1()
+            .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
+            .bind(Date.now(), orderId),
+          getD1()
+            .prepare(
+              `INSERT INTO order_events
+               (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
+               VALUES (?, ?, 'awaiting_payment', 'cancelled', 'clover', NULL, ?, ?)`,
+            )
+            .bind(
+              crypto.randomUUID(),
+              orderId,
+              declined ? "Clover declined the card" : "Clover charge failed",
+              Date.now(),
+            ),
+          // Nobody paid, so the confirmation and the kitchen alert parked on this
+          // order must never be sent.
+          getD1()
+            .prepare(
+              `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
+               WHERE status IN ('waiting_payment', 'waiting_completion')
+                 AND payload_json::jsonb->>'orderId' = ?`,
+            )
+            .bind(Date.now(), orderId),
+          // Releases the key so the customer's next attempt is a fresh order
+          // rather than resolving to this cancelled one. Safe against
+          // double-charging because the *Clover* key is the browser's, which does
+          // not change across the retry — see the note on it above.
+          getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ?").bind(keyHash),
+        ]);
+        throw new OrderValidationError(
+          declined
+            ? "That card was declined. No payment was taken — try another card, or pay at the store."
+            : "The payment could not be completed. No payment was taken; please try again.",
+          declined ? 402 : 502,
+          declined ? "PAYMENT_DECLINED" : "PAYMENT_PROVIDER_ERROR",
+        );
+      }
+    }
+
+    if (paymentMethod === "online") {
+      try {
+        const checkout = await createCloverCheckout({
+          orderNumber,
+          customerName: customer.name,
           customerEmail: customer.email,
+          customerPhone: customer.phone,
           totalCents: price.totalCents,
+          summary: items
+            .map((item) => `${item.quantity}x ${item.productName}`)
+            .join(", "),
         });
+        // Clover has no metadata passthrough, so this row is the *only* link from
+        // the checkout session back to the order. It is written before the URL is
+        // handed to the customer: if the write fails, the catch below cancels the
+        // order rather than leaving a payable session no webhook could ever
+        // reconcile.
         await getD1()
-          .prepare("UPDATE payments SET provider_reference = ?, updated_at = ? WHERE order_id = ? AND provider = 'stripe'")
-          .bind(checkout.id, Date.now(), orderId)
+          .prepare("UPDATE payments SET provider_reference = ?, updated_at = ? WHERE order_id = ? AND provider = 'clover'")
+          .bind(checkout.checkoutSessionId, Date.now(), orderId)
           .run();
         return {
           duplicate: false,
@@ -848,30 +1585,44 @@ export async function createOrder(body: OrderRequest, origin: string) {
           paymentStatus,
           estimateAt: schedule.estimatedFor,
           price,
-          checkoutUrl: checkout.url,
+          checkoutUrl: checkout.href,
         };
       } catch (error) {
         await getD1().batch([
           getD1()
             .prepare("UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE order_id = ?")
-            .bind(error instanceof Error ? error.message.slice(0, 500) : "Stripe checkout failed", Date.now(), orderId),
+            .bind(error instanceof Error ? error.message.slice(0, 500) : "Clover checkout failed", Date.now(), orderId),
           getD1()
             .prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?")
             .bind(Date.now(), orderId),
           // H-17: releasing the idempotency key lets the customer retry the same
           // checkout attempt and get a fresh order instead of resolving to this
           // cancelled one. The failed order/payment rows remain for reconciliation.
+          //
+          // H-17b: that retry only works because payments_idempotency_uq is a
+          // partial index excluding status = 'failed' (drizzle/0001). The row
+          // left behind above still holds this key; under an unconditional
+          // unique index it would collide with the retry's insert and the
+          // customer would be locked out of their own order forever. The
+          // status = 'failed' update is therefore load-bearing, not just
+          // bookkeeping — it is what releases the key.
           getD1()
             .prepare("DELETE FROM idempotency_keys WHERE key_hash = ?")
             .bind(keyHash),
         ]);
         throw new OrderValidationError(
-          "Stripe checkout could not start. No payment was taken; please try again.",
+          "Clover checkout could not start. No payment was taken; please try again.",
           502,
           "PAYMENT_PROVIDER_ERROR",
         );
       }
     }
+    // A pay-at-store order is real the instant it commits, so it is dispatched
+    // now rather than waiting up to a minute for the cron floor. Deliberately not
+    // awaited: the outbox row is already durable, so a crash here loses nothing
+    // and the sweeper will pick it up. An online order is dispatched by the
+    // webhook instead, once payment is confirmed.
+    dispatchSoon();
     return {
       duplicate: false,
       orderId,

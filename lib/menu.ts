@@ -1,17 +1,13 @@
 import { PIZZA_SIZES } from "@/lib/launch-config";
+import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection } from "@/lib/domain";
 
-export type ModifierSectionSeed = {
-  id: string;
-  label: string;
-  source?: "toppings" | "wing_flavours" | "drinks" | "pizza_base";
-  options?: string[];
-  min: number;
-  max: number;
-  included?: number;
-  extraPriceCents?: number;
-  sharedGroup?: string;
-  sharedIncluded?: number;
-};
+// The pop and wing-sauce lists are not seed data: an option group stores the
+// group, never its options, so both sides resolve the live list at render and at
+// validation time. They live in lib/domain.ts, which the browser already
+// imports, and are re-exported here so the seed reads in one place.
+export { DRINK_OPTIONS, WING_FLAVOURS } from "@/lib/domain";
+
+export type ModifierSectionSeed = ModifierSection;
 
 export type MenuProductSeed = {
   id: string;
@@ -33,7 +29,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-07-20-flyer-pricing-r4";
+export const MENU_SEED_VERSION = "2026-07-27-pizza-options-r5";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -75,6 +71,8 @@ export const TOPPING_SEEDS = [
   ["corn", "Corn", false, false],
 ] as const;
 
+// Retained so pizzas configured before crust and bake/sauce were split into their
+// own groups still validate. New products use CRUST_OPTIONS + BAKE_SAUCE_OPTIONS.
 export const PIZZA_BASE_OPTIONS = [
   "Thin Crust",
   "Thick Crust",
@@ -84,41 +82,27 @@ export const PIZZA_BASE_OPTIONS = [
   "Extra Sauce",
 ] as const;
 
-export const WING_FLAVOURS = [
-  "Mild",
-  "Medium",
-  "Hot",
-  "Suicide",
-  "Honey Garlic",
-  "BBQ",
-  "Cajun",
-  "Lemon Pepper",
-  "None",
-] as const;
-
-export const DRINK_OPTIONS = [
-  "Pepsi",
-  "Diet Pepsi",
-  "Coke",
-  "Diet Coke",
-  "Coke Zero",
-  "Gingerale",
-  "Crush Orange",
-  "Brisk Ice Tea",
-  "Sprite",
-  "Dr. Peppers",
-  "Fanta Grape",
-] as const;
-
 const slug = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-const pizzaBase = (id: string): ModifierSectionSeed => ({
-  id,
-  label: "Crust, bake & sauce",
-  source: "pizza_base",
-  min: 0,
-  max: 2,
+const crust = (id: string, group?: string): ModifierSectionSeed => ({
+  id, label: "Crust", group, source: "crust", options: [...CRUST_OPTIONS], min: 0, max: 1,
+});
+
+const bakeSauce = (id: string, group?: string): ModifierSectionSeed => ({
+  id, label: "Bake & sauce", group, source: "bake_sauce", options: [...BAKE_SAUCE_OPTIONS], min: 0, max: 2,
+});
+
+// Cheese is a single choice whose only priced option is extra, charged at the same
+// rate as an extra topping on that pizza. `included: 1` keeps the count allowance
+// from charging for the choice itself.
+const cheese = (id: string, extraPriceCents: number, group?: string): ModifierSectionSeed => ({
+  id, label: "Cheese", group, source: "cheese", min: 1, max: 1, included: 1,
+  optionPrices: { [EXTRA_CHEESE_OPTION]: extraPriceCents },
+});
+
+const halal = (id: string, group?: string): ModifierSectionSeed => ({
+  id, label: "Halal meat", group, source: "halal", min: 0, max: 1,
 });
 
 const toppings = (
@@ -128,9 +112,11 @@ const toppings = (
   extraPriceCents: number,
   sharedGroup?: string,
   sharedIncluded?: number,
+  group?: string,
 ): ModifierSectionSeed => ({
   id,
   label,
+  group,
   source: "toppings",
   // H-02: shared-pool sections must allow an empty pizza (e.g. 6+0) because the
   // allowance is counted across the whole group, not per pizza. Only non-shared
@@ -160,6 +146,34 @@ const drinks = (count: number): ModifierSectionSeed[] =>
     max: 1,
   }));
 
+// Every pizza inside a deal is built in the same order as a pizza ordered on its
+// own: cheese and halal, then crust and bake/sauce, then toppings. `index` is null
+// for single-pizza deals so the existing "pizza-toppings" section id is preserved.
+const pizzaSections = (
+  index: number | null,
+  includedToppings: number,
+  extraPriceCents: number,
+  options: { toppingLabel?: string; sharedGroup?: string; sharedIncluded?: number } = {},
+): ModifierSectionSeed[] => {
+  const suffix = index === null ? "" : `-${index}`;
+  const group = index === null ? "Your pizza" : `Pizza ${index}`;
+  return [
+    cheese(`pizza${suffix}-cheese`, extraPriceCents, group),
+    halal(`pizza${suffix}-halal`, group),
+    crust(`pizza${suffix}-crust`, group),
+    bakeSauce(`pizza${suffix}-bake-sauce`, group),
+    toppings(
+      `pizza${suffix}-toppings`,
+      options.toppingLabel ?? "Toppings",
+      includedToppings,
+      extraPriceCents,
+      options.sharedGroup,
+      options.sharedIncluded,
+      group,
+    ),
+  ];
+};
+
 const bundle = (
   id: string,
   categoryId: string,
@@ -178,18 +192,18 @@ const bundle = (
   pickupEligible: true,
   deliveryEligible: !pickupOnly,
   halalCapable: true,
-  configuration: { sections, specialInstructionsEnabled: true },
+  configuration: { sections: orderModifierSections(sections), specialInstructionsEnabled: true },
 });
 
 const standalonePizzas: MenuProductSeed[] = PIZZA_SIZES.map((size) => ({
   id: `${size.id}-pizza`,
   categoryId: "build-your-own",
   name: `${size.name} Pizza`,
-  description: `Choose the flyer-priced 1-topping or 3-topping ${size.name.toLowerCase()} pizza. Extra toppings are charged at the ${size.name.toLowerCase()} rate.`,
+  description: `Choose a 1-topping or 3-topping ${size.name.toLowerCase()} pizza. Extra toppings are charged at the ${size.name.toLowerCase()} rate.`,
   productType: "pizza",
   basePriceCents: size.basePriceCents,
   halalCapable: true,
-  configuration: { variationLabel: "Choose your topping offer", pizzaBaseOptions: PIZZA_BASE_OPTIONS, specialInstructionsEnabled: true },
+  configuration: { variationLabel: "Choose your topping offer", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [
     {
       id: `${size.id}-pizza-one-topping`,
@@ -239,7 +253,7 @@ const specialtyPizzas: MenuProductSeed[] = specialtyRecipes.map(([id, name, desc
   productType: "pizza",
   basePriceCents: 1699,
   halalCapable: true,
-  configuration: { fixedRecipe: true, recipeToppingIds, presetExtraCheese, pizzaBaseOptions: PIZZA_BASE_OPTIONS, specialInstructionsEnabled: true },
+  configuration: { fixedRecipe: true, recipeToppingIds, presetExtraCheese, crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: specialtyPrices.map(([variationName, price, extra]) => ({
     id: `specialty-${id}-${slug(variationName)}`,
     name: variationName,
@@ -251,16 +265,13 @@ const specialtyPizzas: MenuProductSeed[] = specialtyRecipes.map(([id, name, desc
 
 const deals: MenuProductSeed[] = [
   bundle("deal-two-large-wings", "deals", "2 Large Pizzas & 3 lb Wings", 5399, "Two large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 230),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 230), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
+    ...pizzaSections(1, 3, 230), ...pizzaSections(2, 3, 230), wingFlavours(2), ...drinks(4),
   ]),
   bundle("deal-two-medium-wings", "deals", "2 Medium Pizzas & 2 lb Wings", 4399, "Two medium pizzas, 2 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 210),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 210), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
+    ...pizzaSections(1, 3, 210), ...pizzaSections(2, 3, 210), wingFlavours(2), ...drinks(4),
   ]),
   bundle("deal-two-xl-wings", "deals", "2 X-Large Pizzas & 3 lb Wings", 5699, "Two X-large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and one dipping sauce.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 3, 260),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 3, 260), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"), wingFlavours(2), ...drinks(4),
+    ...pizzaSections(1, 3, 260), ...pizzaSections(2, 3, 260), wingFlavours(2), ...drinks(4),
   ]),
 ];
 
@@ -271,7 +282,7 @@ const combos: MenuProductSeed[] = [
   ["slab", "1 Slab Pizza & 3 lb Wings", 5000, 290, "One slab pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
   ["xl", "1 X-Large Pizza & 3 lb Wings", 4100, 260, "One X-large pizza with 3 toppings, 3 lb wings, veggie sticks, blue cheese and a free dipping sauce."],
 ].map(([id, name, price, extra, description]) => bundle(`combo-${id}`, "combos", String(name), Number(price), String(description), [
-  toppings("pizza-toppings", "Pizza toppings", 3, Number(extra)), pizzaBase("pizza-base"), wingFlavours(id === "medium" ? 1 : 2),
+  ...pizzaSections(null, 3, Number(extra)), wingFlavours(id === "medium" ? 1 : 2),
 ]));
 
 const twoForOne: MenuProductSeed[] = [
@@ -281,8 +292,7 @@ const twoForOne: MenuProductSeed[] = [
   ["slab", "2 Slab Pizzas · 3 Toppings Each", 4999, 290],
   ["xl", "2 X-Large Pizzas · 3 Toppings Each", 3299, 260],
 ].map(([id, name, price, extra]) => bundle(`two-for-one-${id}`, "two-for-one", String(name), Number(price), "Two pizzas with up to three included toppings on each pizza.", [
-  toppings("pizza-1-toppings", "Pizza 1 toppings", 3, Number(extra)),
-  toppings("pizza-2-toppings", "Pizza 2 toppings", 3, Number(extra)), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"),
+  ...pizzaSections(1, 3, Number(extra)), ...pizzaSections(2, 3, Number(extra)),
 ]));
 
 const wings: MenuProductSeed[] = [
@@ -328,7 +338,7 @@ const configurableSides: MenuProductSeed[] = [
   {
     id: "panzerotti-three-items", categoryId: "sides", name: "Panzerotti · 3 Items",
     description: "Panzerotti with three included toppings.", productType: "pizza", basePriceCents: 1199,
-    halalCapable: true, configuration: { pizzaBaseOptions: PIZZA_BASE_OPTIONS, specialInstructionsEnabled: true },
+    halalCapable: true, configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
     variations: [{ id: "panzerotti", name: "Panzerotti", basePriceCents: 1199, extraToppingPriceCents: 210, includedToppingUnitsBps: 30_000 }],
   },
   {
@@ -341,36 +351,33 @@ const configurableSides: MenuProductSeed[] = [
 const pickupPizza = (id: string, name: string, price: number, size: string, extra: number, included: number): MenuProductSeed => ({
   id, categoryId: "pickup-specials", name, description: `${included} topping${included === 1 ? "" : "s"} included.`,
   productType: "pizza", basePriceCents: price, pickupEligible: true, deliveryEligible: false, halalCapable: true,
-  configuration: { pizzaBaseOptions: PIZZA_BASE_OPTIONS, specialInstructionsEnabled: true },
+  configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [{ id: `${id}-size`, name: size, basePriceCents: price, extraToppingPriceCents: extra, includedToppingUnitsBps: included * 10_000 }],
 });
 
 const pickupSpecials: MenuProductSeed[] = [
   bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings & 3 Pops", 2599, "Large pizza with 3 toppings, 1 lb wings and 3 canned pops.", [
-    toppings("pizza-toppings", "Pizza toppings", 3, 230), pizzaBase("pizza-base"), wingFlavours(1), ...drinks(3),
+    ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3),
   ], true),
   { ...wings.find((item) => item.id === "1-lb-wings")!, id: "pickup-one-lb-wings", categoryId: "pickup-specials", deliveryEligible: false },
   pickupPizza("pickup-medium-five", "Medium Pizza · 5 Toppings", 1299, "Medium", 210, 5),
   bundle("pickup-two-large-six", "pickup-specials", "2 Large Pizzas · 6 Toppings Shared", 2799, "Share six included toppings across both large pizzas any way you like.", [
-    toppings("pizza-1-toppings", "Pizza 1 toppings", 0, 230, "six-shared", 6),
-    toppings("pizza-2-toppings", "Pizza 2 toppings", 0, 230, "six-shared", 6), pizzaBase("pizza-1-base"), pizzaBase("pizza-2-base"),
+    ...pizzaSections(1, 0, 230, { sharedGroup: "six-shared", sharedIncluded: 6 }),
+    ...pizzaSections(2, 0, 230, { sharedGroup: "six-shared", sharedIncluded: 6 }),
   ], true),
+];
+
+const heroSections: ModifierSectionSeed[] = [
+  ...pizzaSections(null, 3, 230, { toppingLabel: "Choose up to 3 toppings" }),
+  { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
 ];
 
 const heroes: MenuProductSeed[] = [
   {
-    ...bundle("hamilton-hero-deal", "hamilton-heroes", "Hamilton Heroes Offer", 1698, "One large pizza with 3 toppings and free standard delivery. Available Monday to Friday, 5–9 PM.", [
-      toppings("pizza-toppings", "Choose up to 3 toppings", 3, 230),
-      pizzaBase("pizza-base"),
-      { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
-    ]),
+    ...bundle("hamilton-hero-deal", "hamilton-heroes", "Hamilton Heroes Offer", 1698, "One large pizza with 3 toppings and free standard delivery. Available Monday to Friday, 5–9 PM.", heroSections),
     description: "Large pizza with 3 toppings and free standard delivery.",
     configuration: {
-      sections: [
-        toppings("pizza-toppings", "Choose up to 3 toppings", 3, 230),
-        pizzaBase("pizza-base"),
-        { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
-      ],
+      sections: orderModifierSections(heroSections),
       specialInstructionsEnabled: true,
       freeDelivery: true,
       availability: { weekdays: [1, 2, 3, 4, 5], startMinute: 1020, endMinute: 1260, timeZone: "America/Toronto", label: "Mon–Fri · 5–9 PM" },

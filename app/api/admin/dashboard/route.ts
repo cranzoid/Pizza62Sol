@@ -1,6 +1,9 @@
-import { env } from "cloudflare:workers";
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, listSettings, safeJson } from "@/db/runtime";
+import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover";
+import { readIntegrationSecret } from "@/lib/integration-secrets";
+import { loadActiveClosures } from "@/lib/closures";
+import { twilioConfig } from "@/lib/notifications/config";
 
 // Start of the current day in America/Toronto, returned as an epoch-ms timestamp.
 function torontoStartOfDay(nowMs: number): number {
@@ -29,15 +32,31 @@ export async function GET(request: Request) {
     const canManageEmployees = user.role === "owner" || user.permissions.includes("manage_employees");
     // C-03: customer contact (phone/email) is a distinct permission from viewing orders.
     const canViewContact = user.role === "owner" || user.permissions.includes("view_customer_contact");
-    const [orders, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
+    const [orders, awaitingPayment, today, availability, clocked, feedback, settings, products, toppings, categories, variations, staff, promotions] = await Promise.all([
       getD1()
         .prepare(
-          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, status,
+          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel, status,
                   payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
                   address_json, instructions, subtotal_cents, discount_cents, tax_cents,
                   delivery_fee_cents, tip_cents, total_cents, created_at, acknowledged_at
            FROM orders WHERE status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
            ORDER BY created_at DESC LIMIT 60`,
+        )
+        .all<Record<string, unknown>>(),
+      // H-20a: orders that started a checkout and never came back. They were in
+      // no list at all - not the live queue above, and not reachable from
+      // history, whose filter offered no such status - so a customer whose
+      // payment succeeded but whose webhook was lost simply vanished. Nobody
+      // could see the order to rescue it.
+      //
+      // Kept as its own queue rather than merged into the live one: these are
+      // not confirmed orders and the kitchen must not start cooking them.
+      getD1()
+        .prepare(
+          `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment,
+                  status, payment_status, payment_method, total_cents, created_at
+           FROM orders WHERE status = 'awaiting_payment'
+           ORDER BY created_at DESC LIMIT 30`,
         )
         .all<Record<string, unknown>>(),
       getD1()
@@ -92,7 +111,7 @@ export async function GET(request: Request) {
         ? getD1().prepare("SELECT id, email, name, role, permissions_json, active, last_login_at, created_at FROM staff_users ORDER BY active DESC, name").all<Record<string, unknown>>()
         : Promise.resolve({ results: [], success: true, meta: { changes: 0 } }),
       getD1()
-        .prepare("SELECT id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, display_order FROM promotions ORDER BY display_order, name")
+        .prepare("SELECT id, name, code, type, amount, priority, combinable, exclusive, active, rule_json, starts_at, ends_at, min_subtotal_cents, fulfilment, usage_limit, per_customer_limit, usage_count, display_order FROM promotions ORDER BY display_order, name")
         .all(),
     ]);
     // C-05: kitchen cards must show what to make. Load the immutable item snapshots
@@ -138,6 +157,13 @@ export async function GET(request: Request) {
     return Response.json({
       user,
       orders: serializedOrders,
+      // Same contact-permission rule as the live queue (C-03).
+      awaitingPayment: awaitingPayment.results.map((order) => ({
+        ...order,
+        customer_phone: canViewContact ? order.customer_phone : undefined,
+        customer_email: canViewContact ? order.customer_email : undefined,
+        contactRedacted: !canViewContact,
+      })),
       metrics: today,
       availabilityWarnings: availability,
       clockedIn: clocked.results,
@@ -161,11 +187,15 @@ export async function GET(request: Request) {
         rule: safeJson(String((promotion as Record<string, unknown>).rule_json ?? "{}"), {}),
         rule_json: undefined,
       })),
+      closures: await loadActiveClosures(),
       integrations: {
-        stripeSecret: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_SECRET_KEY),
-        stripeWebhook: Boolean((env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET),
-        emailApiKey: Boolean((env as unknown as Record<string, string | undefined>).EMAIL_API_KEY),
-        emailProvider: (env as unknown as Record<string, string | undefined>).EMAIL_PROVIDER ?? null,
+        cloverCheckout: await cloverCheckoutConfigured(),
+        cloverWebhook: await cloverWebhookConfigured(),
+        emailApiKey: (await readIntegrationSecret("EMAIL_API_KEY")) !== null,
+        emailProvider: await readIntegrationSecret("EMAIL_PROVIDER"),
+        twilio: (await twilioConfig()) !== null,
+        restaurantAlertPhone: (await readIntegrationSecret("RESTAURANT_ALERT_PHONE")) !== null,
+        publicBaseUrl: await readIntegrationSecret("PUBLIC_BASE_URL"),
       },
     });
   } catch (error) {

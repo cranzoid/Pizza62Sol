@@ -1,5 +1,5 @@
-const CACHE = "pizza62-static-v1";
-const STATIC = ["/", "/manifest.webmanifest", "/og.png"];
+const CACHE = "pizza62-static-v2";
+const STATIC = ["/", "/manifest.webmanifest", "/logo.png", "/icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC)));

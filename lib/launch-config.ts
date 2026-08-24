@@ -9,6 +9,12 @@ export const LAUNCH_SETTINGS = {
     latitude: 43.23779,
     longitude: -79.79189,
     googleReviewUrl: "https://g.page/r/CYm26zxH0aO8EAE/review",
+    // Where the new-order alert and the low-rating alert are sent. This is a
+    // *recipient*, not the address mail is sent from — `EMAIL_FROM` is the
+    // sender and must be on a domain with SPF/DKIM, which a gmail.com address
+    // can never be. Leaving this unset meant restaurant alerts fell back to
+    // voice and SMS alone.
+    email: "info.pizza62@gmail.com",
   },
   ordering: {
     enabled: true,
@@ -20,14 +26,26 @@ export const LAUNCH_SETTINGS = {
     deliveryEstimateMinutes: 30,
     reorderEnabled: false,
     capacityLimitsEnabled: false,
+    // H-08: how long before closing the kitchen stops accepting new orders. A
+    // store that closes at 22:00 cannot start a pizza at 21:59, so "open" and
+    // "still taking orders" are different questions and the customer is shown a
+    // live countdown to this one, not to the door closing.
+    lastOrderCutoffMinutes: 20,
     paused: false,
     pauseMessage: "Online ordering is temporarily paused. Please call us.",
   },
   delivery: {
     radiusKm: 10,
     feeCents: 350,
-    minimumCents: 0,
-    feeTaxable: false,
+    // Owner decision, 2026-08-21. Checked against the pre-tax menu subtotal, so
+    // a customer cannot reach it with tip or with the delivery fee itself.
+    minimumCents: 2000,
+    // HST applies to a delivery charge when the goods being delivered are
+    // taxable, which for restaurant food they are — so the fee is inside the tax
+    // basis, not beside it. This was `false`, which understated HST owed on
+    // every delivery order. Both this and `taxAndTips.taxRateBps` stay editable
+    // in Admin → Settings, so a change in the rules is a settings change.
+    feeTaxable: true,
     outsideAreaMessage:
       "This address is outside our standard delivery area. Please call Pizza 62 to ask about an exception.",
   },
@@ -44,13 +62,57 @@ export const LAUNCH_SETTINGS = {
     cancellationRequestWindowMinutes: 5,
     payrollPeriod: "biweekly",
     locationVerificationEnabled: false,
-    feedbackDelayMinutes: 75,
+    // How long after an order is completed the feedback request goes out. Long
+    // enough that the customer has eaten, short enough that the meal is still
+    // the thing they were just doing.
+    feedbackDelayMinutes: 40,
     lowRatingThreshold: 2,
     halfToppingUnitsBps: 10_000,
     halalSurchargeType: "none",
     halalSurchargeAmount: 0,
     halalNotice:
       "Halal meat options are available for selected toppings. Pizza 62 uses a shared kitchen, so please tell our team about allergies or preparation concerns before ordering.",
+  },
+  /**
+   * The thank-you that goes out after someone fills in the feedback form.
+   *
+   * **Everyone who answers gets it, whatever they scored us.** That is not
+   * politeness, it is the difference between thanking customers for their time
+   * and paying for good reviews — and paying for good reviews is against
+   * Google's policy and worth nothing anyway, because the ratings it buys are
+   * not information. A one-star answer is the most useful mail we will get all
+   * week; it earns the same garlic bread as a five.
+   *
+   * The value of the offer is *not* recorded here. `feedbackRewardCode` names a
+   * promotion, and the promotion row is what decides what the code is worth,
+   * what it needs to be spent on, and when it stops working. Copying the amount
+   * into a settings blob is how an email comes to promise C$3.99 off while the
+   * code at the till gives C$5 — so the mail reads the promotion and quotes it.
+   * No promotion, no mail: the queue parks the row rather than sending a code
+   * that does nothing at checkout.
+   */
+  rewards: {
+    feedbackRewardEnabled: true,
+    feedbackRewardCode: "THANKS62",
+    feedbackRewardOffer: "a free garlic bread or four pops",
+  },
+  /**
+   * Who hears about it when the software itself is in trouble.
+   *
+   * Deliberately separate from `business.email`: the restaurant wants to know an
+   * order arrived, and the developer wants to know a notification could not be
+   * delivered at all. Sending both to one inbox means the operational signal is
+   * buried in the technical one, and the technical one is ignored.
+   *
+   * The same addresses back the Azure Monitor action group in `infra/`, so a
+   * failure that never reaches the application still reaches a person.
+   */
+  alerts: {
+    developerEmails: ["deskofvisheshvaibhav@gmail.com", "visheshvaibhav10@gmail.com"],
+    // A notification that exhausted its retries is silence the customer can see
+    // and nobody else can, which is the failure this whole release exists to end.
+    notifyOnFailedNotification: true,
+    notifyOnLowRating: true,
   },
   featureFlags: {
     savedCards: false,
@@ -94,18 +156,6 @@ export const PIZZA_SIZES = [
   { id: "x-large", name: "X-Large", basePriceCents: 1249, threeToppingPriceCents: 1769, extraToppingPriceCents: 260 },
   { id: "jumbo", name: "Jumbo", basePriceCents: 1999, threeToppingPriceCents: 2579, extraToppingPriceCents: 290 },
   { id: "slab", name: "Slab", basePriceCents: 2149, threeToppingPriceCents: 2729, extraToppingPriceCents: 290 },
-] as const;
-
-export const INITIAL_WING_FLAVOURS = [
-  "Mild",
-  "Medium",
-  "Hot",
-  "Suicide",
-  "Honey Garlic",
-  "BBQ",
-  "Cajun",
-  "Lemon Pepper",
-  "None",
 ] as const;
 
 export const CONFIRMED_OFFERS = [
@@ -158,18 +208,4 @@ export const CONFIRMED_OFFERS = [
     fulfilments: ["pickup", "delivery"],
     description: "2 X-Large pizzas, 3 lb wings, 4 pops, veggie sticks, blue cheese and dip.",
   },
-] as const;
-
-export const CANNED_DRINKS = [
-  "Pepsi",
-  "Diet Pepsi",
-  "Coke",
-  "Diet Coke",
-  "Coke Zero",
-  "Gingerale",
-  "Crush Orange",
-  "Brisk Ice Tea",
-  "Sprite",
-  "Dr. Peppers",
-  "Fanta Grape",
 ] as const;

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 import { ensureDatabase, getD1, safeJson } from "@/db/runtime";
 import { generateOpaqueToken, hashOpaqueToken, hasPermission } from "@/lib/domain";
 
@@ -84,6 +84,27 @@ export async function createPasswordHash(password: string): Promise<{
   };
 }
 
+// Kiosk PINs are short by necessity — they are typed on a shared tablet in front
+// of other people — so they are hashed with the same PBKDF2 work factor as a
+// password and the endpoint that checks them is rate limited.
+export function validatePin(pin: string): void {
+  if (!/^[0-9]{4,8}$/.test(pin)) throw new Error("A clock-in PIN must be 4 to 8 digits");
+  if (/^(.)\1+$/.test(pin)) throw new Error("A clock-in PIN cannot be the same digit repeated");
+}
+
+export async function createPinHash(pin: string): Promise<{ hash: string; salt: string; iterations: number }> {
+  validatePin(pin);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const derived = await derivePassword(pin, salt, PASSWORD_ITERATIONS);
+  return { hash: bytesToBase64(derived), salt: bytesToBase64(salt), iterations: PASSWORD_ITERATIONS };
+}
+
+export async function verifyPin(pin: string, expectedHash: string, salt: string, iterations: number): Promise<boolean> {
+  if (!/^[0-9]{4,8}$/.test(pin)) return false;
+  const actual = await derivePassword(pin, base64ToBytes(salt), iterations);
+  return equalBytes(actual, base64ToBytes(expectedHash));
+}
+
 export async function verifyPassword(
   password: string,
   expectedHash: string,
@@ -147,11 +168,15 @@ export async function requireStaff(
 }
 
 export class AuthError extends Error {
-  constructor(
-    public status: 401 | 403,
-    message: string,
-  ) {
+  // An explicit field, not a `public status` parameter property: Node's
+  // strip-only type loader cannot compile parameter properties, and it is what
+  // runs scripts/*.ts in the migration and background jobs. Written this way,
+  // lib/auth stays importable from those scripts.
+  readonly status: 401 | 403;
+
+  constructor(status: 401 | 403, message: string) {
     super(message);
+    this.status = status;
   }
 }
 

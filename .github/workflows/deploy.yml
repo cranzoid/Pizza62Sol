@@ -1,0 +1,228 @@
+# Build, test and deploy Pizza 62.
+#
+# **Why this exists at all**, since the question was asked: it is not about
+# convenience. It is the only thing standing between a bad commit and a broken
+# checkout at dinner. Every deploy runs the full suite against a real Postgres
+# first, and a red test never reaches the site. Deploying by hand means that
+# check is whatever the person remembered to run.
+#
+# Two more things it buys:
+#
+# - **The build stops happening on a laptop.** Nothing depends on one machine's
+#   Node version, its npm cache, or how much disk it has left.
+# - **No long-lived Azure credential exists.** Federated identity means GitHub
+#   presents a short-lived token scoped to this repository and this branch;
+#   there is no secret to leak, rotate, or find in a screenshot.
+#
+# The deploy publishes to the staging slot, waits for it to answer /api/health,
+# and only then swaps. The customer-facing hostname never serves a starting
+# instance.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Manual runs so a rollback does not need a commit.
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time. Two overlapping slot swaps put an unpredictable build
+  # into production.
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  # Required for the federated token. `contents: read` is everything else needed.
+  id-token: write
+  contents: read
+
+env:
+  NODE_VERSION: "22.x"
+
+jobs:
+  verify:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      # A real Postgres, not a mock. The suite skips its database-backed tests
+      # when none is reachable and still reports green, so running without one
+      # would quietly verify a third of what it looks like it verifies.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pizza62_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGSSLMODE: disable
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/pizza62_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Migrate the test database
+        run: npm run db:migrate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test with database coverage
+        # The skip count is a deliberate signal (see the handoff's trap list): a
+        # green run with skips means the database-backed half never executed, and
+        # that is exactly the half that covers orders and payments.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+          skipped=$(grep -oE '^ℹ skipped [0-9]+' test-output.log | grep -oE '[0-9]+' || echo 0)
+          if [ "$skipped" != "0" ]; then
+            echo "::error::$skipped tests were skipped — the database-backed suites did not run."
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+
+      # Vinext's standalone output contains the production server and only the
+      # runtime dependencies its server bundle actually imports. The source
+      # directories beside it are intentionally limited to the migration path
+      # that startup.sh runs before accepting traffic.
+      - name: Assemble the standalone Linux release
+        run: |
+          mkdir release
+          cp -R dist/standalone/. release/
+          cp -R drizzle scripts db lib release/
+          cp startup.sh alias-hooks.mjs register-alias.mjs release/
+          test -f release/server.js
+          test -f release/node_modules/vinext/dist/server/prod-server.js
+
+      - name: Smoke-test the exact release artifact
+        run: |
+          (
+            cd release
+            NODE_ENV=production \
+            HOST=127.0.0.1 \
+            PORT=3001 \
+            sh startup.sh > "$RUNNER_TEMP/pizza62-standalone.log" 2>&1 &
+            server_pid=$!
+            trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error --max-time 5 \
+                --output /dev/null http://127.0.0.1:3001/api/health; then
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                cat "$RUNNER_TEMP/pizza62-standalone.log"
+                exit 1
+              fi
+              sleep 1
+            done
+            curl --fail --silent --show-error --max-time 10 \
+              --output /dev/null http://127.0.0.1:3001/
+          )
+
+      - name: Create release archive
+        run: |
+          (cd release && zip -qr ../build.zip .)
+          ls -lh build.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 5
+
+  deploy:
+    name: Deploy
+    needs: verify
+    runs-on: ubuntu-latest
+    # A protected environment, so production deploys can be gated on an approval
+    # from the repository settings without changing this file.
+    environment: production
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          # Federated credentials — no secret. These three are repository
+          # variables, not secrets, because none of them is one: they are
+          # identifiers, and the trust is established by the subject claim on the
+          # federated credential in Azure.
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Publish to the staging slot
+        run: |
+          az webapp deploy \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.AZURE_APP_NAME }}" \
+            --slot staging \
+            --type zip \
+            --src-path build.zip \
+            --async false
+
+      - name: Wait for staging to be healthy
+        # The swap has its own warm-up ping, but that only checks the app
+        # answers. This checks it answers *correctly* — /api/health touches the
+        # database, so a migration that failed on start-up is caught here, on the
+        # slot, rather than after it is already serving customers.
+        run: |
+          url="https://${{ vars.AZURE_APP_NAME }}-staging.azurewebsites.net/api/health"
+          for attempt in $(seq 1 40); do
+            body=$(curl -fsS --max-time 10 "$url" || true)
+            if echo "$body" | grep -q '"status":"ok"'; then
+              echo "staging healthy after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Staging never became healthy. Production is untouched."
+          exit 1
+
+      - name: Swap into production
+        run: |
+          az webapp deployment slot swap \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.AZURE_APP_NAME }}" \
+            --slot staging \
+            --target-slot production
+
+      - name: Confirm production is healthy
+        run: |
+          url="https://${{ vars.AZURE_APP_NAME }}.azurewebsites.net/api/health"
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 10 "$url" | grep -q '"status":"ok"'; then
+              echo "production healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          # The previous build is now in the staging slot, so recovery is a swap
+          # back rather than a rebuild.
+          echo "::error::Production is unhealthy after the swap. Roll back by swapping again:"
+          echo "az webapp deployment slot swap -g ${{ vars.AZURE_RESOURCE_GROUP }} -n ${{ vars.AZURE_APP_NAME }} --slot staging --target-slot production"
+          exit 1
