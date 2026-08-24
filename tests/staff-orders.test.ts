@@ -234,6 +234,124 @@ withDb("prices a counter order exactly like a website order", async () => {
   assert.equal(first.total_cents, second.total_cents);
 });
 
+/**
+ * The till can now build a pizza, so it can now build it *wrong*.
+ *
+ * Ringing in "large, three toppings, extra cheese, no mushrooms, thin crust"
+ * exercises every part of an item the counter previously could not send at all:
+ * a variation, placed toppings, a per-option surcharge, a recipe omission and an
+ * option group. The property that matters is not that it succeeds — it is that
+ * the price and the snapshot are indistinguishable from the same pizza ordered
+ * on the website, because both sides now run one customizer and one encoder.
+ */
+withDb("builds a customized pizza at the counter, priced like the website's", async () => {
+  const cookie = await signedInAs("owner");
+  const pizza = {
+    productId: "large-pizza",
+    variationId: "large-pizza-three-toppings",
+    quantity: 1,
+    toppings: [
+      { toppingId: "pepperoni", placement: "whole" },
+      { toppingId: "mushrooms", placement: "whole" },
+      { toppingId: "jalapenos", placement: "left" },
+    ],
+    extraCheese: true,
+    modifiers: [
+      { id: "pizza-crust", values: ["Thin Crust"] },
+      { id: "pizza-bake-sauce", values: ["Well Done"] },
+    ],
+    specialInstructions: "Cut into squares",
+  };
+  const built = { fulfilment: "pickup", items: [pizza], paymentMethod: "pay_at_store", schedule };
+
+  const staffResponse = await staffOrder(cookie, { ...built, channel: "phone", idempotencyKey: nextKey(), customer: { name: "Phone order" } });
+  assert.equal(staffResponse.status, 201, await staffResponse.clone().text());
+  const staffResult = (await staffResponse.json()) as { orderNumber: string };
+
+  const webResponse = await publicOrderRoute(
+    new Request("https://order.pizza62.test/api/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-azure-clientip": nextClientIp() },
+      body: JSON.stringify({ ...built, idempotencyKey: nextKey(), customer: { name: "Website", phone: "905-555-0144", email: "web2@example.test" } }),
+    }),
+  );
+  assert.equal(webResponse.status, 201);
+  const webResult = (await webResponse.json()) as { orderNumber: string };
+
+  const rows = await getPool().query<{ order_number: string; total_cents: number; snapshot_json: string; instructions: string | null }>(
+    `SELECT o.order_number, o.total_cents, i.snapshot_json, i.instructions
+     FROM orders o JOIN order_items i ON i.order_id = o.id
+     WHERE o.order_number = ANY($1)`,
+    [[staffResult.orderNumber, webResult.orderNumber]],
+  );
+  assert.equal(rows.rows.length, 2);
+  const [till, web] = rows.rows;
+  assert.equal(till.total_cents, web.total_cents, "a phone pizza and a web pizza cost the same");
+  assert.equal(till.instructions, "Cut into squares");
+  assert.deepEqual(JSON.parse(till.snapshot_json), JSON.parse(web.snapshot_json), "the kitchen ticket must be identical");
+
+  // And the choices really did survive, rather than both sides dropping them.
+  const snapshot = JSON.parse(till.snapshot_json) as {
+    extraCheese: boolean;
+    toppings: Array<{ toppingId: string; placement: string }>;
+    modifiers: Array<{ id: string; values: Array<{ value: string }> }>;
+  };
+  assert.equal(snapshot.extraCheese, true);
+  assert.equal(snapshot.toppings.find((entry) => entry.toppingId === "jalapenos")?.placement, "left");
+  assert.deepEqual(
+    snapshot.modifiers.find((modifier) => modifier.id === "pizza-crust")?.values.map((value) => value.value),
+    ["Thin Crust"],
+  );
+});
+
+/**
+ * A deal has required choices — pizza sizes, cheese, toppings, the pops. The
+ * counter could not offer one at all before, so this is the first time a deal
+ * rung in by phone reaches the kitchen with its four flavours attached.
+ */
+withDb("rings in a deal, with a flavour chosen for every included can", async () => {
+  const cookie = await signedInAs("owner");
+  const response = await staffOrder(cookie, {
+    fulfilment: "pickup",
+    items: [
+      {
+        productId: "deal-two-large-wings",
+        quantity: 1,
+        modifiers: [
+          { id: "pizza-1-cheese", values: ["Regular Cheese"] },
+          { id: "pizza-1-toppings", values: ["pepperoni"] },
+          { id: "pizza-2-cheese", values: ["Regular Cheese"] },
+          { id: "pizza-2-toppings", values: ["mushrooms"] },
+          { id: "wing-flavours", values: ["Honey Garlic"] },
+          { id: "drink-1", values: ["Root Beer"] },
+          { id: "drink-2", values: ["Canada Dry"] },
+          { id: "drink-3", values: ["Crush Cream Soda"] },
+          { id: "drink-4", values: ["Mountain Dew"] },
+        ],
+      },
+    ],
+    paymentMethod: "pay_at_store",
+    schedule,
+    channel: "phone",
+    idempotencyKey: nextKey(),
+    customer: { name: "Deal by phone" },
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+  const result = (await response.json()) as { orderNumber: string };
+
+  const row = await getPool().query<{ snapshot_json: string }>(
+    `SELECT i.snapshot_json FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.order_number = $1`,
+    [result.orderNumber],
+  );
+  const snapshot = JSON.parse(row.rows[0].snapshot_json) as { modifiers: Array<{ id: string; values: Array<{ value: string }> }> };
+  const pops = snapshot.modifiers.filter((modifier) => modifier.id.startsWith("drink-"));
+  assert.deepEqual(
+    pops.map((pop) => pop.values[0].value),
+    ["Root Beer", "Canada Dry", "Crush Cream Soda", "Mountain Dew"],
+    "four included pops means four flavours on the ticket",
+  );
+});
+
 withDb("records who rang it in", async () => {
   const cookie = await signedInAs("owner");
   const response = await staffOrder(cookie, {

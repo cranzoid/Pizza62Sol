@@ -629,6 +629,12 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   font: inherit;
 }
 .till-button:hover { border-color: #b9c2ba; }
+/* A button that opens the customizer rather than adding straight to the order.
+   Marked so the counter can see at a glance which taps need a follow-up before
+   the item is on the receipt. */
+.till-button--choices { border-color: #c8d3c9; background: #f7faf7; }
+.till-button--choices span { color: #29623e; font-weight: 900; text-transform: uppercase; letter-spacing: .4px; }
+.till-line-price { font-style: normal; display: block; margin-top: 3px; font-size: 9px; color: #949c95; }
 .till-button strong { font-size: 11px; line-height: 1.3; }
 .till-button span { font-size: 9px; color: #77807a; }
 .till-button b { margin-top: auto; font-size: 12px; }
@@ -644,7 +650,10 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   border-radius: 8px;
 }
 .till-line strong { display: block; font-size: 11px; }
-.till-line small { font-size: 9px; color: #77807a; }
+.till-line small { display: block; font-size: 9px; color: #77807a; line-height: 1.45; }
+/* A built pizza can list a dozen choices. The line grows to fit rather than the
+   quantity controls being pushed off the panel. */
+.till-line > div:first-child { min-width: 0; }
 .till-quantity { display: flex; align-items: center; gap: 8px; }
 /* Deliberately large: these are pressed with a thumb, often in a hurry. */
 .till-quantity button {
@@ -833,6 +842,14 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .feedback-thanks-copy { color: var(--muted); font-family: Georgia, serif; }
 .feedback-comments { margin-top: 20px; }
 .feedback-alert-note { color: var(--muted); font-size: 11px; line-height: 1.45; text-align: center; }
+/* The coupon note sits above the review invitation and must not compete with
+   it: same box, warmer ground, no button. It is news, not an action. */
+.review-cta--reward { background: var(--yellow); color: var(--ink); }
+.review-cta--reward p { color: rgba(23, 20, 15, .72); }
+/* "No thanks, stay here" cancels the countdown. On the dark green panel the
+   ordinary muted text-button is close to invisible. */
+.review-cta .text-button { display: block; margin: 12px auto 0; color: rgba(255, 255, 255, .74); background: none; border: 0; text-decoration: underline; font-size: 10px; font-weight: 900; text-transform: uppercase; cursor: pointer; }
+.review-cta .text-button:hover { color: #fff; }
 .lookup-form label,
 .feedback-card label { font-size: 11px; }
 .lookup-form input,

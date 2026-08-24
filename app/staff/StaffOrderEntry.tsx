@@ -13,11 +13,17 @@
  * priced by a second implementation is how a restaurant ends up with two sets of
  * books, and it is also how the HST on the day's takings stops adding up.
  *
- * Items with required choices (build-your-own pizzas, deals) are deliberately
- * not offered here. They need the full customizer, and a half-built one on a
- * till screen produces orders the kitchen cannot read. Those go through the
- * website or get called through as they do today; this covers the counter's
- * actual traffic — slices, wings, drinks, fixed-recipe pizzas.
+ * **The whole menu can be rung in.** Anything needing a choice made about it —
+ * a pizza and its three toppings, a two-pizza deal, a pound of wings, the pops
+ * that come with a combo — used to be excluded here, on the grounds that a
+ * half-built customizer written for a till screen produces orders the kitchen
+ * cannot read. That was true of writing a second one. It is not a reason to
+ * write none: the counter takes the phone calls, and the phone is where the
+ * complicated orders arrive. So the till mounts the *same* customizer the
+ * website does (`app/menu/ItemCustomizer.tsx`), which means a pizza rung in here
+ * is built from the same steps, priced by the same code, and reaches the kitchen
+ * in the same shape as one ordered online. What was excluded was never the
+ * counter's rare traffic; it was most of the menu.
  *
  * **A phone order can be a delivery.** It was pickup-only, which meant the one
  * thing the phone is actually used for — "can you bring it round" — had to be
@@ -30,9 +36,63 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
+import {
+  GenericCustomizer,
+  PizzaCustomizer,
+  needsCustomizing,
+  placementSuffix,
+  toOrderItems,
+  type BuiltItem,
+  type CustomizerProduct,
+} from "@/app/menu/ItemCustomizer";
 import type { Dashboard } from "@/app/staff/StaffPortal";
 
-type Line = { key: string; productId: string; variationId?: string; name: string; note: string; quantity: number };
+/**
+ * Two identical items are one line with a quantity of two; two pizzas built
+ * differently are two lines.
+ *
+ * Merging on the product alone was safe while nothing here could be customized.
+ * It is not any more: a pepperoni and a Hawaiian are both "Large Pizza", and
+ * collapsing them would send one of the two to the kitchen as a copy of the
+ * other. So the whole build is the identity — every choice, in a stable order,
+ * because `{cheese, crust}` and `{crust, cheese}` are the same pizza and must
+ * stringify the same way.
+ */
+function buildSignature(item: BuiltItem): string {
+  return JSON.stringify([
+    item.productId,
+    item.variationId ?? "",
+    [...(item.toppings ?? [])].map((entry) => `${entry.toppingId}:${entry.placement}`).sort(),
+    [...(item.modifiers ?? [])]
+      .map((modifier) => `${modifier.id}=${[...modifier.values].map((value) => `${value.value}:${value.placement ?? "whole"}`).sort().join("|")}`)
+      .sort(),
+    [...(item.omitToppings ?? [])].sort(),
+    Boolean(item.extraCheese),
+    Boolean(item.halal),
+    item.specialInstructions ?? "",
+  ]);
+}
+
+/**
+ * The chosen options, spelled out under the item name on the receipt.
+ *
+ * `toppingNames` is needed for the omissions alone: a built item carries the
+ * *names* of what was added and the *ids* of what was left off, and "No
+ * real-bacon" on a ticket someone is reading down the phone is not good enough.
+ */
+function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): string[] {
+  const parts: string[] = [];
+  if (item.variationName) parts.push(item.variationName);
+  if (item.halal) parts.push("Halal meat");
+  if (item.extraCheese) parts.push("Extra cheese");
+  for (const topping of item.toppings ?? []) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  for (const toppingId of item.omitToppings ?? []) parts.push(`No ${toppingNames.get(toppingId) ?? toppingId}`);
+  for (const modifier of item.modifiers ?? []) {
+    parts.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
+  }
+  if (item.specialInstructions) parts.push(item.specialInstructions);
+  return parts;
+}
 
 type Quote = {
   ok: boolean;
@@ -50,33 +110,39 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [unit, setUnit] = useState("");
   const [postalCode, setPostalCode] = useState("");
   const [deliveryInstructions, setDeliveryInstructions] = useState("");
-  const [lines, setLines] = useState<Line[]>([]);
+  const [lines, setLines] = useState<BuiltItem[]>([]);
+  // The product whose customizer is open, if any.
+  const [building, setBuilding] = useState<CustomizerProduct | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [search, setSearch] = useState("");
 
   /**
-   * What can be rung in without a customizer.
+   * What is on the menu right now, for this kind of order.
    *
-   * A product needing choices is excluded rather than added with its defaults —
-   * a deal rung in with no pizza sizes chosen is an order the kitchen has to
-   * phone the counter about.
+   * The only exclusions left are the ones the server would enforce anyway:
+   * hidden, sold out, waiting on owner setup, or not offered for the fulfilment
+   * the counter has selected. Offering a pickup-only special on a delivery
+   * ticket produces an order that is rejected after it has been keyed in with a
+   * customer on the phone.
    */
   const sellable = dashboard.products.filter((product) => {
     if (!product.active || product.sold_out || product.setup_required) return false;
-    // Some items are counter-only. Offering one on a delivery ticket produces an
-    // order the server rejects after it has already been keyed in.
-    if (!(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible)) return false;
-    const configuration = product.configuration ?? {};
-    const sections = Array.isArray(configuration.sections) ? configuration.sections : [];
-    const needsChoices = sections.some((section) => Number((section as { min?: number }).min ?? 0) > 0);
-    if (needsChoices) return false;
-    // A pizza is sellable here only if it has a set recipe: its size is a
-    // variation, which the buttons below offer, and its toppings are decided.
-    if (product.product_type === "pizza") return Boolean(configuration.fixedRecipe);
-    return true;
+    return Boolean(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible);
   });
+
+  // Read straight off the same settings row the storefront reads, so a pizza
+  // built at the counter is charged for a half topping exactly as one built at
+  // home is.
+  const operations = (dashboard.settings.operations?.value ?? {}) as Record<string, unknown>;
+  const halalNotice = String(operations.halalNotice ?? "Halal meat options use a shared kitchen.");
+  const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 10_000);
+  const activeToppings = dashboard.toppings.filter((topping) => topping.active);
+  const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
+  const buildingVariations = building
+    ? dashboard.variations.filter((variation) => variation.product_id === building.id && variation.active)
+    : [];
 
   const matching = search.trim()
     ? sellable.filter((product) => product.name.toLowerCase().includes(search.trim().toLowerCase()))
@@ -87,11 +153,10 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       channel,
       fulfilment,
       customer: { name: name.trim() || "Counter", phone: phone.trim(), email: email.trim() },
-      items: lines.map((line) => ({
-        productId: line.productId,
-        variationId: line.variationId,
-        quantity: line.quantity,
-      })),
+      // Encoded by the same function the website uses, so "extra cheese, no
+      // mushrooms, sauce on the side" survives the trip from a phone call
+      // exactly as it does from a browser.
+      items: toOrderItems(lines),
       schedule: { type: "asap" as const },
       paymentMethod: "pay_at_store" as const,
       tip: { type: "none" as const },
@@ -141,28 +206,40 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
 
   const totals = quote?.totals ?? { menuSubtotalCents: 0, discountCents: 0, taxCents: 0, deliveryFeeCents: 0, totalCents: 0 };
 
-  const add = (productId: string, productName: string, variationId?: string, variationName?: string) => {
+  /**
+   * Puts a built item on the receipt.
+   *
+   * An identical build adds a quantity rather than a second line — a till that
+   * shows "1 × Poutine" four times is harder to check against the bag — but two
+   * pizzas built differently stay apart, because they are different pizzas.
+   */
+  const add = (item: BuiltItem) => {
     setMessage(null);
+    setBuilding(null);
     setLines((current) => {
-      // Same product and size adds a quantity rather than a second line — a till
-      // that shows "1 × Poutine" four times is harder to check against the bag.
-      const existing = current.find((line) => line.productId === productId && line.variationId === variationId);
+      const signature = buildSignature(item);
+      const existing = current.find((line) => buildSignature(line) === signature);
       if (existing) {
-        return current.map((line) => (line === existing ? { ...line, quantity: line.quantity + 1 } : line));
+        return current.map((line) => (line === existing ? { ...line, quantity: line.quantity + item.quantity } : line));
       }
-      return [
-        ...current,
-        {
-          key: crypto.randomUUID(),
-          productId,
-          variationId,
-          name: productName,
-          note: variationName ?? "",
-          quantity: 1,
-        },
-      ];
+      return [...current, item];
     });
   };
+
+  /** A product with nothing to choose goes straight on, at its listed price. */
+  const addPlain = (product: CustomizerProduct, variation?: { id: string; name: string; base_price_cents: number }) =>
+    add({
+      key: crypto.randomUUID(),
+      productId: product.id,
+      name: product.name,
+      categoryId: product.category_id,
+      variationId: variation?.id,
+      variationName: variation?.name,
+      quantity: 1,
+      unitPriceCents: variation?.base_price_cents ?? product.base_price_cents,
+      taxable: Boolean(product.taxable),
+      freeDelivery: Boolean(product.configuration?.freeDelivery),
+    });
 
   const setQuantity = (key: string, delta: number) =>
     setLines((current) =>
@@ -250,9 +327,25 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           <div className="till-grid">
             {matching.map((product) => {
               const variations = dashboard.variations.filter((variation) => variation.product_id === product.id && variation.active);
+              // Anything with choices to make is one button that opens the
+              // customizer — including a pizza, whose sizes are choices made
+              // *inside* it. Listing a size per button would put the counter
+              // one tap from a pizza with no toppings on it.
+              if (needsCustomizing(product)) {
+                const from = variations.length
+                  ? Math.min(...variations.map((variation) => variation.base_price_cents))
+                  : product.base_price_cents;
+                return (
+                  <button className="till-button till-button--choices" key={product.id} onClick={() => setBuilding(product)}>
+                    <strong>{product.name}</strong>
+                    <span>Choices…</span>
+                    <b>{variations.length > 1 ? `from ${formatMoney(from)}` : formatMoney(from)}</b>
+                  </button>
+                );
+              }
               if (variations.length) {
                 return variations.map((variation) => (
-                  <button className="till-button" key={variation.id} onClick={() => add(product.id, product.name, variation.id, variation.name)}>
+                  <button className="till-button" key={variation.id} onClick={() => addPlain(product, variation)}>
                     <strong>{product.name}</strong>
                     <span>{variation.name}</span>
                     <b>{formatMoney(variation.base_price_cents)}</b>
@@ -260,7 +353,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                 ));
               }
               return (
-                <button className="till-button" key={product.id} onClick={() => add(product.id, product.name)}>
+                <button className="till-button" key={product.id} onClick={() => addPlain(product)}>
                   <strong>{product.name}</strong>
                   <b>{formatMoney(product.base_price_cents)}</b>
                 </button>
@@ -277,7 +370,12 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
               <div className="till-line" key={line.key}>
                 <div>
                   <strong>{line.name}</strong>
-                  {line.note ? <small>{line.note}</small> : null}
+                  {/* Everything chosen, spelled out. Someone reading the order
+                      back over the phone reads this, and a "no onions" that only
+                      exists inside the payload is a "no onions" that gets made
+                      with onions. */}
+                  {describeChoices(line, toppingNames).map((choice, index) => <small key={`${index}-${choice}`}>{choice}</small>)}
+                  <em className="till-line-price">{formatMoney(line.unitPriceCents)} each</em>
                 </div>
                 <div className="till-quantity">
                   <button onClick={() => setQuantity(line.key, -1)} aria-label={`One fewer ${line.name}`}>−</button>
@@ -309,6 +407,34 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
         </aside>
       </div>
+
+      {/* The same customizer the website mounts, over the till. `key` is the
+          product id so switching straight from one product to another starts a
+          fresh build rather than reusing the last one's state. */}
+      {building ? (
+        building.product_type === "pizza" ? (
+          <PizzaCustomizer
+            key={building.id}
+            product={building}
+            variations={buildingVariations}
+            toppings={activeToppings}
+            halalNotice={halalNotice}
+            halfToppingUnitsBps={halfToppingUnitsBps}
+            onClose={() => setBuilding(null)}
+            onAdd={add}
+          />
+        ) : (
+          <GenericCustomizer
+            key={building.id}
+            product={building}
+            toppings={activeToppings}
+            halalNotice={halalNotice}
+            halfToppingUnitsBps={halfToppingUnitsBps}
+            onClose={() => setBuilding(null)}
+            onAdd={add}
+          />
+        )
+      ) : null}
     </div>
   );
 }
