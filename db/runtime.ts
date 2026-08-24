@@ -63,6 +63,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
     delivery: LAUNCH_SETTINGS.delivery,
     taxAndTips: LAUNCH_SETTINGS.taxAndTips,
     operations: LAUNCH_SETTINGS.operations,
+    rewards: LAUNCH_SETTINGS.rewards,
     alerts: LAUNCH_SETTINGS.alerts,
     featureFlags: LAUNCH_SETTINGS.featureFlags,
     content: LAUNCH_SETTINGS.content,
@@ -192,12 +193,61 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
     database
       .prepare("INSERT INTO order_sequences (key, current_number) VALUES ('public_order', 1000) ON CONFLICT (key) DO NOTHING"),
   );
+  /**
+   * The offer behind the feedback thank-you code.
+   *
+   * A coded promotion, so it never applies on its own — `activePromotions` only
+   * considers it when the customer types the code (C-02). Seeded here rather
+   * than left for the owner to create because the mail refuses to send without
+   * it, and "the thank-you email silently stopped going out" is a failure nobody
+   * would notice for a month.
+   *
+   * Worth C$3.99 — a garlic bread — on a C$15 order. Both numbers, the code, the
+   * name and whether it is active at all are owner-editable in Admin → History &
+   * offers from the moment it exists; this insert only decides where it starts.
+   * `ON CONFLICT DO NOTHING` without a target so it yields to an existing row on
+   * either the id or the unique code.
+   */
+  operations.push(
+    database
+      .prepare(
+        `INSERT INTO promotions
+         (id, name, code, type, amount, priority, combinable, exclusive, active,
+          min_subtotal_cents, fulfilment, per_customer_limit, rule_json, display_order,
+          created_at, updated_at)
+         VALUES ('feedback-thank-you', 'Feedback thank-you', ?, 'fixed', 399, 0, 1, 0, 1,
+                 1500, 'any', 1, '{}', 90, ?, ?)
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(LAUNCH_SETTINGS.rewards.feedbackRewardCode, now, now),
+  );
+  /**
+   * What the customer is actually asked.
+   *
+   * Seeded on every boot rather than behind the menu-seed gate, and inserted
+   * with ON CONFLICT DO NOTHING — so a question added here appears on databases
+   * that were seeded long ago, and one the owner has since reworded or switched
+   * off is never overwritten.
+   *
+   * **The pizza questions are specific on purpose.** "Pizza quality: 3/5" tells
+   * the kitchen nothing it can act on. Crust, sauce and toppings are three
+   * separate people doing three separate things, and a week of answers points at
+   * whichever one has slipped. That is the whole reason for asking.
+   *
+   * `requiresTrait` beats the old `includesProductType`: a deal is a `bundle`
+   * whose product type says nothing about the pizza inside it, so matching on
+   * product type asked a customer who ordered two large pizzas in a deal
+   * nothing about their pizza — and the wings question, keyed to a product type
+   * named "wings" that has never existed, was never shown to anyone at all.
+   */
   const feedback = [
     ["overall", "Overall experience", "rating", 5, 1, {}, 10],
-    ["pizza-quality", "Pizza quality", "rating", 5, 0, { includesProductType: "pizza" }, 20],
-    ["wings", "Wings", "rating", 5, 0, { includesProductType: "wings" }, 30],
-    ["speed", "Pickup or delivery speed", "rating", 5, 0, { wordingByFulfilment: true }, 40],
-    ["comments", "Anything else we should know?", "text", null, 0, {}, 50],
+    ["crust", "How was the crust?", "rating", 5, 0, { requiresTrait: "pizza" }, 20],
+    ["sauce", "How was the sauce?", "rating", 5, 0, { requiresTrait: "pizza" }, 30],
+    ["toppings", "How were the toppings?", "rating", 5, 0, { requiresTrait: "pizza" }, 40],
+    ["wings", "How were the wings?", "rating", 5, 0, { requiresTrait: "wings" }, 50],
+    ["speed", "Pickup or delivery speed", "rating", 5, 0, { wordingByFulfilment: true }, 60],
+    ["comments", "Anything else we should know?", "text", null, 0, {}, 70],
   ] as const;
   for (const row of feedback) {
     operations.push(
@@ -457,6 +507,58 @@ const DATA_MIGRATIONS: Array<{
            WHERE key = 'business' AND (value_json::jsonb -> 'email') IS NULL`,
         )
         .bind(JSON.stringify(LAUNCH_SETTINGS.business.email), now),
+    ],
+  },
+  {
+    /**
+     * Ask about the crust and the sauce, not about "pizza quality".
+     *
+     * The new questions arrive on their own — feedback questions are seeded on
+     * every boot with ON CONFLICT DO NOTHING — but three things about the rows
+     * already in the table have to be corrected here, because that insert by
+     * design never touches a row that exists.
+     *
+     * 1. `pizza-quality` is retired. It is the vague version of the three
+     *    questions that replace it, and a form with four pizza ratings on it is
+     *    a form people close. Retired, not deleted: past answers stay readable.
+     * 2. The wings question has never once been shown. Its condition asks for a
+     *    product *type* called "wings", and the four product types are pizza,
+     *    simple, bundle and configurable — so it matched nothing, ever.
+     * 3. Speed and the comment box move to the end, behind the new questions.
+     *
+     * Every statement is conditional on the row still holding its seeded value.
+     * An owner who has reworded or reordered a question has an opinion, and a
+     * migration must not overwrite it (C-08).
+     */
+    id: "2026-08-24-feedback-crust-and-sauce",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE feedback_questions SET active = 0, updated_at = ?
+           WHERE id = 'pizza-quality' AND label = 'Pizza quality'`,
+        )
+        .bind(now),
+      database
+        .prepare(
+          `UPDATE feedback_questions
+             SET condition_json = '{"requiresTrait":"wings"}',
+                 label = 'How were the wings?', display_order = 50, updated_at = ?
+           WHERE id = 'wings' AND label = 'Wings'
+             AND condition_json::jsonb = '{"includesProductType":"wings"}'::jsonb`,
+        )
+        .bind(now),
+      database
+        .prepare(
+          `UPDATE feedback_questions SET display_order = 60, updated_at = ?
+           WHERE id = 'speed' AND display_order = 40`,
+        )
+        .bind(now),
+      database
+        .prepare(
+          `UPDATE feedback_questions SET display_order = 70, updated_at = ?
+           WHERE id = 'comments' AND display_order = 50`,
+        )
+        .bind(now),
     ],
   },
 ];
