@@ -91,6 +91,9 @@ export async function POST(request: Request) {
   try {
     await enforceRateLimit(request, "timeclock-kiosk", 12, 10 * 60 * 1000);
     await ensureDatabase();
+    if (!(await pairedKiosk(request))) {
+      return Response.json({ error: "This tablet is not paired with the time clock." }, { status: 403 });
+    }
     const body = (await request.json()) as { staffUserId?: string; pin?: string; action?: string };
     const staffUserId = String(body.staffUserId ?? "");
     const pin = String(body.pin ?? "");

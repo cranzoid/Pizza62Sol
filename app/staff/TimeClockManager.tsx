@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { formatMoney } from "@/lib/domain";
+import { formatMoney, zonedDateTimeToUtc } from "@/lib/domain";
 import { formatDuration } from "@/app/staff/TimeClock";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
 
@@ -13,6 +13,9 @@ type TeamRow = {
 type TimesheetRow = {
   staffUserId: string; name: string; totalPaidMs: number; totalBreakMs: number;
   regularMs: number; overtimeMs: number; grossPayCents: number; openSession: boolean; approved: boolean;
+  state: "clocked_out" | "working" | "on_break"; clockIssue: string | null;
+  integrityIssues: Array<{ message: string }>;
+  events: Array<{ id: string; action: string; occurred_at: number; source: string; session_id: string }>;
   days: Array<{ date: string; paidMs: number; breakMs: number; firstIn: number | null; lastOut: number | null; open: boolean }>;
 };
 // A new shift always opens with a start and end already chosen, so the dialog
@@ -21,6 +24,7 @@ type ShiftDraft = Omit<Partial<ShiftRow>, "starts_at" | "ends_at"> & { starts_at
 type ShiftRow = { id: string; staff_user_id: string | null; role: string | null; starts_at: number; ends_at: number; unpaid_break_minutes: number; notes: string | null; published: number };
 
 type ManagerData = {
+  user: { id: string; role: string; permissions: string[] };
   period: { start: number; end: number; label: string; timeZone: string; offset: number };
   week: { from: number; to: number };
   team: TeamRow[];
@@ -31,17 +35,40 @@ type ManagerData = {
   timeOff: Array<Record<string, unknown>>;
 };
 
-const DAY_MS = 86_400_000;
-const localDayStart = (value: number) => { const date = new Date(value); date.setHours(0, 0, 0, 0); return date.getTime(); };
-const dateTimeInput = (value: number) => new Date(value - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+const DEFAULT_TIME_ZONE = "America/Toronto";
+const zonedDateKey = (value: number, timeZone: string) => new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(new Date(value));
+const addZonedDays = (value: number, days: number, timeZone: string) => {
+  const [year, month, day] = zonedDateKey(value, timeZone).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+  return zonedDateTimeToUtc(date, 0, timeZone);
+};
+const zonedWeekStart = (value: number, timeZone: string) => {
+  const key = zonedDateKey(value, timeZone);
+  const [year, month, day] = key.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return addZonedDays(zonedDateTimeToUtc(key, 0, timeZone), -weekday, timeZone);
+};
+const dateTimeInput = (value: number, timeZone: string) => {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone,
+  }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+const dateTimeValue = (value: string, timeZone: string) => {
+  const [date, time] = value.split("T");
+  if (!date || !time) return Number.NaN;
+  const [hour, minute] = time.split(":").map(Number);
+  return zonedDateTimeToUtc(date, hour * 60 + minute, timeZone);
+};
 
 export function ManagerTimeClock() {
   const [data, setData] = useState<ManagerData | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"today" | "schedule" | "timesheets" | "requests" | "pay">("today");
   const [periodOffset, setPeriodOffset] = useState(0);
-  const [weekFrom, setWeekFrom] = useState(() => localDayStart(Date.now()) - ((new Date().getDay() + 7) % 7) * DAY_MS);
+  const [weekFrom, setWeekFrom] = useState(() => zonedWeekStart(Date.now(), DEFAULT_TIME_ZONE));
   const load = useCallback(async () => {
     const response = await fetch(`/api/timeclock/manager?period=${periodOffset}&weekFrom=${weekFrom}`);
     const result = await response.json();
@@ -55,23 +82,43 @@ export function ManagerTimeClock() {
   }, [load]);
   const act = async (body: Record<string, unknown>, success: string) => {
     setError(""); setMessage("");
-    const response = await fetch("/api/timeclock/manager", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) { setError(result.error ?? "That did not work."); return false; }
-    setMessage(success);
-    await load();
-    return true;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/timeclock/manager", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { setError(result.error ?? "That did not work."); return false; }
+      setMessage(success);
+      await load();
+      return true;
+    } catch {
+      setError("The time clock could not be reached. Check the connection and try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
   };
   const exportPayroll = async () => {
-    const response = await fetch("/api/timeclock/manager", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ periodOffset }) });
-    if (!response.ok) { setError("Payroll could not be exported."); return; }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `pizza62-payroll-${new Date(data?.period.start ?? Date.now()).toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const response = await fetch("/api/timeclock/manager", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ periodOffset }) });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        setError(result.error ?? "Payroll could not be exported.");
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `pizza62-payroll-${new Date(data?.period.start ?? Date.now()).toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage("Payroll CSV downloaded.");
+    } catch {
+      setError("Payroll could not be exported. Check the connection and try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (error && !data) return <div className="staff-panel"><div className="form-error" role="alert">{error}</div></div>;
@@ -81,14 +128,19 @@ export function ManagerTimeClock() {
   const pendingTimeOff = data.timeOff.filter((row) => row.status === "pending");
   const labourCents = data.timesheets.reduce((sum, row) => sum + row.grossPayCents, 0);
   const overtimeRows = data.timesheets.filter((row) => row.overtimeMs > 0);
+  const problemRows = data.timesheets.filter((row) => row.clockIssue || row.integrityIssues.length);
 
   return <div className="admin-stack">
-    <div className="viz-toolbar">
+    <section className="timeclock-manager-header">
+      <div><span className="manager-eyebrow">Team operations</span><h2>Time clock</h2><p>See who is working, repair punches, approve hours, and prepare payroll from one place.</p></div>
+      <div className="manager-live-summary"><span className="live-chip"><i /> {data.onClock.length} on the clock</span><small>Updates every minute</small></div>
+    </section>
+    <div className="viz-toolbar timeclock-tabs">
       <div className="segmented-range" role="group" aria-label="Time clock sections">
-        {([["today", "On now"], ["schedule", "Schedule"], ["timesheets", "Timesheets"], ["requests", `Requests${pendingCorrections.length + pendingTimeOff.length ? ` (${pendingCorrections.length + pendingTimeOff.length})` : ""}`], ["pay", "Pay & PINs"]] as const)
+        {([["today", "Team clock"], ["schedule", "Schedule"], ["timesheets", "Timesheets"], ["requests", `Requests${pendingCorrections.length + pendingTimeOff.length ? ` (${pendingCorrections.length + pendingTimeOff.length})` : ""}`], ["pay", "Pay & PINs"]] as const)
           .map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
       </div>
-      <span className="live-chip"><i /> {data.onClock.length} on the clock</span>
+      {problemRows.length ? <span className="manager-alert-chip">{problemRows.length} record{problemRows.length === 1 ? "" : "s"} need review</span> : <span className="manager-ready-chip">All records healthy</span>}
     </div>
     {error ? <div className="form-error" role="alert">{error}</div> : null}
     {message ? <p className="admin-message" role="status">{message}</p> : null}
@@ -100,16 +152,24 @@ export function ManagerTimeClock() {
         <article className="stat-card"><span>Overtime</span><strong className="viz-figure">{formatDuration(data.timesheets.reduce((sum, row) => sum + row.overtimeMs, 0))}</strong><small>{overtimeRows.length} people</small></article>
         <article className="stat-card"><span>Labour cost</span><strong className="viz-figure">{formatMoney(labourCents)}</strong><small>Estimated gross</small></article>
       </section>
-      <section className="staff-panel">
-        <div className="staff-panel-head"><h2>Who is on</h2><span className="live-chip">Live</span></div>
-        <div className="shift-list">
-          {data.onClock.map((row) => <div className="shift-row" key={String(row.id)}>
-            <strong>{String(row.name)}</strong>
-            <span>{String(row.state).replaceAll("_", " ")}</span>
-            <span>since {new Date(Number(row.updated_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}</span>
-            <button className="text-button" onClick={() => void act({ action: "punch.for", staffUserId: row.id, punch: row.state === "on_break" ? "break_end" : "clock_out" }, "Clock updated.")}>{row.state === "on_break" ? "End break" : "Clock out"}</button>
-          </div>)}
-          {!data.onClock.length ? <div className="staff-empty">Nobody is clocked in.</div> : null}
+      <section className="staff-panel team-clock-panel">
+        <div className="staff-panel-head"><div><h2>Team clock</h2><p className="panel-subtitle">Every active employee and their latest verified status.</p></div><span className="live-chip"><i /> Live</span></div>
+        <div className="team-clock-grid">
+          {data.timesheets.map((row) => {
+            const member = data.team.find((entry) => entry.id === row.staffUserId);
+            const latest = row.events.at(-1);
+            const hasIssue = Boolean(row.clockIssue || row.integrityIssues.length);
+            return <article className={`team-clock-card team-clock-card--${hasIssue ? "issue" : row.state}`} key={row.staffUserId}>
+              <div className="team-clock-person"><span className="team-avatar" aria-hidden="true">{row.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><div><strong>{row.name}</strong><small>{member?.jobTitle ?? member?.role ?? "Team member"}</small></div></div>
+              <span className={`team-state-badge team-state-badge--${hasIssue ? "issue" : row.state}`}><i />{hasIssue ? "Needs review" : row.state === "working" ? "Working" : row.state === "on_break" ? "On break" : "Off shift"}</span>
+              <div className="team-clock-meta"><span><small>Period hours</small><b>{formatDuration(row.totalPaidMs)}</b></span><span><small>Latest punch</small><b>{latest ? new Date(latest.occurred_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone }) : "None yet"}</b></span></div>
+              {hasIssue ? <p className="team-clock-issue">{row.clockIssue ?? row.integrityIssues[0]?.message}</p> : <div className="team-clock-actions">
+                {row.state === "working" ? <><button disabled={busy} onClick={() => void act({ action: "punch.for", staffUserId: row.staffUserId, punch: "break_start" }, `${row.name}'s break started.`)}>Start break</button><button className="secondary" disabled={busy} onClick={() => void act({ action: "punch.for", staffUserId: row.staffUserId, punch: "clock_out" }, `${row.name} clocked out.`)}>Clock out</button></> : null}
+                {row.state === "on_break" ? <><button disabled={busy} onClick={() => void act({ action: "punch.for", staffUserId: row.staffUserId, punch: "break_end" }, `${row.name}'s break ended.`)}>End break</button><button className="secondary" disabled={busy} onClick={() => void act({ action: "punch.for", staffUserId: row.staffUserId, punch: "clock_out" }, `${row.name} clocked out.`)}>Clock out</button></> : null}
+                {row.state === "clocked_out" ? <button disabled={busy} onClick={() => void act({ action: "punch.for", staffUserId: row.staffUserId, punch: "clock_in" }, `${row.name} clocked in.`)}>Clock in for them</button> : null}
+              </div>}
+            </article>;
+          })}
         </div>
       </section>
       {overtimeRows.length ? <section className="staff-panel">
@@ -124,13 +184,14 @@ export function ManagerTimeClock() {
       <div className="staff-panel-head"><h2>Timesheets</h2>
         <div className="period-switch">
           <button className="text-button" onClick={() => setPeriodOffset((value) => value - 1)}>← Earlier</button>
-          <span>{new Date(data.period.start).toLocaleDateString("en-CA")} – {new Date(data.period.end - 1).toLocaleDateString("en-CA")}</span>
+          <span>{new Date(data.period.start).toLocaleDateString("en-CA", { timeZone })} – {new Date(data.period.end - 1).toLocaleDateString("en-CA", { timeZone })}</span>
           <button className="text-button" disabled={periodOffset === 0} onClick={() => setPeriodOffset((value) => Math.min(0, value + 1))}>Later →</button>
         </div>
       </div>
       {data.timesheets.map((row) => <details className="product-admin-card" key={row.staffUserId}>
-        <summary><span><strong>{row.name}</strong><small>{formatDuration(row.totalPaidMs)} paid · {formatDuration(row.overtimeMs)} overtime · {formatMoney(row.grossPayCents)}</small></span><span>{row.approved ? "Approved" : row.openSession ? "Shift open" : "Ready"}</span></summary>
+        <summary><span><strong>{row.name}</strong><small>{formatDuration(row.totalPaidMs)} paid · {formatDuration(row.overtimeMs)} overtime · {formatMoney(row.grossPayCents)}</small></span><span className={row.clockIssue || row.integrityIssues.length ? "summary-status--issue" : ""}>{row.clockIssue || row.integrityIssues.length ? "Needs repair" : row.approved ? "Approved" : row.openSession ? "Shift open" : "Ready"}</span></summary>
         <div className="product-editor">
+          {row.clockIssue || row.integrityIssues.length ? <div className="timesheet-integrity" role="alert"><b>Punch history needs repair</b><span>{row.clockIssue ?? row.integrityIssues[0]?.message} Payroll and approval stay blocked until the sequence is valid.</span></div> : null}
           <div className="table-scroll" role="region" aria-label={`${row.name} timesheet`} tabIndex={0}><table className="viz-table">
             <thead><tr><th scope="col">Day</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Break</th><th scope="col">Paid</th></tr></thead>
             <tbody>{row.days.map((day) => <tr key={day.date}>
@@ -142,8 +203,13 @@ export function ManagerTimeClock() {
             </tr>)}
             {!row.days.length ? <tr><td colSpan={5} className="staff-empty">No hours in this period.</td></tr> : null}</tbody>
           </table></div>
-          <ManualPunch staffUserId={row.staffUserId} onAct={act} />
-          <button className="staff-button" disabled={row.openSession} onClick={() => void act({ action: "timesheet.approve", staffUserId: row.staffUserId, periodOffset }, `${row.name}'s timesheet approved.`)}>{row.approved ? "Re-approve timesheet" : "Approve timesheet"}</button>
+          <div className="punch-history">
+            <div className="subhead"><div><h3>Punch history</h3><small>Manager changes are validated and written to the audit log.</small></div><span>{row.events.length} punch{row.events.length === 1 ? "" : "es"}</span></div>
+            {[...row.events].reverse().map((event) => <EventEditor key={event.id} event={event} staffName={row.name} timeZone={timeZone} busy={busy} onAct={act} />)}
+            {!row.events.length ? <div className="staff-empty">No punches in or near this period.</div> : null}
+          </div>
+          <ManualPunch staffUserId={row.staffUserId} timeZone={timeZone} busy={busy} onAct={act} />
+          <div className="timesheet-approval-bar"><span><strong>{row.approved ? "Approved timesheet" : "Manager approval"}</strong><small>{row.approved ? "Approve again only after reviewing a corrected record." : "Review every day and punch before approving."}</small></span><button className="staff-button" disabled={busy || row.openSession || Boolean(row.clockIssue) || Boolean(row.integrityIssues.length)} onClick={() => void act({ action: "timesheet.approve", staffUserId: row.staffUserId, periodOffset }, `${row.name}'s timesheet approved.`)}>{row.approved ? "Re-approve" : "Approve timesheet"}</button></div>
         </div>
       </details>)}
     </section> : null}
@@ -174,7 +240,7 @@ export function ManagerTimeClock() {
             <b>{row.status === "pending" ? "!" : row.status === "approved" ? "✓" : "×"}</b>
             <div>
               <strong>{String(row.staff_name)}</strong>
-              <p>{new Date(Number(row.starts_at)).toLocaleDateString("en-CA")} — {new Date(Number(row.ends_at)).toLocaleDateString("en-CA")}{row.note ? ` · ${String(row.note)}` : ""}</p>
+              <p>{new Date(Number(row.starts_at)).toLocaleDateString("en-CA", { timeZone })} — {new Date(Number(row.ends_at)).toLocaleDateString("en-CA", { timeZone })}{row.note ? ` · ${String(row.note)}` : ""}</p>
               {row.status === "pending" ? <div className="order-actions">
                 <button onClick={() => void act({ action: "timeoff.resolve", id: row.id, approve: true }, "Time off approved.")}>Approve</button>
                 <button className="secondary" onClick={() => void act({ action: "timeoff.resolve", id: row.id, approve: false }, "Request declined.")}>Decline</button>
@@ -187,16 +253,16 @@ export function ManagerTimeClock() {
     </div> : null}
 
     {tab === "pay" ? <section className="staff-panel">
-      <div className="staff-panel-head"><h2>Pay, roles and clock-in PINs</h2><button className="staff-button" onClick={() => void exportPayroll()}>Export payroll CSV</button></div>
+      <div className="staff-panel-head"><h2>Pay, roles and clock-in PINs</h2><button className="staff-button" disabled={busy || Boolean(problemRows.length)} onClick={() => void exportPayroll()}>Export payroll CSV</button></div>
       <p className="editor-hint">Overtime follows Ontario&apos;s 44-hour work week by default. A PIN lets someone clock in on the shared tablet at /kiosk without signing in.</p>
       {data.team.filter((member) => member.active).map((member) => <PayEditor key={member.id} member={member} onAct={act} />)}
     </section> : null}
   </div>;
 }
 
-function ManualPunch({ staffUserId, onAct }: { staffUserId: string; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
+function ManualPunch({ staffUserId, timeZone, busy, onAct }: { staffUserId: string; timeZone: string; busy: boolean; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
   const [punch, setPunch] = useState("clock_in");
-  const [when, setWhen] = useState(() => dateTimeInput(Date.now()));
+  const [when, setWhen] = useState(() => dateTimeInput(Date.now(), timeZone));
   return <div className="manual-punch">
     <strong>Add a missing punch</strong>
     <select value={punch} onChange={(event) => setPunch(event.target.value)} aria-label="Punch type">
@@ -204,7 +270,23 @@ function ManualPunch({ staffUserId, onAct }: { staffUserId: string; onAct: (body
       <option value="break_end">Break end</option><option value="clock_out">Clock out</option>
     </select>
     <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} aria-label="Punch time" />
-    <button className="staff-button" onClick={() => void onAct({ action: "event.insert", staffUserId, punch, occurredAt: new Date(when).getTime() }, "Punch added and recorded in the audit log.")}>Add punch</button>
+    <button className="staff-button" disabled={busy || !when} onClick={() => void onAct({ action: "event.insert", staffUserId, punch, occurredAt: dateTimeValue(when, timeZone) }, "Punch added and recorded in the audit log.")}>Add punch</button>
+  </div>;
+}
+
+function EventEditor({ event, staffName, timeZone, busy, onAct }: { event: TimesheetRow["events"][number]; staffName: string; timeZone: string; busy: boolean; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
+  const [when, setWhen] = useState(() => dateTimeInput(event.occurred_at, timeZone));
+  const changed = dateTimeValue(when, timeZone) !== event.occurred_at;
+  const remove = () => {
+    if (!window.confirm(`Delete ${staffName}'s ${event.action.replaceAll("_", " ")} punch? This will be recorded in the audit log.`)) return;
+    void onAct({ action: "event.delete", eventId: event.id }, "Punch deleted and recorded in the audit log.");
+  };
+  return <div className="punch-history-row">
+    <span className={`punch-action punch-action--${event.action}`}>{event.action.replaceAll("_", " ")}</span>
+    <div><strong>{new Date(event.occurred_at).toLocaleString("en-CA", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })}</strong><small>{event.source === "manager" ? "Manager entry" : event.source === "kiosk" ? "Shared kiosk" : "Employee clock"}</small></div>
+    <input type="datetime-local" aria-label={`Change ${event.action.replaceAll("_", " ")} time`} value={when} onChange={(input) => setWhen(input.target.value)} />
+    <button className="text-button" disabled={busy || !changed || !when} onClick={() => void onAct({ action: "event.adjust", eventId: event.id, occurredAt: dateTimeValue(when, timeZone) }, "Punch time updated and recorded in the audit log.")}>Save time</button>
+    <button className="text-button danger-text" disabled={busy} onClick={remove}>Delete</button>
   </div>;
 }
 
@@ -236,31 +318,32 @@ function PayEditor({ member, onAct }: { member: TeamRow; onAct: (body: Record<st
 
 function ScheduleBoard({ data, weekFrom, onWeek, onAct }: { data: ManagerData; weekFrom: number; onWeek: (value: number) => void; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
   const [editing, setEditing] = useState<ShiftDraft | null>(null);
-  const days = Array.from({ length: 7 }, (_, index) => weekFrom + index * DAY_MS);
-  const weekTo = weekFrom + 7 * DAY_MS;
+  const timeZone = data.period.timeZone;
+  const days = Array.from({ length: 7 }, (_, index) => addZonedDays(weekFrom, index, timeZone));
+  const weekTo = addZonedDays(weekFrom, 7, timeZone);
   const inWeek = data.shifts.filter((shift) => shift.starts_at >= weekFrom && shift.starts_at < weekTo);
   const unpublished = inWeek.filter((shift) => !shift.published).length;
-  const timeZone = data.period.timeZone;
   const hoursFor = (staffId: string) => inWeek
     .filter((shift) => shift.staff_user_id === staffId)
     .reduce((sum, shift) => sum + (shift.ends_at - shift.starts_at - shift.unpaid_break_minutes * 60_000), 0);
   return <>
     <section className="staff-panel">
       <div className="staff-panel-head">
-        <h2>Week of {new Date(weekFrom).toLocaleDateString("en-CA", { month: "long", day: "numeric" })}</h2>
+        <h2>Week of {new Date(weekFrom).toLocaleDateString("en-CA", { month: "long", day: "numeric", timeZone })}</h2>
         <div className="period-switch">
-          <button className="text-button" onClick={() => onWeek(weekFrom - 7 * DAY_MS)}>← Previous</button>
-          <button className="text-button" onClick={() => onWeek(weekFrom + 7 * DAY_MS)}>Next →</button>
+          <button className="text-button" onClick={() => onWeek(addZonedDays(weekFrom, -7, timeZone))}>← Previous</button>
+          <button className="text-button" onClick={() => onWeek(addZonedDays(weekFrom, 7, timeZone))}>Next →</button>
           <button className="staff-button" disabled={!unpublished} onClick={() => void onAct({ action: "schedule.publish", from: weekFrom, to: weekTo }, "Schedule published to the team.")}>{unpublished ? `Publish ${unpublished} shift${unpublished === 1 ? "" : "s"}` : "All published"}</button>
         </div>
       </div>
       <div className="schedule-grid">
-        <div className="schedule-head"><span>Team</span>{days.map((day) => <span key={day}>{new Date(day).toLocaleDateString("en-CA", { weekday: "short", day: "numeric" })}</span>)}</div>
+        <div className="schedule-head"><span>Team</span>{days.map((day) => <span key={day}>{new Date(day).toLocaleDateString("en-CA", { weekday: "short", day: "numeric", timeZone })}</span>)}</div>
         {data.team.filter((member) => member.active).map((member) => <div className="schedule-row" key={member.id}>
           <span className="schedule-person"><strong>{member.name}</strong><small>{formatDuration(hoursFor(member.id))} scheduled</small></span>
           {days.map((day) => {
-            const cellShifts = inWeek.filter((shift) => shift.staff_user_id === member.id && shift.starts_at >= day && shift.starts_at < day + DAY_MS);
-            return <button className="schedule-cell" key={day} onClick={() => setEditing({ staff_user_id: member.id, starts_at: day + 16 * 3_600_000, ends_at: day + 22 * 3_600_000, unpaid_break_minutes: 30 })}>
+            const nextDay = addZonedDays(day, 1, timeZone);
+            const cellShifts = inWeek.filter((shift) => shift.staff_user_id === member.id && shift.starts_at >= day && shift.starts_at < nextDay);
+            return <button className="schedule-cell" key={day} onClick={() => { const date = zonedDateKey(day, timeZone); setEditing({ staff_user_id: member.id, starts_at: zonedDateTimeToUtc(date, 16 * 60, timeZone), ends_at: zonedDateTimeToUtc(date, 22 * 60, timeZone), unpaid_break_minutes: 30 }); }}>
               {cellShifts.map((shift) => <span key={shift.id} className={shift.published ? "shift-chip" : "shift-chip shift-chip--draft"} onClick={(event) => { event.stopPropagation(); setEditing(shift); }}>
                 {new Date(shift.starts_at).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}–{new Date(shift.ends_at).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone })}
                 {shift.role ? <small>{shift.role}</small> : null}
@@ -272,15 +355,15 @@ function ScheduleBoard({ data, weekFrom, onWeek, onAct }: { data: ManagerData; w
       </div>
       <p className="editor-hint">Click a day to add a shift, or a shift to change it. Draft shifts are outlined; the team only sees a shift after you publish.</p>
     </section>
-    {editing ? <ShiftDialog shift={editing} team={data.team} onClose={() => setEditing(null)} onAct={async (body, success) => { const ok = await onAct(body, success); if (ok) setEditing(null); return ok; }} /> : null}
+    {editing ? <ShiftDialog shift={editing} team={data.team} timeZone={timeZone} onClose={() => setEditing(null)} onAct={async (body, success) => { const ok = await onAct(body, success); if (ok) setEditing(null); return ok; }} /> : null}
   </>;
 }
 
-function ShiftDialog({ shift, team, onClose, onAct }: { shift: ShiftDraft; team: TeamRow[]; onClose: () => void; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
+function ShiftDialog({ shift, team, timeZone, onClose, onAct }: { shift: ShiftDraft; team: TeamRow[]; timeZone: string; onClose: () => void; onAct: (body: Record<string, unknown>, success: string) => Promise<boolean> }) {
   const dialogRef = useDialogBehavior<HTMLDivElement>(true, onClose);
   const [staffUserId, setStaffUserId] = useState(shift.staff_user_id ?? "");
-  const [startsAt, setStartsAt] = useState(dateTimeInput(shift.starts_at));
-  const [endsAt, setEndsAt] = useState(dateTimeInput(shift.ends_at));
+  const [startsAt, setStartsAt] = useState(dateTimeInput(shift.starts_at, timeZone));
+  const [endsAt, setEndsAt] = useState(dateTimeInput(shift.ends_at, timeZone));
   const [role, setRole] = useState(shift.role ?? "");
   const [breakMinutes, setBreakMinutes] = useState(String(shift.unpaid_break_minutes ?? 30));
   const [notes, setNotes] = useState(shift.notes ?? "");
@@ -296,7 +379,7 @@ function ShiftDialog({ shift, team, onClose, onAct }: { shift: ShiftDraft; team:
         <label className="field-wide">Notes<input value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
       </div>
       <div className="order-actions">
-        <button onClick={() => void onAct({ action: "shift.upsert", id: shift.id, staffUserId: staffUserId || null, role, startsAt: new Date(startsAt).getTime(), endsAt: new Date(endsAt).getTime(), unpaidBreakMinutes: Number(breakMinutes), notes }, "Shift saved as a draft.")}>Save shift</button>
+        <button onClick={() => void onAct({ action: "shift.upsert", id: shift.id, staffUserId: staffUserId || null, role, startsAt: dateTimeValue(startsAt, timeZone), endsAt: dateTimeValue(endsAt, timeZone), unpaidBreakMinutes: Number(breakMinutes), notes }, "Shift saved as a draft.")}>Save shift</button>
         {shift.id ? <button className="secondary" onClick={() => void onAct({ action: "shift.delete", id: shift.id }, "Shift removed.")}>Delete</button> : null}
       </div>
     </div>

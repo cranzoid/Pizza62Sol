@@ -13,6 +13,7 @@ import {
   generateOpaqueToken,
   hashOpaqueToken,
   hasPermission,
+  inspectClockTimeline,
   isWithinWeeklyAvailability,
   isTimeWithinConfiguredHours,
   isStoreOpenAt,
@@ -543,6 +544,35 @@ test("builds shifts from the punch log and subtracts unpaid breaks", () => {
   assert.equal(unclosedBreak[0].paidMs, hour);
 });
 
+test("rejects a duplicate or out-of-order punch before it can inflate a timesheet", () => {
+  const start = Date.parse("2026-08-22T14:00:00Z");
+  const valid = inspectClockTimeline([
+    { id: "in", sessionId: "shift-1", action: "clock_in", occurredAt: start },
+    { id: "break", sessionId: "shift-1", action: "break_start", occurredAt: start + 3_600_000 },
+    { id: "resume", sessionId: "shift-1", action: "break_end", occurredAt: start + 4_200_000 },
+    { id: "out", sessionId: "shift-1", action: "clock_out", occurredAt: start + 8 * 3_600_000 },
+  ]);
+  assert.equal(valid.state, "clocked_out");
+  assert.deepEqual(valid.issues, []);
+
+  const duplicateOut = inspectClockTimeline([
+    { id: "bad-out", sessionId: "shift-1", action: "clock_out", occurredAt: start - 1 },
+    { id: "in", sessionId: "shift-1", action: "clock_in", occurredAt: start },
+    { id: "out", sessionId: "shift-1", action: "clock_out", occurredAt: start + 8 * 3_600_000 },
+    { id: "bad-out-2", sessionId: "shift-1", action: "clock_out", occurredAt: start + 8 * 3_600_000 },
+  ]);
+  assert.equal(duplicateOut.issues.length, 2);
+  assert.match(duplicateOut.issues[0].message, /Cannot clock out while clocked out/);
+  assert.match(duplicateOut.issues[1].message, /Cannot clock out while clocked out/);
+
+  const crossedSessions = inspectClockTimeline([
+    { id: "in", sessionId: "shift-1", action: "clock_in", occurredAt: start },
+    { id: "out", sessionId: "shift-2", action: "clock_out", occurredAt: start + 3_600_000 },
+  ]);
+  assert.equal(crossedSessions.issues.length, 1);
+  assert.match(crossedSessions.issues[0].message, /different shift/);
+});
+
 test("counts an overnight shift on the day it started", () => {
   const zone = "America/Toronto";
   const hour = 3_600_000;
@@ -598,6 +628,15 @@ test("pay periods follow on from each other without drifting", () => {
   const previous = payPeriodFor(anchor + 20 * 86_400_000, { period: "biweekly", anchor, offsetPeriods: -1 });
   assert.equal(previous.start, first.start);
   assert.equal(payPeriodFor(anchor, { period: "weekly", anchor }).end, anchor + 7 * 86_400_000);
+});
+
+test("Toronto pay periods stay on local midnight across daylight saving time", () => {
+  const zone = "America/Toronto";
+  const anchor = Date.parse("2026-03-01T05:00:00Z"); // Sunday 00:00 EST
+  const period = payPeriodFor(Date.parse("2026-03-09T16:00:00Z"), { period: "weekly", anchor, timeZone: zone });
+  assert.equal(period.start, Date.parse("2026-03-08T05:00:00Z"));
+  assert.equal(period.end, Date.parse("2026-03-15T04:00:00Z"));
+  assert.equal(period.end - period.start, 167 * 3_600_000, "the spring-forward week has 167 real hours");
 });
 
 test("an unrecognised promotion type grants nothing, least of all free delivery (H-11b)", () => {

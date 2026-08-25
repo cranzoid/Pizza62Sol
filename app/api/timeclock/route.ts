@@ -2,7 +2,7 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { type ClockAction } from "@/lib/domain";
 import { loadProfile, loadShifts, resolvePeriod, timeClockSettings, timesheetFor } from "@/lib/timeclock";
-import { PunchError, currentClockState, recordPunch } from "@/lib/timeclock-punch";
+import { PunchError, inspectCurrentClockState, recordPunch } from "@/lib/timeclock-punch";
 
 const PUNCHES = new Set(["clock_in", "break_start", "break_end", "clock_out"]);
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const period = resolvePeriod(now, settings, offset);
     const [timesheet, state, shifts, requests] = await Promise.all([
       timesheetFor(user.id, period, settings, profile, now),
-      currentClockState(user.id),
+      inspectCurrentClockState(user.id),
       // Two weeks of the employee's own published schedule, plus anything they are
       // still finishing today.
       loadShifts(now - 86_400_000, now + 14 * 86_400_000, user.id),
@@ -31,7 +31,9 @@ export async function GET(request: Request) {
     const [corrections, timeOff, approvals] = requests;
     return Response.json({
       user,
+      asOf: now,
       state: state.state,
+      clockIssue: state.issues[0]?.message ?? timesheet.integrityIssues[0]?.message ?? null,
       // Kept for the existing employee screen, which reads paidMs directly.
       paidMs: timesheet.totalPaidMs,
       period: { ...period, label: settings.period, timeZone: settings.timeZone, offset },

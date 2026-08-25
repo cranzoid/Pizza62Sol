@@ -4,8 +4,10 @@ import {
   buildTimesheet,
   buildWorkSessions,
   grossPayCents,
+  inspectClockTimeline,
   payPeriodFor,
   splitOvertime,
+  zonedDateTimeToUtc,
   type ClockAction,
   type ClockEventRecord,
   type PayrollPeriod,
@@ -59,15 +61,15 @@ export async function loadProfile(staffUserId: string): Promise<StaffProfile> {
   return row ?? { staff_user_id: staffUserId, ...DEFAULT_PROFILE };
 }
 
-export async function loadClockEvents(staffUserId: string, since: number, until = Number.MAX_SAFE_INTEGER) {
+export async function loadClockEvents(staffUserId: string, since = 0, until = Number.MAX_SAFE_INTEGER) {
   const events = await getD1()
     .prepare(
-      `SELECT id, session_id, action, occurred_at, source, correction_of
+      `SELECT id, session_id, action, occurred_at, source, correction_of, created_at
        FROM time_clock_events WHERE staff_user_id = ? AND occurred_at >= ? AND occurred_at < ?
-       ORDER BY occurred_at`,
+       ORDER BY occurred_at, created_at, id`,
     )
     .bind(staffUserId, since, until)
-    .all<{ id: string; session_id: string; action: ClockAction; occurred_at: number; source: string; correction_of: string | null }>();
+    .all<{ id: string; session_id: string; action: ClockAction; occurred_at: number; source: string; correction_of: string | null; created_at: number }>();
   return events.results;
 }
 
@@ -86,12 +88,13 @@ export async function timeClockSettings(): Promise<TimeClockSettings> {
   const operations = await getSetting<Record<string, unknown>>("operations").catch(() => ({}) as Record<string, unknown>);
   const business = await getSetting<Record<string, unknown>>("business").catch(() => ({}) as Record<string, unknown>);
   const period = operations.payrollPeriod === "weekly" ? "weekly" : "biweekly";
-  const anchor = Number(operations.payrollAnchor ?? 0) || Date.UTC(2024, 0, 7); // a Sunday
-  return { timeZone: String(business.timeZone ?? "America/Toronto"), period, anchor };
+  const timeZone = String(business.timeZone ?? "America/Toronto");
+  const anchor = Number(operations.payrollAnchor ?? 0) || zonedDateTimeToUtc("2024-01-07", 0, timeZone); // Sunday, locally
+  return { timeZone, period, anchor };
 }
 
 export function resolvePeriod(now: number, settings: TimeClockSettings, offsetPeriods = 0) {
-  return payPeriodFor(now, { period: settings.period, anchor: settings.anchor, offsetPeriods });
+  return payPeriodFor(now, { period: settings.period, anchor: settings.anchor, offsetPeriods, timeZone: settings.timeZone });
 }
 
 export type TimesheetSummary = {
@@ -105,7 +108,23 @@ export type TimesheetSummary = {
   weeks: ReturnType<typeof splitOvertime>["weeks"];
   grossPayCents: number;
   openSession: boolean;
+  integrityIssues: ReturnType<typeof inspectClockTimeline>["issues"];
 };
+
+/** Keeps whole sessions whose clock-in belongs to this period. */
+function clockEventsForPeriod(
+  events: Awaited<ReturnType<typeof loadClockEvents>>,
+  period: { start: number; end: number },
+): Awaited<ReturnType<typeof loadClockEvents>> {
+  const selected: Awaited<ReturnType<typeof loadClockEvents>> = [];
+  let include = false;
+  for (const event of events) {
+    if (event.action === "clock_in") include = event.occurred_at >= period.start && event.occurred_at < period.end;
+    if (include) selected.push(event);
+    if (event.action === "clock_out") include = false;
+  }
+  return selected;
+}
 
 export async function timesheetFor(
   staffUserId: string,
@@ -114,7 +133,34 @@ export async function timesheetFor(
   profile: StaffProfile,
   asOf = Date.now(),
 ): Promise<TimesheetSummary> {
-  const events = await loadClockEvents(staffUserId, period.start, period.end);
+  // Validate the complete history, not a pay-period slice. A slice can begin with
+  // the clock-out of an overnight shift and look corrupt even when the full log is
+  // valid. It also used to let a shift crossing a period boundary accrue until
+  // today because its closing event fell just outside the query window.
+  const allEvents = await loadClockEvents(staffUserId, 0, asOf + 1);
+  const fullRecords: ClockEventRecord[] = allEvents.map((event) => ({
+    id: event.id,
+    action: event.action,
+    occurredAt: event.occurred_at,
+    sessionId: event.session_id,
+  }));
+  const integrity = inspectClockTimeline(fullRecords);
+  if (integrity.issues.length) {
+    return {
+      staffUserId,
+      days: [],
+      sessions: [],
+      totalPaidMs: 0,
+      totalBreakMs: 0,
+      regularMs: 0,
+      overtimeMs: 0,
+      weeks: [],
+      grossPayCents: 0,
+      openSession: false,
+      integrityIssues: integrity.issues,
+    };
+  }
+  const events = clockEventsForPeriod(allEvents, period);
   const records: ClockEventRecord[] = events.map((event) => ({ action: event.action, occurredAt: event.occurred_at }));
   const timesheet = buildTimesheet(records, settings.timeZone, asOf);
   const overtime = splitOvertime(timesheet.days, {
@@ -132,6 +178,7 @@ export async function timesheetFor(
     weeks: overtime.weeks,
     grossPayCents: grossPayCents(overtime.regularMs, overtime.overtimeMs, profile.wage_cents, profile.overtime_multiplier_bps),
     openSession: timesheet.openSession,
+    integrityIssues: [],
   };
 }
 

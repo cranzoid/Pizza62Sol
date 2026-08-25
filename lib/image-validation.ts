@@ -23,6 +23,21 @@
  * uploads are ever opened to customers.
  */
 
+/**
+ * The largest file the upload route accepts.
+ *
+ * Exported because the browser needs the same number. A file rejected here has
+ * already crossed the wire, which on a phone is a slow upload that ends in an
+ * error, so the editors check the size before opening the connection.
+ *
+ * It must also stay below the framework's multipart body limit — see
+ * `experimental.serverActions.bodySizeLimit` in `next.config.ts`. That limit is
+ * applied before this route is matched, so if it were the smaller of the two it
+ * would be the one doing the rejecting, in a plain-text 413 this route never
+ * sees and cannot phrase.
+ */
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
 export type ImageKind = "jpg" | "png" | "webp" | "gif";
 
 export type InspectedImage = {

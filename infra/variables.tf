@@ -231,6 +231,34 @@ variable "blob_retention_days" {
   default     = 30
 }
 
+variable "github_owner_id" {
+  description = <<-DESC
+    Numeric account id of the repository owner, e.g. "93286005".
+
+    GitHub's OIDC subject claim now names the repository by id as well as by
+    name, so Entra needs a federated credential in that form or every deploy
+    fails on AADSTS700213. Read it with:
+
+      gh api users/<owner> --jq .id
+
+    Empty leaves the id-qualified credentials uncreated, which is correct for an
+    environment that has not hit the new format yet.
+  DESC
+  type        = string
+  default     = ""
+}
+
+variable "github_repository_id" {
+  description = <<-DESC
+    Numeric id of the repository itself, e.g. "1306206852". See
+    `github_owner_id`. Read it with:
+
+      gh api repos/<owner>/<repo> --jq .id
+  DESC
+  type        = string
+  default     = ""
+}
+
 variable "github_repository" {
   description = <<-DESC
     "owner/repo" for the deploy pipeline, e.g. "cranzoid/Pizza62Sol".

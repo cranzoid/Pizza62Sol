@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { formatMoney, type ModifierSection as DomainModifierSection } from "@/lib/domain";
+import { MAX_UPLOAD_BYTES } from "@/lib/image-validation";
 import type { Dashboard } from "@/app/staff/StaffPortal";
 
 type Product = Dashboard["products"][number];
@@ -32,6 +33,47 @@ async function configRequest(body: Record<string, unknown>) {
   const result = await response.json() as { error?: string; [key: string]: unknown };
   if (!response.ok) throw new Error(result.error ?? "The change could not be saved.");
   return result;
+}
+
+type UploadedImage = { url: string; width?: number; height?: number };
+
+const OVERSIZE_MESSAGE = `That file is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB. Export a smaller JPG or WebP and try again.`;
+
+/**
+ * Sends one image to `/api/uploads` and reads the answer without assuming it is
+ * JSON.
+ *
+ * A refused upload does not always come back from our own handler. A body over
+ * the framework's multipart limit is turned away before the route is matched,
+ * and an ingress in front of the app can answer in plain text or with nothing at
+ * all — a 413 sent while the browser is still writing the body arrives with its
+ * own body truncated. `response.json()` on any of those threw "Unexpected end of
+ * JSON input", which is what the owner saw instead of anything about the picture
+ * they had chosen.
+ *
+ * The size is checked here too, before the connection is opened: a file rejected
+ * server-side has still been carried across the wire first, and on a phone that
+ * is a long upload that ends in an error.
+ */
+async function uploadImage(file: File): Promise<UploadedImage> {
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(OVERSIZE_MESSAGE);
+  const data = new FormData();
+  data.set("file", file);
+  const response = await fetch("/api/uploads", { method: "POST", body: data });
+  let result: Partial<UploadedImage> & { error?: string } = {};
+  try {
+    result = JSON.parse(await response.text()) as typeof result;
+  } catch {
+    // Not our handler answering. Fall through to a message keyed on the status.
+  }
+  if (response.ok && result.url) return result as UploadedImage;
+  throw new Error(result.error ?? uploadFailureMessage(response.status));
+}
+
+function uploadFailureMessage(status: number): string {
+  if (status === 413) return OVERSIZE_MESSAGE;
+  if (status === 401 || status === 403) return "Your sign-in has expired. Sign in again, then retry the upload.";
+  return "That image could not be uploaded. Check your connection and try again.";
 }
 
 const moneyToCents = (value: string) => Math.round(Number(value || 0) * 100);
@@ -306,11 +348,7 @@ export function AdminWebsitePanel({ dashboard, onSaved }: { dashboard: Dashboard
   const upload = async (key: string, file: File) => {
     setUploading(key);
     try {
-      const data = new FormData();
-      data.set("file", file);
-      const response = await fetch("/api/uploads", { method: "POST", body: data });
-      const result = await response.json() as { url?: string; error?: string };
-      if (!response.ok || !result.url) throw new Error(result.error ?? "Upload failed.");
+      const result = await uploadImage(file);
       set(key, result.url);
       setMessage("Image uploaded. Choose Publish to put it on the website.");
     } catch (error) {
@@ -544,13 +582,9 @@ function ProductImageField({ imageUrl, onChange }: { imageUrl: string; onChange:
   const [showUrl, setShowUrl] = useState(false);
   const upload = async (file: File) => {
     setError(""); setDimensions(null);
-    if (file.size > 5 * 1024 * 1024) { setError("That file is over 5 MB. Export a smaller JPG or WebP and try again."); return; }
     setUploading(true);
     try {
-      const data = new FormData(); data.set("file", file);
-      const response = await fetch("/api/uploads", { method: "POST", body: data });
-      const result = await response.json() as { url?: string; width?: number; height?: number; error?: string };
-      if (!response.ok || !result.url) throw new Error(result.error ?? "Upload failed.");
+      const result = await uploadImage(file);
       onChange(result.url);
       if (result.width && result.height) setDimensions({ width: result.width, height: result.height });
     } catch (caught) { setError(caught instanceof Error ? caught.message : "That image could not be uploaded."); }

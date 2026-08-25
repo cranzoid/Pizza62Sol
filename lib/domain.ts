@@ -654,7 +654,74 @@ export function isTimeWithinConfiguredHours(
   );
 }
 
-export type ClockEventRecord = { action: ClockAction; occurredAt: number };
+export type ClockEventRecord = {
+  action: ClockAction;
+  occurredAt: number;
+  id?: string;
+  sessionId?: string | null;
+};
+
+export type ClockTimelineIssue = {
+  eventId: string | null;
+  action: ClockAction;
+  occurredAt: number;
+  stateBefore: ClockState;
+  message: string;
+};
+
+/**
+ * Validates the event log with the same state machine used by a live punch.
+ *
+ * Manager-entered events used to bypass this check, allowing duplicate clock-outs
+ * and overlapping clock-ins into payroll. Keeping this pure makes it usable before
+ * every database write and in the read path, where a damaged legacy record can be
+ * shown as "needs attention" instead of turning the whole employee page into a 500.
+ */
+export function inspectClockTimeline(events: ClockEventRecord[]): {
+  state: ClockState;
+  sessionId: string | null;
+  issues: ClockTimelineIssue[];
+} {
+  const ordered = events
+    .map((event, inputOrder) => ({ event, inputOrder }))
+    .sort((left, right) => left.event.occurredAt - right.event.occurredAt || left.inputOrder - right.inputOrder);
+  const issues: ClockTimelineIssue[] = [];
+  let state: ClockState = "clocked_out";
+  let sessionId: string | null = null;
+
+  for (const { event } of ordered) {
+    try {
+      const next = nextClockState(state, event.action);
+      if (
+        event.action !== "clock_in" &&
+        sessionId !== null &&
+        event.sessionId !== undefined &&
+        event.sessionId !== sessionId
+      ) {
+        issues.push({
+          eventId: event.id ?? null,
+          action: event.action,
+          occurredAt: event.occurredAt,
+          stateBefore: state,
+          message: `The ${event.action.replaceAll("_", " ")} punch belongs to a different shift.`,
+        });
+      }
+      if (event.action === "clock_in") sessionId = event.sessionId ?? null;
+      state = next;
+      if (state === "clocked_out") sessionId = null;
+    } catch {
+      issues.push({
+        eventId: event.id ?? null,
+        action: event.action,
+        occurredAt: event.occurredAt,
+        stateBefore: state,
+        message: `Cannot ${event.action.replaceAll("_", " ")} while ${state.replaceAll("_", " ")}.`,
+      });
+    }
+  }
+
+  return { state, sessionId, issues };
+}
 
 export type WorkSession = {
   clockIn: number;
@@ -721,6 +788,38 @@ export type TimesheetDay = {
 const dayKey = (timestamp: number, timeZone: string) =>
   new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(timestamp));
 
+/** Converts a restaurant-local calendar time to its UTC timestamp, including DST. */
+export function zonedDateTimeToUtc(date: string, minuteOfDay: number, timeZone: string): number {
+  const [year, month, day] = date.split("-").map(Number);
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  const targetAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+  let guess = targetAsUtc;
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  for (let pass = 0; pass < 3; pass += 1) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(guess)).map((part) => [part.type, part.value]));
+    const representedAsUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    guess += targetAsUtc - representedAsUtc;
+  }
+  return guess;
+}
+
 /** A shift is counted on the day it started, so an overnight close stays on one day. */
 export function buildTimesheet(
   events: ClockEventRecord[],
@@ -757,9 +856,23 @@ export type PayrollPeriod = "weekly" | "biweekly";
  */
 export function payPeriodFor(
   now: number,
-  options: { period?: PayrollPeriod; anchor: number; offsetPeriods?: number },
+  options: { period?: PayrollPeriod; anchor: number; offsetPeriods?: number; timeZone?: string },
 ): { start: number; end: number; index: number } {
-  const length = (options.period === "weekly" ? 7 : 14) * 86_400_000;
+  const days = options.period === "weekly" ? 7 : 14;
+  const length = days * 86_400_000;
+  if (options.timeZone) {
+    const anchorKey = dayKey(options.anchor, options.timeZone);
+    const nowKey = dayKey(now, options.timeZone);
+    const dayNumber = (key: string) => {
+      const [year, month, day] = key.split("-").map(Number);
+      return Date.UTC(year, month - 1, day) / 86_400_000;
+    };
+    const index = Math.floor((dayNumber(nowKey) - dayNumber(anchorKey)) / days) + (options.offsetPeriods ?? 0);
+    const dateAt = (offsetDays: number) => new Date((dayNumber(anchorKey) + offsetDays) * 86_400_000).toISOString().slice(0, 10);
+    const start = zonedDateTimeToUtc(dateAt(index * days), 0, options.timeZone);
+    const end = zonedDateTimeToUtc(dateAt((index + 1) * days), 0, options.timeZone);
+    return { start, end, index };
+  }
   const elapsed = now - options.anchor;
   const index = Math.floor(elapsed / length) + (options.offsetPeriods ?? 0);
   const start = options.anchor + index * length;

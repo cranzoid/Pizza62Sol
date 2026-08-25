@@ -22,6 +22,13 @@
       "when": 1787298766408,
       "tag": "0002_integrity_channel_closures",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787598819492,
+      "tag": "0003_timeclock_integrity",
+      "breakpoints": true
     }
   ]
 }

@@ -187,6 +187,59 @@ resource "azurerm_federated_identity_credential" "github_environment" {
   subject             = "repo:${var.github_repository}:environment:production"
 }
 
+# ---------------------------------------------------------------------------
+# The same two trusts again, in GitHub's ID-qualified subject format.
+#
+# GitHub moved the OIDC subject claim from `repo:owner/name:...` to
+# `repo:owner@ownerId/name@repoId:...`, so the assertion a workflow now presents
+# matches neither credential above and Entra refuses it:
+#
+#   AADSTS700213: No matching federated identity record found for presented
+#   assertion subject 'repo:cranzoid@93286005/Pizza62Sol@1306206852:environment:production'
+#
+# The numeric ids are what make the new form worth having: they survive a
+# rename of the account or the repository, where the name-based subject silently
+# stops matching. Both forms are declared rather than the old ones replaced —
+# GitHub is rolling this out, a runner may still present either, and a federated
+# credential that matches nothing costs nothing.
+#
+# These grant no more than the credentials above: same identity, same Website
+# Contributor role on this resource group alone. All they change is which
+# spelling of "this repository" Entra will accept.
+# ---------------------------------------------------------------------------
+
+locals {
+  # "cranzoid/Pizza62Sol" -> "cranzoid@93286005/Pizza62Sol@1306206852". Read from
+  # variables rather than derived, because only GitHub knows the ids.
+  github_repository_ids = var.github_owner_id == "" || var.github_repository_id == "" ? "" : format(
+    "%s@%s/%s@%s",
+    split("/", var.github_repository)[0],
+    var.github_owner_id,
+    split("/", var.github_repository)[1],
+    var.github_repository_id,
+  )
+}
+
+resource "azurerm_federated_identity_credential" "github_main_by_id" {
+  count               = local.github_repository_ids == "" ? 0 : 1
+  name                = "github-main-by-id"
+  resource_group_name = azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.github_actions[0].id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = "https://token.actions.githubusercontent.com"
+  subject             = "repo:${local.github_repository_ids}:ref:refs/heads/main"
+}
+
+resource "azurerm_federated_identity_credential" "github_environment_by_id" {
+  count               = local.github_repository_ids == "" ? 0 : 1
+  name                = "github-production-by-id"
+  resource_group_name = azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.github_actions[0].id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = "https://token.actions.githubusercontent.com"
+  subject             = "repo:${local.github_repository_ids}:environment:production"
+}
+
 resource "azurerm_role_assignment" "github_website_contributor" {
   count                = var.github_repository == "" ? 0 : 1
   scope                = azurerm_resource_group.main.id
