@@ -22,6 +22,7 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, safeJson, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { ORDER_CHANNELS } from "@/db/schema";
+import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
 
 const CHANNELS = new Set<string>(ORDER_CHANNELS);
 const PAGE_SIZE = 100;
@@ -72,49 +73,18 @@ function buildFilters(url: URL): Filters {
   // day they worked, and a UTC boundary would put the evening's orders on the
   // wrong day — which is exactly when a restaurant is busiest.
   const from = url.searchParams.get("from");
-  if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+  if (from && ISO_DATE_RE.test(from)) {
     conditions.push("created_at >= ?");
     bindings.push(torontoDayStart(from));
   }
   const to = url.searchParams.get("to");
-  if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
+  if (to && ISO_DATE_RE.test(to)) {
     // Inclusive of the whole end day: "to the 21st" includes the 21st.
     conditions.push("created_at < ?");
     bindings.push(torontoDayStart(nextCalendarDate(to)));
   }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", bindings };
-}
-
-/** Midnight on a YYYY-MM-DD date, in America/Toronto, as epoch ms. */
-function torontoDayStart(date: string): number {
-  // Probing both standard and daylight offsets and keeping whichever round-trips
-  // to the requested date avoids hardcoding a DST rule that changes.
-  for (const offset of ["-05:00", "-04:00"]) {
-    const candidate = new Date(`${date}T00:00:00${offset}`).getTime();
-    const parts = new Intl.DateTimeFormat("en", {
-      timeZone: "America/Toronto",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(new Date(candidate));
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    const rendered = `${values.year}-${values.month}-${values.day}`;
-    if (rendered === date && values.hour === "00" && values.minute === "00" && values.second === "00") {
-      return candidate;
-    }
-  }
-  return new Date(`${date}T00:00:00-05:00`).getTime();
-}
-
-/** The next YYYY-MM-DD date without allowing the host time zone to interfere. */
-function nextCalendarDate(date: string): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
 }
 
 const ORDER_COLUMNS = `id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,

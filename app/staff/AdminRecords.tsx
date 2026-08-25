@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import type { Dashboard } from "@/app/staff/StaffPortal";
+import { OrderDetailDrawer } from "@/app/staff/OrderDetail";
 
 type OrderRow = Record<string, unknown>;
 type FeedbackRow = Record<string, unknown>;
@@ -38,6 +39,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
   const [breakdown, setBreakdown] = useState<Breakdown[]>([]);
   const [feedback, setFeedback] = useState<FeedbackRow[]>([]);
   const [message, setMessage] = useState("");
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
 
   /** One place the filters are turned into a query, so the table and the export
       can never disagree about what is being looked at. */
@@ -150,7 +152,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
       <div className="table-scroll" role="region" aria-label="Order history" tabIndex={0}><table className="viz-table">
         <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Where from</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
         <tbody>
-          {orders.map((order) => <tr key={String(order.id)}>
+          {orders.map((order) => <tr key={String(order.id)} className="order-history-row" onClick={() => setOpenOrderId(String(order.id))}>
             <th scope="row">{String(order.order_number)}<small>{String(order.customer_name)}{order.customer_phone ? ` · ${String(order.customer_phone)}` : ""}</small></th>
             <td>{when(order.created_at)}{order.schedule_type === "scheduled" ? ` (for ${when(order.scheduled_for)})` : ""}</td>
             <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
@@ -158,9 +160,11 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
             <td>{String(order.payment_method).replaceAll("_", " ")} · {String(order.payment_status).replaceAll("_", " ")}</td>
             <td>{formatMoney(Number(order.total_cents))}
               {/* A refund happens after the fact, so it belongs here rather than
-                  on the live board where orders are still being cooked. */}
+                  on the live board where orders are still being cooked. Its own
+                  click is isolated so opening it does not also open the order
+                  detail drawer underneath it. */}
               {["paid", "pending_at_store", "refunded", "partially_refunded"].includes(String(order.payment_status))
-                ? <RefundControl order={order} onRecorded={load} />
+                ? <span onClick={(event) => event.stopPropagation()}><RefundControl order={order} onRecorded={load} /></span>
                 : null}
             </td>
           </tr>)}
@@ -184,6 +188,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
     </section> : null}
 
     {tab === "promotions" ? <PromotionsPanel dashboard={dashboard} onSaved={onSaved} /> : null}
+    <OrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />
   </div>;
 }
 
