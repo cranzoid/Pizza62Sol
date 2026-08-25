@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { capturePassPrntResult } from "@/lib/passprnt-result";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
 import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
 import { EmployeeTimeClock } from "@/app/staff/TimeClock";
@@ -317,6 +318,14 @@ function AwaitingPaymentPanel({ dashboard }: { dashboard: Dashboard }) {
   </section>;
 }
 
+// Reading the URL and the user agent during an ordinary render is what broke
+// the feedback page: the server and the browser disagreed about the first
+// screen and React threw the markup away. Same crossing, same instrument.
+const NEVER_CHANGES = () => () => {};
+const NO_PRINT_RESULT = () => null;
+const readViaPassPrnt = () => shouldUsePassPrnt(window.navigator.userAgent);
+const NOT_PASSPRNT = () => false;
+
 function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { dashboard: Dashboard; action: (body: Record<string, unknown>) => Promise<void>; compact?: boolean; kitchen?: boolean }) {
   const orders = compact ? dashboard.orders.slice(0, 6) : dashboard.orders;
   const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
@@ -324,6 +333,16 @@ function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { 
   // stylesheet hides everything except the ticket, so a second one on the page
   // would come out on the same receipt.
   const [printJob, setPrintJob] = useState<{ order: Record<string, unknown>; at: number } | null>(null);
+  // What the printer app said when it handed control back, if anything, and
+  // whether this device prints through PassPRNT at all. Both are browser-only
+  // facts on a page the server also renders, so both cross that gap the way
+  // FeedbackApp does rather than by branching mid-render.
+  const printResult = useSyncExternalStore(NEVER_CHANGES, capturePassPrntResult, NO_PRINT_RESULT);
+  const viaPassPrnt = useSyncExternalStore(NEVER_CHANGES, readViaPassPrnt, NOT_PASSPRNT);
+  // Cleared by the next print attempt: a warning about the previous ticket
+  // sitting over a successful one is its own kind of wrong.
+  const [printAlertDismissed, setPrintAlertDismissed] = useState(false);
+  const printAlert = !printAlertDismissed && printResult && !printResult.ok ? printResult.message : null;
 
   useEffect(() => {
     if (!printJob) return;
@@ -344,9 +363,16 @@ function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { 
     callback.searchParams.delete("passprnt_message");
     return callback.toString();
   };
-  const printOrder = (order: Record<string, unknown>) => {
+  /**
+   * `viaBrowser` is the escape hatch. If PassPRNT cannot reach the printer, the
+   * tablet previously had no way to get a ticket out at all — this hands the
+   * same ticket to the browser's own print dialog, which needs no hardware and
+   * is how every device printed before the PassPRNT bridge existed.
+   */
+  const printOrder = (order: Record<string, unknown>, viaBrowser = false) => {
     const printedAt = Date.now();
-    if (shouldUsePassPrnt(window.navigator.userAgent)) {
+    setPrintAlertDismissed(true);
+    if (!viaBrowser && shouldUsePassPrnt(window.navigator.userAgent)) {
       // Keep this navigation inside the click handler. Android browsers commonly
       // block a custom URL scheme after an async wait or a React effect because
       // it no longer counts as a direct user gesture.
@@ -367,7 +393,7 @@ function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { 
     // the printer neither feeds nor cuts paper.
     window.location.assign(buildPassPrntDrawerUri({ callbackUrl: passPrntCallback() }));
   };
-  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; const payAtStore = String(order.payment_method) === "pay_at_store"; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => printOrder(order)}>Print ticket</button>{payAtStore ? <button onClick={openCashDrawer}>Cash · open drawer</button> : null}{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
+  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{printAlert ? <p className="form-error" role="alert">{printAlert} Use <b>Browser print</b> on the order to get the ticket out.</p> : null}{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; const payAtStore = String(order.payment_method) === "pay_at_store"; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => printOrder(order)}>Print ticket</button>{viaPassPrnt ? <button onClick={() => printOrder(order, true)}>Browser print</button> : null}{payAtStore ? <button onClick={openCashDrawer}>Cash · open drawer</button> : null}{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
     {/* Portalled to document.body so the print stylesheet can hide every sibling
         with one rule; nested inside the app root, hiding its ancestors would
         hide the ticket too. */}

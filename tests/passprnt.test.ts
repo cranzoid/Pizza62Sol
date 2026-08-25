@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPassPrntDrawerUri, buildPassPrntTicketHtml, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { buildPassPrntDrawerUri, buildPassPrntTicketHtml, buildPassPrntUri, readPassPrntResult, shouldUsePassPrnt } from "@/lib/passprnt";
 
 const order: Record<string, unknown> = {
   order_number: "P62-123",
@@ -97,4 +97,35 @@ test("opens the cash drawer without sending any receipt to the printer", () => {
 test("selects PassPRNT for the Samsung Android till and preserves desktop fallback", () => {
   assert.equal(shouldUsePassPrnt("Mozilla/5.0 (Linux; Android 15; SM-X710) AppleWebKit/537.36"), true);
   assert.equal(shouldUsePassPrnt("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"), false);
+});
+
+/**
+ * The failure that started this: both codes were deleted unread, so a printer
+ * that never printed was indistinguishable from one that did. These pin the
+ * outcome being readable at all.
+ */
+test("reads a successful PassPRNT return", () => {
+  const result = readPassPrntResult("https://pizza62.ca/kitchen?passprnt_code=0&passprnt_message=SUCCESS");
+  assert.equal(result?.ok, true);
+  assert.equal(result?.code, 0);
+});
+
+test("explains a printer that could not be reached, in words staff can act on", () => {
+  const result = readPassPrntResult("https://pizza62.ca/kitchen?passprnt_code=4&passprnt_message=DEVICE_CONNECTION_ERROR");
+  assert.equal(result?.ok, false);
+  assert.equal(result?.code, 4);
+  // Star's own text is a constant name. It must not be what reaches the kitchen.
+  assert.doesNotMatch(result?.message ?? "", /DEVICE_CONNECTION_ERROR/);
+  assert.match(result?.message ?? "", /printer could not be reached/i);
+});
+
+test("still reports an undocumented code rather than swallowing it", () => {
+  const result = readPassPrntResult("https://pizza62.ca/kitchen?passprnt_code=77&passprnt_message=SOMETHING_NEW");
+  assert.equal(result?.ok, false);
+  assert.match(result?.message ?? "", /SOMETHING_NEW/);
+});
+
+test("returns nothing for a page that was not returned to by PassPRNT", () => {
+  assert.equal(readPassPrntResult("https://pizza62.ca/kitchen"), null);
+  assert.equal(readPassPrntResult("not a url"), null);
 });

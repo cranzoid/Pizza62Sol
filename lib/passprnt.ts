@@ -176,6 +176,60 @@ export function buildPassPrntDrawerUri(input: PassPrntDrawerInput): string {
   return `starpassprnt://v1/print/nopreview?${query}`;
 }
 
+/**
+ * What PassPRNT told us on the way back.
+ *
+ * PassPRNT reports the outcome by appending `passprnt_code` and
+ * `passprnt_message` to the callback URL. Both were previously deleted unread,
+ * which meant a printer that never printed and a printer that printed
+ * perfectly were indistinguishable from the kitchen board — the one piece of
+ * evidence about a failure was discarded on arrival.
+ *
+ * Star's documented codes; the text is ours, because "DEVICE_CONNECTION_ERROR"
+ * on a screen at dinner service tells nobody what to go and do about it.
+ */
+const PASSPRNT_MESSAGES: Record<number, string> = {
+  2: "The printer app was not given a way back to this page.",
+  3: "That ticket was too long for the printer.",
+  4: "The printer could not be reached. Check it is powered on and on the shop's Wi-Fi.",
+  9: "No ticket data reached the printer.",
+};
+
+export type PassPrntResult = {
+  /** Star reports 0 for success; everything else is a failure. */
+  code: number;
+  ok: boolean;
+  /** Ours where the code is known, PassPRNT's own text otherwise. */
+  message: string;
+};
+
+/**
+ * Read a PassPRNT outcome off a returned-to URL, or null if there is none.
+ *
+ * Kept here rather than in the component so it can be tested without a DOM,
+ * which is the same reason the URI builders live in this module.
+ */
+export function readPassPrntResult(url: string): PassPrntResult | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const raw = parsed.searchParams.get("passprnt_code");
+  if (raw === null) return null;
+  const code = Number(raw);
+  if (!Number.isFinite(code)) return null;
+  const reported = parsed.searchParams.get("passprnt_message");
+  return {
+    code,
+    ok: code === 0,
+    message:
+      PASSPRNT_MESSAGES[code] ??
+      (reported ? `The printer reported: ${reported}` : `The printer reported code ${code}.`),
+  };
+}
+
 /** The restaurant print bridge is installed on its Samsung Android tablet. */
 export function shouldUsePassPrnt(userAgent: string): boolean {
   return /Android/i.test(userAgent);
