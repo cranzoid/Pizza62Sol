@@ -165,8 +165,16 @@ withDb("records a walk-in with only a name", async () => {
     customer: { name: "Blue cap" },
   });
   assert.equal(response.status, 201);
-  const result = (await response.json()) as { orderNumber: string; orderId: string };
+  const result = (await response.json()) as {
+    orderNumber: string;
+    orderId: string;
+    printOrder: { order_number: string; channel: string; acknowledged_at: number; items: unknown[] };
+  };
   assert.equal(await channelOf(result.orderNumber), "walk_in");
+  assert.equal(result.printOrder.order_number, result.orderNumber);
+  assert.equal(result.printOrder.channel, "walk_in");
+  assert.ok(result.printOrder.acknowledged_at);
+  assert.equal(result.printOrder.items.length, 1, "the placement response carries the committed print ticket");
 
   // And no confirmation is queued to nowhere — one permanently failed row per
   // counter order would bury the real delivery failures.
@@ -177,8 +185,14 @@ withDb("records a walk-in with only a name", async () => {
   const kinds = outbox.rows.map((row) => row.kind);
   assert.ok(!kinds.includes("customer_order_confirmation"), "nothing addressed to a customer with no address");
   assert.ok(!kinds.includes("feedback_request"));
-  // The restaurant alert is not addressed to the customer, so it still queues.
-  assert.ok(kinds.includes("restaurant_new_order"));
+  // The employee taking the walk-in has already seen it. Ringing the kitchen
+  // phone about that same action is a false alert; only outside orders queue it.
+  assert.ok(!kinds.includes("restaurant_new_order"));
+  const acknowledgement = await getPool().query<{ acknowledged_at: number | null }>(
+    "SELECT acknowledged_at FROM orders WHERE id = $1",
+    [result.orderId],
+  );
+  assert.ok(acknowledgement.rows[0].acknowledged_at, "walk-ins are acknowledged at entry");
 });
 
 withDb("still emails a phone customer who gives an address", async () => {
@@ -196,7 +210,9 @@ withDb("still emails a phone customer who gives an address", async () => {
     "SELECT kind FROM notification_outbox WHERE payload_json::jsonb->>'orderId' = $1",
     [result.orderId],
   );
-  assert.ok(outbox.rows.map((row) => row.kind).includes("customer_order_confirmation"));
+  const kinds = outbox.rows.map((row) => row.kind);
+  assert.ok(kinds.includes("customer_order_confirmation"));
+  assert.ok(kinds.includes("restaurant_new_order"), "phone orders retain the restaurant alert");
 });
 
 withDb("prices a counter order exactly like a website order", async () => {

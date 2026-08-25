@@ -51,7 +51,15 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
 - The counter till (**Admin → Take an order**) mounts the same customizer the
   website does, so every menu item — build-your-own pizzas, deals, wings, the
   pops inside a combo — can be rung in by phone or at the counter, priced by the
-  same code and ticketed in the same shape.
+  same code and ticketed in the same shape. A completed till order immediately
+  launches PassPRNT on Android. Walk-ins are already acknowledged by the staff
+  member taking them, so they do not trigger the restaurant's new-order phone
+  call; website and phone orders retain that alert.
+- On the restaurant's Android tablet, kitchen tickets are handed to Star
+  PassPRNT and the LAN-connected TSP143IIILAN at 576-dot receipt width. Normal,
+  card and online prints explicitly keep the drawer shut; **Cash · open drawer**
+  drives the Tera drawer through the printer's DK port without printing another
+  receipt. Desktop browsers keep the ordinary print-dialogue fallback.
 - Feedback asks about the crust, the sauce and the toppings when the order
   contained pizza, and about the wings when it contained wings. A five-star
   rating is thanked and walked to the Google review page; every other rating is
