@@ -195,6 +195,11 @@ drawer through the printer's DK port.
    normal/card ticket. For cash, tap **Cash · print & open drawer**. Android
    switches to PassPRNT, prints, cuts, optionally opens the drawer, and returns
    to the kitchen board.
+6. In **Admin → Take an order**, the final **Take payment & print** tap launches
+   PassPRNT automatically after the order is accepted. A walk-in entered here is
+   treated as already acknowledged and does not ring the kitchen phone. Website
+   orders still ring normally. If Android ever blocks the app handoff, use
+   **Print last ticket again** without entering the order twice.
 
 On Android the ticket is handed to PassPRNT as self-contained HTML. Desktop
 browsers retain the ordinary print-dialogue fallback for emergency use.

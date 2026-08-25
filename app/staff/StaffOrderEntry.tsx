@@ -36,6 +36,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
+import { buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import {
   GenericCustomizer,
   PizzaCustomizer,
@@ -100,6 +101,13 @@ type Quote = {
   issues: Array<{ index: number | null; message: string }>;
 };
 
+type PlacedOrder = {
+  duplicate?: boolean;
+  orderNumber?: string;
+  printOrder?: Record<string, unknown> | null;
+  error?: string;
+};
+
 export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard; onPlaced: () => Promise<void> }) {
   const [channel, setChannel] = useState<"walk_in" | "phone">("walk_in");
   const [fulfilment, setFulfilment] = useState<"pickup" | "delivery">("pickup");
@@ -116,6 +124,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [quote, setQuote] = useState<Quote | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
+  const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
 
   /**
@@ -253,7 +262,25 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // mistake slower than making it is a till people work around.
   const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
 
-  const place = async () => {
+  const printPlacedOrder = (order: Record<string, unknown>, printedAt: number): boolean => {
+    if (!shouldUsePassPrnt(window.navigator.userAgent)) return false;
+    const callback = new URL(window.location.href);
+    callback.searchParams.delete("passprnt_code");
+    callback.searchParams.delete("passprnt_message");
+    // Counter entry does not distinguish cash from card, so automatic printing
+    // must never kick the drawer. The explicit cash button on Live orders remains
+    // the only website action that requests a drawer pulse.
+    window.location.assign(buildPassPrntUri({
+      order,
+      toppingNames,
+      printedAt,
+      callbackUrl: callback.toString(),
+      openDrawer: false,
+    }));
+    return true;
+  };
+
+  const place = async (printRequestedAt: number) => {
     setSubmitting(true);
     setMessage(null);
     const response = await fetch("/api/admin/orders", {
@@ -261,13 +288,21 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body({ idempotencyKey: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}` })),
     });
-    const result = (await response.json()) as { orderNumber?: string; error?: string };
+    const result = (await response.json()) as PlacedOrder;
     setSubmitting(false);
     if (!response.ok) {
       setMessage({ tone: "bad", text: result.error ?? "That order could not be created." });
       return;
     }
-    setMessage({ tone: "ok", text: `${result.orderNumber} is in. It is on the kitchen board now.` });
+    const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
+    const willPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
+    setLastPrintOrder(printable);
+    setMessage({
+      tone: "ok",
+      text: willPrint
+        ? `${result.orderNumber} is in. Sending its ticket to the printer…`
+        : `${result.orderNumber} is in. It is on the kitchen board now.`,
+    });
     setLines([]);
     setName("");
     setPhone("");
@@ -277,6 +312,10 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     setPostalCode("");
     setDeliveryInstructions("");
     setQuote(null);
+    // Launch before refreshing. Android permits the external-app handoff only
+    // while this still belongs to the staff member's placement tap; an extra
+    // dashboard round trip can lose it.
+    if (printable) printPlacedOrder(printable, printRequestedAt);
     await onPlaced();
   };
 
@@ -400,11 +439,12 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             <p className="cart-blocker" role="status" key={`${index}-${issue.message}`}>{issue.message}</p>
           ))}
 
-          <button className="primary-button" disabled={!lines.length || submitting || (quote !== null && !quote.ok)} onClick={() => void place()}>
-            {submitting ? "Sending to the kitchen…" : `${fulfilment === "delivery" ? "Send for delivery" : "Take payment"} · ${formatMoney(totals.totalCents)}`}
+          <button className="primary-button" disabled={!lines.length || submitting || (quote !== null && !quote.ok)} onClick={() => void place(Date.now())}>
+            {submitting ? "Sending to the kitchen…" : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.totalCents)}`}
           </button>
           <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
+          {lastPrintOrder ? <button className="staff-button" onClick={() => printPlacedOrder(lastPrintOrder, Date.now())}>Print last ticket again</button> : null}
         </aside>
       </div>
 

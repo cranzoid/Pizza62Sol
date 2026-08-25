@@ -1270,8 +1270,9 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
            (id, order_number, tracking_token_hash, feedback_token_hash, customer_name, customer_phone,
             customer_email, fulfilment, channel, status, payment_status, payment_method, schedule_type,
             scheduled_for, estimated_for, address_json, instructions, pricing_json, subtotal_cents,
-            discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, acknowledged_at,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -1298,6 +1299,10 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           price.deliveryFeeCents,
           price.tipCents,
           price.totalCents,
+          // The employee who entered a walk-in is already standing in front of
+          // that order. Treating it as unseen creates a false acknowledgement
+          // alarm for an order the restaurant itself just accepted.
+          channel === "walk_in" ? now : null,
           now,
           now,
         ),
@@ -1333,22 +1338,6 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
             : "Order accepted after server validation",
           now,
         ),
-      // The alert that tells the restaurant an order exists at all. This is the
-      // audit's central finding: the queue had no row for it and no consumer.
-      getD1()
-        .prepare(
-          `INSERT INTO notification_outbox
-           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-           VALUES (?, 'restaurant_new_order', NULL, ?, ?, 0, ?, ?, ?)`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          JSON.stringify({ orderId, orderNumber }),
-          outboxStatus,
-          now,
-          now,
-          now,
-        ),
       // H-09: the post-order feedback request. Queued here rather than when the
       // order completes, for the same reason the tracking token is — the
       // feedback token cannot be recovered later, `orders` keeps only its hash,
@@ -1364,6 +1353,29 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         )
         .bind(orderId, keyHash),
     ];
+    // A customer order needs to get the restaurant's attention. A walk-in order
+    // was entered by the restaurant itself and is printed from that same tap, so
+    // ringing the kitchen phone to tell staff about their own action is both
+    // redundant and disruptive. Phone orders retain the alert: only the trusted
+    // walk_in channel is exempt, and the public route cannot set that channel.
+    if (channel !== "walk_in") {
+      operationsBatch.push(
+        getD1()
+          .prepare(
+            `INSERT INTO notification_outbox
+             (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+             VALUES (?, 'restaurant_new_order', NULL, ?, ?, 0, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            JSON.stringify({ orderId, orderNumber }),
+            outboxStatus,
+            now,
+            now,
+            now,
+          ),
+      );
+    }
     // A usage limit is only meaningful if redemptions are counted. Incremented
     // in the same batch that creates the order, so a promotion cannot be
     // recorded as used by an order that then fails to commit.
