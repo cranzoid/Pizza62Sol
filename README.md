@@ -57,9 +57,9 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   call; website and phone orders retain that alert.
 - On the restaurant's Android tablet, kitchen tickets are handed to Star
   PassPRNT and the LAN-connected TSP143IIILAN at 576-dot receipt width. Normal,
-  card and online prints explicitly keep the drawer shut; **Cash · print & open
-  drawer** is the only action that drives the Tera drawer through the printer's
-  DK port. Desktop browsers keep the ordinary print-dialogue fallback.
+  card and online prints explicitly keep the drawer shut; **Cash · open drawer**
+  drives the Tera drawer through the printer's DK port without printing another
+  receipt. Desktop browsers keep the ordinary print-dialogue fallback.
 - Feedback asks about the crust, the sauce and the toppings when the order
   contained pizza, and about the wings when it contained wings. A five-star
   rating is thanked and walked to the Google review page; every other rating is

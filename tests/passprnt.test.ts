@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPassPrntTicketHtml, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { buildPassPrntDrawerUri, buildPassPrntTicketHtml, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 
 const order: Record<string, unknown> = {
   order_number: "P62-123",
@@ -65,7 +65,6 @@ test("keeps the drawer closed for ordinary and card printing", () => {
     toppingNames,
     printedAt: Date.UTC(2026, 7, 26, 17, 31),
     callbackUrl: "https://pizza62.ca/kitchen?screen=orders",
-    openDrawer: false,
   });
   const parsed = new URL(uri);
 
@@ -81,16 +80,18 @@ test("keeps the drawer closed for ordinary and card printing", () => {
   assert.match(parsed.searchParams.get("html") ?? "", /#123/);
 });
 
-test("opens the printer-driven drawer only for the explicit cash action", () => {
-  const uri = buildPassPrntUri({
-    order,
-    toppingNames,
-    printedAt: Date.UTC(2026, 7, 26, 17, 31),
+test("opens the cash drawer without sending any receipt to the printer", () => {
+  const uri = buildPassPrntDrawerUri({
     callbackUrl: "https://pizza62.ca/kitchen",
-    openDrawer: true,
   });
+  const parsed = new URL(uri);
 
-  assert.equal(new URL(uri).searchParams.get("drawer"), "after");
+  assert.equal(parsed.searchParams.get("drawer"), "ahead");
+  assert.equal(parsed.searchParams.get("drawerpulse"), "200");
+  assert.equal(parsed.searchParams.get("html"), null);
+  assert.equal(parsed.searchParams.get("pdf"), null);
+  assert.equal(parsed.searchParams.get("url"), null);
+  assert.equal(parsed.searchParams.get("cut"), "nocut");
 });
 
 test("selects PassPRNT for the Samsung Android till and preserves desktop fallback", () => {

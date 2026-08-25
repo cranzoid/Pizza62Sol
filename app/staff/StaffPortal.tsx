@@ -6,7 +6,7 @@ import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
-import { buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
 import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
 import { EmployeeTimeClock } from "@/app/staff/TimeClock";
@@ -332,28 +332,36 @@ function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { 
       window.removeEventListener("afterprint", finished);
     };
   }, [printJob]);
-  const printOrder = (order: Record<string, unknown>, openDrawer: boolean) => {
+  const passPrntCallback = () => {
+    const callback = new URL(window.location.href);
+    callback.searchParams.delete("passprnt_code");
+    callback.searchParams.delete("passprnt_message");
+    return callback.toString();
+  };
+  const printOrder = (order: Record<string, unknown>) => {
     const printedAt = Date.now();
     if (shouldUsePassPrnt(window.navigator.userAgent)) {
       // Keep this navigation inside the click handler. Android browsers commonly
       // block a custom URL scheme after an async wait or a React effect because
       // it no longer counts as a direct user gesture.
-      const callback = new URL(window.location.href);
-      callback.searchParams.delete("passprnt_code");
-      callback.searchParams.delete("passprnt_message");
       window.location.assign(buildPassPrntUri({
         order,
         toppingNames,
         printedAt,
-        callbackUrl: callback.toString(),
-        openDrawer,
+        callbackUrl: passPrntCallback(),
       }));
       return;
     }
     // The desktop fallback stays useful for setup and emergency printing.
     setPrintJob({ order, at: printedAt });
   };
-  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; const payAtStore = String(order.payment_method) === "pay_at_store"; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => printOrder(order, false)}>Print ticket</button>{payAtStore ? <button onClick={() => printOrder(order, true)}>Cash · print &amp; open drawer</button> : null}{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
+  const openCashDrawer = () => {
+    if (!shouldUsePassPrnt(window.navigator.userAgent)) return;
+    // Direct click → PassPRNT → printer drawer. No receipt data is included, so
+    // the printer neither feeds nor cuts paper.
+    window.location.assign(buildPassPrntDrawerUri({ callbackUrl: passPrntCallback() }));
+  };
+  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; const payAtStore = String(order.payment_method) === "pay_at_store"; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => printOrder(order)}>Print ticket</button>{payAtStore ? <button onClick={openCashDrawer}>Cash · open drawer</button> : null}{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
     {/* Portalled to document.body so the print stylesheet can hide every sibling
         with one rule; nested inside the app root, hiding its ancestors would
         hide the ticket too. */}

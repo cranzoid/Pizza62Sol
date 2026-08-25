@@ -20,7 +20,10 @@ export type PassPrntTicketInput = {
   toppingNames: Map<string, string>;
   printedAt: number;
   callbackUrl: string;
-  openDrawer: boolean;
+};
+
+export type PassPrntDrawerInput = {
+  callbackUrl: string;
 };
 
 const asRecord = (value: unknown): UnknownRecord | null =>
@@ -137,8 +140,8 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
 
 /**
  * Build the URL Star documents for a no-preview, one-tap Android print.
- * `drawer=off` is explicit: a global PassPRNT drawer setting must never make a
- * card or already-paid order open the till. Only the cash action opts into it.
+ * `drawer=off` is explicit: printing a kitchen ticket and opening the cash
+ * drawer are separate staff actions. A receipt must never kick the drawer.
  */
 export function buildPassPrntUri(input: PassPrntTicketInput): string {
   const html = buildPassPrntTicketHtml(input.order, input.toppingNames, input.printedAt);
@@ -146,9 +149,28 @@ export function buildPassPrntUri(input: PassPrntTicketInput): string {
     `back=${encodeQueryValue(input.callbackUrl)}`,
     `html=${encodeQueryValue(html)}`,
     "size=576",
-    `drawer=${input.openDrawer ? "after" : "off"}`,
+    "drawer=off",
     "drawerpulse=200",
     "cut=partial",
+    "popup=enable",
+  ].join("&");
+  return `starpassprnt://v1/print/nopreview?${query}`;
+}
+
+/**
+ * Open the printer-connected cash drawer without feeding or cutting paper.
+ *
+ * Star explicitly permits drawer=ahead/after without html, pdf or url data for
+ * this scenario. `ahead` opens immediately; there is no print job to wait for.
+ */
+export function buildPassPrntDrawerUri(input: PassPrntDrawerInput): string {
+  const query = [
+    `back=${encodeQueryValue(input.callbackUrl)}`,
+    "drawer=ahead",
+    "drawerpulse=200",
+    // `cut` defaults to partial. There is no print job to cut here, but saying
+    // so explicitly is what keeps a cash payment from ever spitting paper.
+    "cut=nocut",
     "popup=enable",
   ].join("&");
   return `starpassprnt://v1/print/nopreview?${query}`;

@@ -36,7 +36,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
-import { buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import {
   GenericCustomizer,
   PizzaCustomizer,
@@ -262,22 +262,32 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // mistake slower than making it is a till people work around.
   const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
 
-  const printPlacedOrder = (order: Record<string, unknown>, printedAt: number): boolean => {
-    if (!shouldUsePassPrnt(window.navigator.userAgent)) return false;
+  const passPrntCallback = () => {
     const callback = new URL(window.location.href);
     callback.searchParams.delete("passprnt_code");
     callback.searchParams.delete("passprnt_message");
+    return callback.toString();
+  };
+
+  const printPlacedOrder = (order: Record<string, unknown>, printedAt: number): boolean => {
+    if (!shouldUsePassPrnt(window.navigator.userAgent)) return false;
     // Counter entry does not distinguish cash from card, so automatic printing
-    // must never kick the drawer. The explicit cash button on Live orders remains
-    // the only website action that requests a drawer pulse.
+    // must never kick the drawer. Opening it is always a separate staff tap.
     window.location.assign(buildPassPrntUri({
       order,
       toppingNames,
       printedAt,
-      callbackUrl: callback.toString(),
-      openDrawer: false,
+      callbackUrl: passPrntCallback(),
     }));
     return true;
+  };
+
+  // The till is where the cash actually changes hands, so the drawer belongs on
+  // this screen too rather than only on the Live orders board. Kept inside the
+  // click handler: Android allows the PassPRNT handoff only on a direct gesture.
+  const openCashDrawer = () => {
+    if (!shouldUsePassPrnt(window.navigator.userAgent)) return;
+    window.location.assign(buildPassPrntDrawerUri({ callbackUrl: passPrntCallback() }));
   };
 
   const place = async (printRequestedAt: number) => {
@@ -445,6 +455,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
           {lastPrintOrder ? <button className="staff-button" onClick={() => printPlacedOrder(lastPrintOrder, Date.now())}>Print last ticket again</button> : null}
+          <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
         </aside>
       </div>
 
