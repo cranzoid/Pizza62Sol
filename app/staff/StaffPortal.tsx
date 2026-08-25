@@ -6,6 +6,7 @@ import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
+import { buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
 import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
 import { EmployeeTimeClock } from "@/app/staff/TimeClock";
@@ -144,12 +145,10 @@ function SetupItem({ title, text }: { title: string; text: string }) { return <d
 /**
  * The kitchen ticket as it goes to paper.
  *
- * This is the day-one printing path, and it deliberately needs no hardware: the
- * restaurant's Star TSP143IIILAN appears to the operating system as an ordinary
- * printer, so `window.print()` against a receipt-shaped stylesheet gets a real
- * ticket out of it today. The `print_jobs` queue and the raster/PassPRNT paths
- * (R2.2) replace *how* the bytes arrive, not what the ticket says — so this is
- * the thing that must never be blocked on the printer's IP address.
+ * Desktop browsers use `window.print()` against the receipt stylesheet. The
+ * restaurant's actual till is an Android tablet, so its button serializes the
+ * same information into Star PassPRNT instead; PassPRNT is the on-LAN bridge to
+ * the TSP143IIILAN and its attached cash drawer.
  *
  * It is a separate component from the on-screen `KitchenTicket` rather than the
  * same one restyled, because the two are answering different questions. On
@@ -333,7 +332,28 @@ function OrdersPanel({ dashboard, action, compact = false, kitchen = false }: { 
       window.removeEventListener("afterprint", finished);
     };
   }, [printJob]);
-  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => setPrintJob({ order, at: Date.now() })}>Print ticket</button>{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
+  const printOrder = (order: Record<string, unknown>, openDrawer: boolean) => {
+    const printedAt = Date.now();
+    if (shouldUsePassPrnt(window.navigator.userAgent)) {
+      // Keep this navigation inside the click handler. Android browsers commonly
+      // block a custom URL scheme after an async wait or a React effect because
+      // it no longer counts as a direct user gesture.
+      const callback = new URL(window.location.href);
+      callback.searchParams.delete("passprnt_code");
+      callback.searchParams.delete("passprnt_message");
+      window.location.assign(buildPassPrntUri({
+        order,
+        toppingNames,
+        printedAt,
+        callbackUrl: callback.toString(),
+        openDrawer,
+      }));
+      return;
+    }
+    // The desktop fallback stays useful for setup and emergency printing.
+    setPrintJob({ order, at: printedAt });
+  };
+  return <section className="staff-panel"><div className="staff-panel-head"><h2>{kitchen ? "Active kitchen queue" : "Live orders"}</h2><span className="live-chip"><i /> {orders.length} active</span></div>{orders.length ? orders.map((order) => { const next = order.status === "received" ? "preparing" : order.status === "preparing" ? (order.fulfilment === "pickup" ? "ready_for_pickup" : "out_for_delivery") : order.status === "ready_for_pickup" || order.status === "out_for_delivery" ? "completed" : null; const payAtStore = String(order.payment_method) === "pay_at_store"; return <article className={`ops-order ${!order.acknowledged_at ? "unacknowledged" : ""}`} key={String(order.id)}><div className="order-ref">{String(order.order_number).replace("P62-", "#")}</div><div><h3>{String(order.customer_name)} · {String(order.fulfilment)}</h3><p>{order.schedule_type === "scheduled" ? `Scheduled ${new Date(Number(order.scheduled_for)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}` : `Received ${new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}`} · {formatMoney(Number(order.total_cents))}</p><KitchenTicket order={order} toppingNames={toppingNames} /><span className="status-pill">{String(order.status).replaceAll("_", " ")}</span></div><div className="order-actions"><button onClick={() => printOrder(order, false)}>Print ticket</button>{payAtStore ? <button onClick={() => printOrder(order, true)}>Cash · print &amp; open drawer</button> : null}{!order.acknowledged_at ? <button onClick={() => action({ action: "order.acknowledge", orderId: order.id })}>Acknowledge</button> : null}{next ? <button onClick={() => action({ action: "order.status", orderId: order.id, status: next })}>{next === "completed" ? "Complete" : `Move to ${String(next).replaceAll("_", " ")}`}</button> : null}</div></article>; }) : <div className="staff-empty">No active orders. The next confirmed order will appear here.</div>}
     {/* Portalled to document.body so the print stylesheet can hide every sibling
         with one rule; nested inside the app root, hiding its ancestors would
         hide the ticket too. */}

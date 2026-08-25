@@ -187,12 +187,17 @@ drawer through the printer's DK port.
    It prints a self-test page with its IP address on it.
 2. **Give it a DHCP reservation** in the router, so the address does not move.
 3. **Install Star PassPRNT** (free, Play Store) on the Samsung tablet.
-4. In PassPRNT, add the printer by that IP and switch the **cash drawer** setting
-   on.
-5. Open the kitchen board in Chrome on the tablet and print a test ticket.
+4. In PassPRNT, add the printer over **LAN**, set the width to **576 dots**, and
+   set the cutter to **Partial**. Leave its default cash-drawer setting **off** —
+   the website explicitly opens it only for a cash print, so a card or
+   already-paid website order can never kick the drawer by accident.
+5. Open the kitchen board in Chrome on the tablet and tap **Print ticket** for a
+   normal/card ticket. For cash, tap **Cash · print & open drawer**. Android
+   switches to PassPRNT, prints, cuts, optionally opens the drawer, and returns
+   to the kitchen board.
 
-Kitchen tickets print today with no hardware at all through the browser's own
-print dialogue, so the restaurant is not blocked on any of this.
+On Android the ticket is handed to PassPRNT as self-contained HTML. Desktop
+browsers retain the ordinary print-dialogue fallback for emergency use.
 
 ---
 

@@ -52,6 +52,11 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   website does, so every menu item — build-your-own pizzas, deals, wings, the
   pops inside a combo — can be rung in by phone or at the counter, priced by the
   same code and ticketed in the same shape.
+- On the restaurant's Android tablet, kitchen tickets are handed to Star
+  PassPRNT and the LAN-connected TSP143IIILAN at 576-dot receipt width. Normal,
+  card and online prints explicitly keep the drawer shut; **Cash · print & open
+  drawer** is the only action that drives the Tera drawer through the printer's
+  DK port. Desktop browsers keep the ordinary print-dialogue fallback.
 - Feedback asks about the crust, the sauce and the toppings when the order
   contained pizza, and about the wings when it contained wings. A five-star
   rating is thanked and walked to the Google review page; every other rating is
