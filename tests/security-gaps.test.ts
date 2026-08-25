@@ -95,6 +95,49 @@ test("identifies a real image from its bytes, not its name", () => {
   assert.equal(jpeg.width, 800);
 });
 
+/**
+ * The three WebP sub-formats, each of which stores its dimensions somewhere
+ * different.
+ *
+ * `VP8 ` is the one that matters most now: it is what a browser canvas produces
+ * from `toBlob(…, "image/webp")`, which is how the menu editor encodes every
+ * photograph before uploading it. If this branch misread a header, the editor's
+ * own output would be refused by the route it uploads to.
+ */
+function webpBytes(format: "VP8 " | "VP8L" | "VP8X", width: number, height: number): ArrayBuffer {
+  const bytes = new Uint8Array(64);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode("RIFF"), 0);
+  bytes.set(new TextEncoder().encode("WEBP"), 8);
+  bytes.set(new TextEncoder().encode(format), 12);
+  if (format === "VP8 ") {
+    view.setUint16(26, width, true);
+    view.setUint16(28, height, true);
+  } else if (format === "VP8L") {
+    // 14 bits each, stored as "value minus one", packed little-endian.
+    view.setUint32(21, (width - 1) | ((height - 1) << 14), true);
+  } else {
+    const store = (value: number, offset: number) => {
+      bytes[offset] = (value - 1) & 0xff;
+      bytes[offset + 1] = ((value - 1) >> 8) & 0xff;
+      bytes[offset + 2] = ((value - 1) >> 16) & 0xff;
+    };
+    store(width, 24);
+    store(height, 27);
+  }
+  return bytes.buffer;
+}
+
+test("reads the dimensions of every WebP the editor and the importer produce", () => {
+  for (const format of ["VP8 ", "VP8L", "VP8X"] as const) {
+    const image = inspectImage(webpBytes(format, 1600, 901));
+    assert.equal(image.kind, "webp", `${format} should be recognised as WebP`);
+    assert.equal(image.contentType, "image/webp");
+    assert.equal(image.width, 1600, `${format} width`);
+    assert.equal(image.height, 901, `${format} height`);
+  }
+});
+
 test("rejects a file that is not an image whatever it claims to be", () => {
   // The attack in its simplest form: HTML uploaded as evil.png, then served from
   // this origin and opened by an authenticated owner.
