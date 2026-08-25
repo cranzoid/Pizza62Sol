@@ -12,10 +12,8 @@
  */
 import { env } from "@/lib/runtime-env";
 import { requireStaff, authErrorResponse } from "@/lib/auth";
-import { ImageRejected, inspectImage } from "@/lib/image-validation";
+import { ImageRejected, MAX_UPLOAD_BYTES, inspectImage } from "@/lib/image-validation";
 import { logFailure } from "@/lib/log";
-
-const MAX_BYTES = 5 * 1024 * 1024;
 
 export async function POST(request: Request) {
   try {
@@ -25,7 +23,7 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) {
       return Response.json({ error: "Choose an image to upload." }, { status: 400 });
     }
-    if (file.size <= 0 || file.size > MAX_BYTES) {
+    if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
       return Response.json({ error: "Use an image under 5 MB." }, { status: 400 });
     }
 
