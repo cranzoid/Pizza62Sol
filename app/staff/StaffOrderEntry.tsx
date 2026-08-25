@@ -34,9 +34,10 @@
  * refuse is refused here too, and the counter is told why.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { formatMoney } from "@/lib/domain";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
+import { capturePassPrntResult } from "@/lib/passprnt-result";
 import {
   GenericCustomizer,
   PizzaCustomizer,
@@ -107,6 +108,9 @@ type PlacedOrder = {
   printOrder?: Record<string, unknown> | null;
   error?: string;
 };
+
+const NEVER_CHANGES = () => () => {};
+const NO_PRINT_RESULT = () => null;
 
 export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard; onPlaced: () => Promise<void> }) {
   const [channel, setChannel] = useState<"walk_in" | "phone">("walk_in");
@@ -261,6 +265,14 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // item off a six-quantity line meant six taps, and a till that makes undoing a
   // mistake slower than making it is a till people work around.
   const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
+
+  // What the printer app reported on its way back. Previously deleted unread,
+  // so a ticket that never printed looked exactly like one that did. This
+  // screen has no print-dialog fallback of its own, so it points at the board,
+  // which does — and says the order is safe first, because the thing staff
+  // reach for when a ticket fails to appear is entering it a second time.
+  const printResult = useSyncExternalStore(NEVER_CHANGES, capturePassPrntResult, NO_PRINT_RESULT);
+  const printFailure = printResult && !printResult.ok ? printResult.message : null;
 
   const passPrntCallback = () => {
     const callback = new URL(window.location.href);
@@ -453,6 +465,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             {submitting ? "Sending to the kitchen…" : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.totalCents)}`}
           </button>
           <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
+          {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
           {lastPrintOrder ? <button className="staff-button" onClick={() => printPlacedOrder(lastPrintOrder, Date.now())}>Print last ticket again</button> : null}
           <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
