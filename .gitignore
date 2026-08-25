@@ -55,3 +55,9 @@ terraform.tfstate.*
 *.tfplan
 backend.hcl
 backend_override.tf
+
+# The owner's source photographs, dropped here to be imported by
+# scripts/import-product-images.ts. They are originals — tens of megabytes of
+# them — and what the site serves is the optimized copy in blob storage, so the
+# repository has no reason to carry either.
+/PICTURES/

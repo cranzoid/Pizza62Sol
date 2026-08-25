@@ -37,7 +37,66 @@ async function configRequest(body: Record<string, unknown>) {
 
 type UploadedImage = { url: string; width?: number; height?: number };
 
-const OVERSIZE_MESSAGE = `That file is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB. Export a smaller JPG or WebP and try again.`;
+const OVERSIZE_MESSAGE = `That picture is still over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB after resizing. Export a smaller JPG and try again.`;
+
+/**
+ * The long edge we keep. Menu cards render at 1200 × 675 and the hero goes
+ * full-bleed, so 1600 stays sharp on a dense screen without paying for pixels
+ * nobody sees.
+ */
+const MAX_STORED_EDGE = 1600;
+
+/**
+ * Below this, re-encoding gives back less than it costs — and a logo with sharp
+ * edges comes out of a lossy encoder looking worse than it went in.
+ */
+const ALREADY_SMALL_BYTES = 400 * 1024;
+
+/**
+ * Shrinks a chosen picture before it is uploaded.
+ *
+ * The upload route stores the bytes it is given and serves them back unchanged,
+ * so whatever comes off a phone is what every customer downloads. That is not
+ * hypothetical: the first product photo on the live menu was a 2.4 MB, 1672-wide
+ * PNG that took about nine seconds to arrive, and there is no CDN in front of it
+ * to soften the second visit. The same picture at 1200 × 675 in WebP is about
+ * 116 KB — the same thing to look at, a twentieth of the wait.
+ *
+ * Doing it here rather than on the server is deliberate. The canvas is already
+ * in the browser, so it costs no dependency, and `lib/image-validation.ts`
+ * explains why a native image library in the container was worth avoiding. It
+ * also makes the upload itself small, which is the other half of the wait.
+ *
+ * Every failure path returns the original file. A picture that uploads slowly is
+ * a worse menu; a picture that will not upload at all is a broken one.
+ */
+async function prepareImage(file: File): Promise<File> {
+  // A canvas round-trip flattens an animated GIF to its first frame, and a file
+  // this small has nothing to gain. Both are sent exactly as chosen.
+  if (file.type === "image/gif" || file.size <= ALREADY_SMALL_BYTES) return file;
+  try {
+    // `from-image` because a canvas ignores EXIF orientation otherwise, and a
+    // photo shot in portrait on a phone would be stored on its side.
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const scale = Math.min(1, MAX_STORED_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.round(bitmap.width * scale);
+    const height = Math.round(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const encoded = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+    // A browser that cannot export WebP hands back a PNG under that name, which
+    // is larger than what the owner chose. So the result has to earn its place.
+    if (!encoded || encoded.type !== "image/webp" || encoded.size >= file.size) return file;
+    return new File([encoded], `${file.name.replace(/\.[^.]+$/, "")}.webp`, { type: "image/webp" });
+  } catch {
+    return file;
+  }
+}
 
 /**
  * Sends one image to `/api/uploads` and reads the answer without assuming it is
@@ -51,14 +110,18 @@ const OVERSIZE_MESSAGE = `That file is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB
  * JSON input", which is what the owner saw instead of anything about the picture
  * they had chosen.
  *
- * The size is checked here too, before the connection is opened: a file rejected
- * server-side has still been carried across the wire first, and on a phone that
- * is a long upload that ends in an error.
+ * The size is checked here too, before the connection is opened, and after
+ * `prepareImage` has had its go: a file rejected server-side has still been
+ * carried across the wire first, and on a phone that is a long upload that ends
+ * in an error.
  */
 async function uploadImage(file: File): Promise<UploadedImage> {
-  if (file.size > MAX_UPLOAD_BYTES) throw new Error(OVERSIZE_MESSAGE);
+  // Shrunk first, then measured: the point of resizing is that a photo straight
+  // off a phone, which no cap here would have accepted, becomes one that fits.
+  const prepared = await prepareImage(file);
+  if (prepared.size > MAX_UPLOAD_BYTES) throw new Error(OVERSIZE_MESSAGE);
   const data = new FormData();
-  data.set("file", file);
+  data.set("file", prepared);
   const response = await fetch("/api/uploads", { method: "POST", body: data });
   let result: Partial<UploadedImage> & { error?: string } = {};
   try {
@@ -599,7 +662,7 @@ function ProductImageField({ imageUrl, onChange }: { imageUrl: string; onChange:
     <div className={`product-image-crop${imageUrl ? " has-image" : ""}`} style={imageUrl ? { backgroundImage: `url(${imageUrl})` } : undefined}>
       {!imageUrl ? <span><b>No photo yet</b><small>The menu uses a branded illustration until you add one.</small></span> : <em>Customer card crop</em>}
     </div>
-    <div className="product-image-copy"><strong>Best result: 1200 × 675 px</strong><p>Use a landscape JPG or WebP under 5 MB. The original file is stored safely and displayed with a centred 16:9 crop—keep the food away from the edges.</p>
+    <div className="product-image-copy"><strong>Best result: 1200 × 675 px</strong><p>Use a landscape photo straight off your phone or camera. It is resized and saved as WebP so the menu loads quickly, then shown with a centred 16:9 crop—keep the food away from the edges.</p>
       {dimensions ? <p className="image-file-status">Uploaded {dimensions.width} × {dimensions.height} px. Save the item to publish this photo.</p> : imageUrl ? <p className="image-file-status">Photo ready. Save the item to publish any change.</p> : null}
       {ratioWarning ? <p className="image-warning">{ratioWarning}</p> : null}
       {error ? <p className="image-error" role="alert">{error}</p> : null}
