@@ -22,8 +22,9 @@
  * reviews is the thing that is wrong; thanking people for their time is not.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { UtilityHeader } from "@/app/UtilityHeader";
+import { type LinkCredentials, readLinkCredentials } from "@/lib/link-credentials";
 
 type Question = { id: string; label: string; type: "rating" | "text"; ratingScale: number | null; required: boolean };
 type Reward = { offer: string; worth: string };
@@ -42,20 +43,11 @@ const DELIGHTED = 5;
 
 const RATING_WORDS = ["", "Poor", "Not great", "Fine", "Good", "Great"];
 
-function initialFeedbackParams() {
-  // H-15: same as tracking. The link has to carry the token; the address bar
-  // does not have to keep it afterwards.
-  if (typeof window === "undefined") return { order: "", token: "" };
-  const params = new URLSearchParams(window.location.search);
-  const order = params.get("order") ?? "";
-  const token = params.get("token") ?? "";
-  if (token) {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("token");
-    window.history.replaceState({}, "", url.toString());
-  }
-  return { order, token };
-}
+/** Nothing about the link ever changes, so there is nothing to subscribe to. */
+const NEVER_CHANGES = () => () => {};
+
+/** What the server sees, having no URL to read one out of. */
+const NO_LINK = () => null;
 
 function track(eventName: string, context: Record<string, unknown> = {}) {
   void fetch("/api/analytics", {
@@ -66,26 +58,37 @@ function track(eventName: string, context: Record<string, unknown> = {}) {
 }
 
 export default function FeedbackApp() {
-  const [initial] = useState(initialFeedbackParams);
-  const orderNumber = initial.order;
-  const token = initial.token;
-  // A link with no token cannot be looked up, and that is knowable on the first
-  // render — so it is the starting state rather than something an effect sets,
-  // which would cost a second render to say what we already knew.
-  const linked = Boolean(orderNumber && token);
+  // The link exists only in the browser, and this page is prerendered on a
+  // server that has no URL to read it out of. `useSyncExternalStore` is how
+  // that gap gets crossed without either side lying about it: the server and
+  // the hydrating browser both render the "opening…" card, and the real link
+  // arrives on the render immediately after.
+  //
+  // Working it out during an ordinary render is what broke this page. The two
+  // sides then disagreed about the very first screen, React settled that by
+  // throwing the markup away and rendering the tree over again, and that second
+  // pass read a URL the first pass had already taken the token out of — which
+  // is how a perfectly good emailed link came to land on "use the secure
+  // feedback link connected to your order". See lib/link-credentials.ts.
+  const link = useSyncExternalStore<LinkCredentials | null>(NEVER_CHANGES, readLinkCredentials, NO_LINK);
+  const linked = Boolean(link?.order && link?.token);
+  // A link that turned up without its credentials, as opposed to one the API
+  // turned down: only this one is helped by being pointed back at the email.
+  const missingLink = Boolean(link) && !linked;
+
   const [data, setData] = useState<FeedbackData | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [comments, setComments] = useState("");
-  const [error, setError] = useState(linked ? "" : "Use the secure feedback link connected to your order.");
+  const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [reward, setReward] = useState<Reward | null>(null);
-  const [busy, setBusy] = useState(linked);
+  const [busy, setBusy] = useState(true);
 
   const overall = answers.overall;
 
   useEffect(() => {
-    if (!linked) return;
-    fetch(`/api/feedback?order=${encodeURIComponent(orderNumber)}`, { headers: { "x-tracking-token": token } })
+    if (!link || !linked) return;
+    fetch(`/api/feedback?order=${encodeURIComponent(link.order)}`, { headers: { "x-tracking-token": link.token } })
       .then(async (response) => {
         const body = await response.json();
         if (!response.ok) throw new Error(body.error);
@@ -94,16 +97,17 @@ export default function FeedbackApp() {
       })
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Feedback link is unavailable."))
       .finally(() => setBusy(false));
-  }, [linked, orderNumber, token]);
+  }, [link, linked]);
 
   const submit = async () => {
+    if (!link) return;
     setError("");
     setBusy(true);
     try {
       const response = await fetch("/api/feedback", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderNumber, token, answers, writtenFeedback: comments }),
+        body: JSON.stringify({ orderNumber: link.order, token: link.token, answers, writtenFeedback: comments }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
@@ -132,10 +136,23 @@ export default function FeedbackApp() {
           <p>Your feedback helps us make the next order even better.</p>
         </div>
 
-        {busy && !data ? (
+        {missingLink ? (
+          <div className="lookup-card form-error" role="alert">
+            Use the secure feedback link connected to your order.
+            <p className="utility-help">
+              It is in the &ldquo;How was your Pizza 62 order?&rdquo; email &mdash; tap &ldquo;Rate your order&rdquo;
+              there. That link carries a token tied to your order, which is why this page cannot be reached by typing
+              the address in by hand.
+            </p>
+            <a className="text-button" href="/">Back to Pizza 62</a>
+          </div>
+        ) : busy && !data ? (
           <div className="lookup-card" role="status">Opening your secure feedback form…</div>
         ) : error && !data ? (
-          <div className="lookup-card form-error" role="alert">{error}</div>
+          <div className="lookup-card form-error" role="alert">
+            {error}
+            <a className="text-button" href="/">Back to Pizza 62</a>
+          </div>
         ) : submitted ? (
           <ThankYou rating={overall} reviewUrl={reviewUrl} reward={reward} />
         ) : data ? (

@@ -2,6 +2,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { UtilityHeader } from "@/app/UtilityHeader";
+import { readLinkCredentials } from "@/lib/link-credentials";
 
 type TrackingResult = {
   order: {
@@ -19,23 +20,15 @@ type TrackingResult = {
 /**
  * Reads the credentials out of the link, then takes them out of the URL.
  *
- * H-15: the confirmation email has to carry a tracking link — email is the
- * private channel that makes handing one out reasonable. What is avoidable is
- * the token *staying* in the address bar afterwards, where it reaches browser
- * history, a bookmark, a shared screenshot, or the next person to use the phone.
- * `replaceState` removes it without a reload, and the token travels to the API
- * in a header rather than a query string so it never lands in an access log.
+ * The H-15 reasoning, and why the read has to be a one-shot that can be safely
+ * repeated, both live in lib/link-credentials.ts. On the server there is no URL
+ * to read, and unlike the feedback form this page has somewhere to go without
+ * one: it falls back to the empty lookup form, which is what it renders for a
+ * customer who arrives here by typing the address anyway.
  */
 function initialTrackingParams() {
   if (typeof window === "undefined") return { order: "", token: "" };
-  const url = new URL(window.location.href);
-  const order = url.searchParams.get("order") ?? "";
-  const token = url.searchParams.get("token") ?? "";
-  if (token) {
-    url.searchParams.delete("token");
-    window.history.replaceState({}, "", url.toString());
-  }
-  return { order, token };
+  return readLinkCredentials();
 }
 
 export default function TrackingApp() {
