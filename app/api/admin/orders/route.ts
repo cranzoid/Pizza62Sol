@@ -18,10 +18,11 @@
  * owner runs the business on.
  */
 import { AuthError, authErrorResponse, requireStaff } from "@/lib/auth";
-import { ensureDatabase, getD1, safeJson, writeAudit } from "@/db/runtime";
+import { ensureDatabase, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { logFailure } from "@/lib/log";
 import { createOrder, OrderValidationError, quoteOrder, type OrderRequest } from "@/lib/order-service";
+import { loadOrderCore, loadOrderDetail, redactOrderContact } from "@/lib/order-detail";
 
 type Body = OrderRequest & {
   /** Where it was taken. Anything else is refused rather than defaulted. */
@@ -40,40 +41,28 @@ type Body = OrderRequest & {
  */
 async function loadPrintOrder(orderId: unknown): Promise<Record<string, unknown> | null> {
   if (typeof orderId !== "string" || !orderId) return null;
-  const order = await getD1()
-    .prepare(
-      `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,
-              status, payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
-              address_json, instructions, subtotal_cents, discount_cents, tax_cents,
-              delivery_fee_cents, tip_cents, total_cents, created_at, acknowledged_at
-       FROM orders WHERE id = ?`,
-    )
-    .bind(orderId)
-    .first<Record<string, unknown>>();
-  if (!order) return null;
-  const items = await getD1()
-    .prepare(
-      `SELECT id, product_name, variation_name, quantity, unit_price_cents,
-              line_total_cents, snapshot_json, instructions
-       FROM order_items WHERE order_id = ? ORDER BY created_at`,
-    )
-    .bind(orderId)
-    .all<Record<string, unknown>>();
-  return {
-    ...order,
-    address: safeJson(String(order.address_json ?? "null"), null),
-    address_json: undefined,
-    items: items.results.map((item) => ({
-      id: item.id,
-      productName: item.product_name,
-      variationName: item.variation_name,
-      quantity: item.quantity,
-      unitPriceCents: item.unit_price_cents,
-      lineTotalCents: item.line_total_cents,
-      snapshot: safeJson(String(item.snapshot_json ?? "{}"), {}),
-      instructions: item.instructions,
-    })),
-  };
+  return loadOrderCore(orderId);
+}
+
+/**
+ * Order detail — everything staff can look back at once an order has left the
+ * live board: items, the status timeline, refunds, feedback and who rang it
+ * in. Contact fields follow the same `view_customer_contact` rule as the
+ * order history CSV export.
+ */
+export async function GET(request: Request) {
+  try {
+    await ensureDatabase();
+    const user = await requireStaff(request, "view_orders");
+    const id = new URL(request.url).searchParams.get("id") ?? "";
+    if (!id) return Response.json({ error: "An order id is required." }, { status: 400 });
+    const order = await loadOrderDetail(id);
+    if (!order) return Response.json({ error: "That order could not be found." }, { status: 404 });
+    const canViewContact = user.role === "owner" || user.permissions.includes("view_customer_contact");
+    return Response.json({ order: redactOrderContact(order, canViewContact) });
+  } catch (error) {
+    return authErrorResponse(error);
+  }
 }
 
 export async function POST(request: Request) {
