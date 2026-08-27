@@ -146,17 +146,30 @@ export const REGULAR_HOURS = [
   { weekday: 0, label: "Sunday", openMinute: 720, closeMinute: 1320 },
 ] as const;
 
-// H-01: base one-topping and extra-topping rates corrected to the source-of-truth
-// flyer values in the audit §5 table. The 3-topping price is derived as
-// base + 2×extra (one topping is included in the base) for internal consistency;
-// confirm against the physical flyer if it lists an independent 3-topping price.
+// Pizza by Size is the *delivery* pizza list, confirmed by the owner on
+// 2026-08-28. One price per size, any one to four toppings for that price, a
+// fifth and beyond charged at the size's extra-topping rate.
+//
+// It is deliberately not offered on pickup. Pickup single pizzas are the
+// Pickup Specials, which start at $8.99 for a medium — below every price here —
+// so listing both on a pickup order would undercut the special and show the
+// same pizza twice. See PIZZA_BY_SIZE_INCLUDED_TOPPINGS for the allowance.
 export const PIZZA_SIZES = [
-  { id: "medium", name: "Medium", basePriceCents: 840, threeToppingPriceCents: 1260, extraToppingPriceCents: 210 },
-  { id: "large", name: "Large", basePriceCents: 1149, threeToppingPriceCents: 1609, extraToppingPriceCents: 230 },
-  { id: "x-large", name: "X-Large", basePriceCents: 1249, threeToppingPriceCents: 1769, extraToppingPriceCents: 260 },
-  { id: "jumbo", name: "Jumbo", basePriceCents: 1999, threeToppingPriceCents: 2579, extraToppingPriceCents: 290 },
-  { id: "slab", name: "Slab", basePriceCents: 2149, threeToppingPriceCents: 2729, extraToppingPriceCents: 290 },
+  { id: "medium", name: "Medium", basePriceCents: 1699, extraToppingPriceCents: 210 },
+  { id: "large", name: "Large", basePriceCents: 1799, extraToppingPriceCents: 230 },
+  { id: "x-large", name: "X-Large", basePriceCents: 1899, extraToppingPriceCents: 260 },
+  { id: "jumbo", name: "Jumbo", basePriceCents: 2399, extraToppingPriceCents: 290 },
+  { id: "slab", name: "Slab", basePriceCents: 2799, extraToppingPriceCents: 290 },
 ] as const;
+
+/**
+ * Toppings included in a Pizza by Size price.
+ *
+ * The customer chooses anywhere from one to four and pays the same; the
+ * customizer requires one because a pizza with nothing on it is not what the
+ * price describes. Beyond four, `pricePizza` charges the size's extra rate.
+ */
+export const PIZZA_BY_SIZE_INCLUDED_TOPPINGS = 4;
 
 export const CONFIRMED_OFFERS = [
   {

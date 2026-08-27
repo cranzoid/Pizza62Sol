@@ -5,6 +5,7 @@ import {
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
   PICKUP_SPECIALS_RELEASE_PRODUCT_IDS,
+  PIZZA_BY_SIZE_PRODUCT_IDS,
   TOPPING_SEEDS,
   type ModifierSectionSeed,
 } from "@/lib/menu";
@@ -605,6 +606,83 @@ const DATA_MIGRATIONS: Array<{
             ),
         );
         if (product.productType !== "pizza") continue;
+        statements.push(
+          database
+            .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")
+            .bind(now, product.id),
+        );
+        for (const [variationOrder, variation] of (product.variations ?? []).entries()) {
+          statements.push(
+            database
+              .prepare(
+                `INSERT INTO product_variations
+                 (id, product_id, name, base_price_cents, extra_topping_price_cents,
+                  included_topping_units_bps, active, display_order, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id,
+                   name = excluded.name, base_price_cents = excluded.base_price_cents,
+                   extra_topping_price_cents = excluded.extra_topping_price_cents,
+                   included_topping_units_bps = excluded.included_topping_units_bps,
+                   active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+              )
+              .bind(
+                variation.id,
+                product.id,
+                variation.name,
+                variation.basePriceCents,
+                variation.extraToppingPriceCents,
+                variation.includedToppingUnitsBps ?? 0,
+                variationOrder,
+                now,
+                now,
+              ),
+          );
+        }
+      }
+      return statements;
+    },
+  },
+  {
+    // Pizza by Size became the delivery pizza list: one price per size, any one
+    // to four toppings for that price, and no longer sold on pickup. Pickup
+    // single pizzas are the Pickup Specials, which start below every price here,
+    // so leaving these on a pickup order undercut the special and listed the
+    // same pizza twice.
+    //
+    // The seed is insert-only and these rows already exist, so the price, the
+    // topping allowance and the fulfilment all have to be written here. The two
+    // old options (1 Topping, 3 Toppings) are deactivated rather than deleted:
+    // orders already placed against them still have to render.
+    //
+    // Only the fields this release actually changes are written. The product's
+    // name, image, display order, sold-out flag and every other owner-owned
+    // column are left exactly as the owner has them — a repricing has no
+    // business resetting a photograph or a name the owner rewrote.
+    id: "2026-08-28-delivery-pizza-by-size",
+    run: (database, now) => {
+      const statements: D1PreparedStatement[] = [];
+      for (const productId of PIZZA_BY_SIZE_PRODUCT_IDS) {
+        const product = MENU_PRODUCTS.find((entry) => entry.id === productId);
+        if (!product) continue;
+        statements.push(
+          database
+            .prepare(
+              `UPDATE products
+               SET description = ?, base_price_cents = ?,
+                   pickup_eligible = ?, delivery_eligible = ?, configuration_json = ?,
+                   updated_at = ?
+               WHERE id = ?`,
+            )
+            .bind(
+              product.description,
+              product.basePriceCents,
+              product.pickupEligible === false ? 0 : 1,
+              product.deliveryEligible === false ? 0 : 1,
+              JSON.stringify(product.configuration ?? {}),
+              now,
+              product.id,
+            ),
+        );
         statements.push(
           database
             .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")

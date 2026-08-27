@@ -218,6 +218,82 @@ withDb("the quoted total is the total charged", async () => {
   assert.equal(quote.totals.menuSubtotalCents, row.subtotal_cents);
 });
 
+/**
+ * Pizza by Size after the 2026-08-28 change: the delivery pizza list, one price
+ * per size for any one to four toppings.
+ *
+ * Both halves matter. If the allowance regressed to one included topping a
+ * customer would be billed three times over for the pizza the menu advertises;
+ * if the fulfilment rule regressed, a pickup customer would be sold a $16.99
+ * medium the Pickup Specials sell for $8.99.
+ */
+const bySizeToppings = ["pepperoni", "mushrooms", "onions", "green-peppers", "tomatoes"];
+const mediumBySize = (toppingCount: number) => ({
+  productId: "medium-pizza",
+  variationId: "medium-pizza-four-toppings",
+  // Two, so the cart clears the $20 delivery minimum on its own and the quote
+  // is testing the pizza rather than the shortfall rule.
+  quantity: 2,
+  toppings: bySizeToppings
+    .slice(0, toppingCount)
+    .map((toppingId) => ({ toppingId, placement: "whole" as const })),
+});
+
+withDb("charges one Pizza by Size price for one to four toppings, and bills the fifth", async () => {
+  const unitPrice = async (toppingCount: number) => {
+    const quote = await quoteOrder({
+      fulfilment: "delivery",
+      items: [mediumBySize(toppingCount)],
+      // Pay at store is a pickup-only method, and online payment reports a
+      // credentials issue on a test database — neither says anything about the
+      // pizza, so the assertion is that nothing was wrong with *this item*.
+      paymentMethod: "online",
+      tip: { type: "none" },
+      schedule: openSchedule,
+    });
+    const rejected = quote.issues.filter((issue) => /Pizza/i.test(issue.message));
+    assert.deepEqual(rejected, [], rejected.map((issue) => issue.message).join("; "));
+    return quote.lines[0].unitPriceCents;
+  };
+  assert.equal(await unitPrice(1), 1699);
+  assert.equal(await unitPrice(2), 1699);
+  assert.equal(await unitPrice(3), 1699);
+  assert.equal(await unitPrice(4), 1699);
+  // The fifth is the first topping the customer pays for, at the medium rate.
+  assert.equal(await unitPrice(5), 1699 + 210);
+});
+
+withDb("does not sell Pizza by Size on a pickup order", async () => {
+  const quote = await quoteOrder({
+    fulfilment: "pickup",
+    items: [mediumBySize(1)],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(quote.ok, false);
+  assert.ok(
+    quote.issues.some((issue) => /Medium Pizza is not available for pickup/.test(issue.message)),
+    `expected a pickup refusal, got: ${quote.issues.map((issue) => issue.message).join("; ")}`,
+  );
+
+  // And the pickup single it exists to protect is still sellable, and cheaper.
+  const special = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-one",
+      variationId: "pickup-medium-one-size",
+      quantity: 1,
+      toppings: [{ toppingId: "pepperoni", placement: "whole" as const }],
+    }],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(special.ok, true, special.issues.map((issue) => issue.message).join("; "));
+  assert.equal(special.lines[0].unitPriceCents, 899);
+});
+
 withDb("taxes the delivery fee, and says so", async () => {
   const quote = await quoteOrder({
     fulfilment: "delivery",

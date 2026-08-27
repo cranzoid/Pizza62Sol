@@ -376,15 +376,25 @@ Employees with permission must be able to mark products unavailable quickly.
 
 # 8. Pizza sizes and base pricing
 
-The confirmed current standalone pizza prices are:
+Updated 2026-08-28. "Pizza by Size" is the **delivery** pizza list. Each size is
+one price that includes any one to four toppings; a fifth topping and beyond is
+charged at the size's extra-topping rate.
 
-| Size | Base price | Extra topping price |
+| Size | Price (1–4 toppings) | Extra topping price |
 |---|---:|---:|
-| Medium | C$8.40 | C$2.10 |
-| Large | C$11.49 | C$2.30 |
-| X-Large | C$12.49 | C$2.60 |
-| Jumbo | C$19.99 | C$2.90 |
-| Slab | C$21.49 | C$2.90 |
+| Medium | C$16.99 | C$2.10 |
+| Large | C$17.99 | C$2.30 |
+| X-Large | C$18.99 | C$2.60 |
+| Jumbo | C$23.99 | C$2.90 |
+| Slab | C$27.99 | C$2.90 |
+
+Pizza by Size is **not** sold on pickup. Single pizzas for pickup are the Pickup
+Specials (Medium from C$8.99), which are cheaper than every price above; listing
+both on a pickup order would undercut the special and show the same pizza twice.
+
+The earlier table in this section listed C$8.40 / C$11.49 / C$12.49 / C$19.99 /
+C$21.49 as the standalone prices. Those were pickup pricing and are superseded
+here — do not "correct" the code back to them.
 
 These values are initial data only.
 

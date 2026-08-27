@@ -262,9 +262,11 @@ withDb("prices a counter order exactly like a website order", async () => {
  */
 withDb("builds a customized pizza at the counter, priced like the website's", async () => {
   const cookie = await signedInAs("owner");
+  // A pickup pizza, because Pizza by Size is delivery-only now and a pickup
+  // ticket for one is refused by the same rule the storefront hides it under.
   const pizza = {
-    productId: "large-pizza",
-    variationId: "large-pizza-three-toppings",
+    productId: "pickup-large-three",
+    variationId: "pickup-large-three-size",
     quantity: 1,
     toppings: [
       { toppingId: "pepperoni", placement: "whole" },

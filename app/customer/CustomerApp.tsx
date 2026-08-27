@@ -16,6 +16,7 @@ import {
   type CustomizerVariation,
 } from "@/app/menu/ItemCustomizer";
 import {
+  compareMenuPrice,
   formatMoney,
   isWithinWeeklyAvailability,
   nextOrderSlots,
@@ -410,6 +411,17 @@ export default function CustomerApp() {
   const eligibleProducts = (catalog?.products ?? []).filter((product) =>
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
   );
+  // Cheapest first inside each category. The menu used to come out in seed
+  // order, which reads as random to someone comparing four combos; price
+  // ascending gives them somewhere to start.
+  const productsIn = (categoryId: string) =>
+    eligibleProducts.filter((product) => product.category_id === categoryId).sort(compareMenuPrice);
+  // A category with nothing in it for this fulfilment is not shown, so the tabs
+  // must not offer it either — Pizza by Size is delivery-only, and a pickup
+  // customer tapping its tab would scroll to a section that is not on the page.
+  const visibleCategories = categories.filter((category) =>
+    eligibleProducts.some((product) => product.category_id === category.id),
+  );
   const homepageOffers = (catalog?.products ?? [])
     .filter((product) => HOMEPAGE_OFFER_CATEGORY_IDS.has(product.category_id))
     .map((product) => {
@@ -420,7 +432,7 @@ export default function CustomerApp() {
       const priority = (offer: typeof left) => offer.availability
         ? (offer.availableNow ? 0 : 3)
         : offer.product.category_id === "pickup-specials" ? 1 : 2;
-      return priority(left) - priority(right);
+      return priority(left) - priority(right) || compareMenuPrice(left.product, right.product);
     });
   const cartItemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
@@ -527,10 +539,10 @@ export default function CustomerApp() {
           {loadingError ? <div className="error-banner" role="alert">{loadingError}</div> : null}
           {!catalog && !loadingError ? <div className="menu-loading" role="status"><span />Loading the live menu…</div> : null}
           <nav className="category-tabs" aria-label="Menu categories">
-            {categories.map((category) => <a key={category.id} href={`#category-${category.id}`}>{category.name}</a>)}
+            {visibleCategories.map((category) => <a key={category.id} href={`#category-${category.id}`}>{category.name}</a>)}
           </nav>
-          {categories.map((category, categoryIndex) => {
-            const products = eligibleProducts.filter((product) => product.category_id === category.id);
+          {visibleCategories.map((category, categoryIndex) => {
+            const products = productsIn(category.id);
             if (!products.length) return null;
             return (
               <div className="menu-category" id={`category-${category.id}`} key={category.id}>
@@ -699,7 +711,7 @@ export default function CustomerApp() {
                 <span className="pizza-slice-line l1" /><span className="pizza-slice-line l2" /><span className="pizza-slice-line l3" />
                 <PizzaMark large />
               </div>
-              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.40</strong><span>medium · 1 topping</span></div>
+              <div className="floating-tag floating-tag--top"><small>FROM</small><strong>$8.99*</strong><span>*pickup only · medium · 1 topping</span></div>
               <div className="floating-tag floating-tag--bottom"><strong>13%</strong><span>HST, calculated right</span></div>
               <div className="scribble-note">made fresh<br />for Hamilton ↗</div>
             </div>}

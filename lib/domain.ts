@@ -177,6 +177,23 @@ export function assertIntegerCents(value: number, field = "amount"): number {
   return value;
 }
 
+/**
+ * Menu display order within one category: cheapest first.
+ *
+ * Seed order is an accident of how the file was written, and it reads as random
+ * to a customer comparing four combos or a counter reading down a till screen.
+ * Price ascending gives both somewhere to start; equal prices fall back to the
+ * name so the order is stable rather than dependent on the query plan.
+ *
+ * Categories are *not* reordered — those stay in the owner's `display_order`.
+ */
+export function compareMenuPrice(
+  left: { base_price_cents: number; name: string },
+  right: { base_price_cents: number; name: string },
+): number {
+  return left.base_price_cents - right.base_price_cents || left.name.localeCompare(right.name);
+}
+
 export function formatMoney(cents: number): string {
   assertIntegerCents(cents);
   return CAD.format(cents / 100);

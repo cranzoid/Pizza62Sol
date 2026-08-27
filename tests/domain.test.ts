@@ -30,46 +30,107 @@ import {
   validateDelivery,
   validateRefundAmount,
   CRUST_OPTIONS,
+  compareMenuPrice,
 } from "../lib/domain.ts";
-import { MENU_PRODUCTS } from "../lib/menu.ts";
-import { PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
+import { MENU_PRODUCTS, PIZZA_BY_SIZE_PRODUCT_IDS } from "../lib/menu.ts";
+import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
 import { resolveFsaCentroid } from "../lib/delivery-area.ts";
 
-test("uses flyer prices and only charges toppings beyond each included offer", () => {
+test("charges one Pizza by Size price for any one to four toppings", () => {
   const expected = [
-    ["Medium", 840, 1260, 210],
-    ["Large", 1149, 1609, 230],
-    ["X-Large", 1249, 1769, 260],
-    ["Jumbo", 1999, 2579, 290],
-    ["Slab", 2149, 2729, 290],
+    ["Medium", 1699, 210],
+    ["Large", 1799, 230],
+    ["X-Large", 1899, 260],
+    ["Jumbo", 2399, 290],
+    ["Slab", 2799, 290],
   ];
   assert.deepEqual(
-    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.threeToppingPriceCents, size.extraToppingPriceCents]),
+    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.extraToppingPriceCents]),
     expected,
   );
+  const included = PIZZA_BY_SIZE_INCLUDED_TOPPINGS;
+  assert.equal(included, 4);
+  const toppings = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ toppingId: `topping-${index}`, placement: "whole" as const }));
   for (const size of PIZZA_SIZES) {
-    const included = pricePizza({
+    // One topping or all four, the customer pays the same.
+    for (let count = 1; count <= included; count += 1) {
+      const price = pricePizza({
+        basePriceCents: size.basePriceCents,
+        extraToppingPriceCents: size.extraToppingPriceCents,
+        includedToppingUnitsBps: included * 10_000,
+        halfToppingUnitsBps: 10_000,
+        toppings: toppings(count),
+        extraCheese: false,
+      });
+      assert.equal(price.totalCents, size.basePriceCents, `${size.name} with ${count} topping(s)`);
+    }
+    // The fifth is the first one charged for.
+    const fifth = pricePizza({
       basePriceCents: size.basePriceCents,
       extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 10_000,
+      includedToppingUnitsBps: included * 10_000,
       halfToppingUnitsBps: 10_000,
-      toppings: [{ toppingId: "approved-topping", placement: "whole" }],
+      toppings: toppings(included + 1),
       extraCheese: false,
     });
-    assert.equal(included.totalCents, size.basePriceCents);
-    const extra = pricePizza({
-      basePriceCents: size.basePriceCents,
-      extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 10_000,
-      halfToppingUnitsBps: 10_000,
-      toppings: [
-        { toppingId: "approved-topping", placement: "whole" },
-        { toppingId: "extra-topping", placement: "whole" },
-      ],
-      extraCheese: false,
-    });
-    assert.equal(extra.totalCents, size.basePriceCents + size.extraToppingPriceCents);
+    assert.equal(fifth.totalCents, size.basePriceCents + size.extraToppingPriceCents);
   }
+});
+
+test("sells Pizza by Size on delivery only, and never under the pickup special", () => {
+  const byId = new Map(MENU_PRODUCTS.map((product) => [product.id, product]));
+  for (const productId of PIZZA_BY_SIZE_PRODUCT_IDS) {
+    const product = byId.get(productId)!;
+    assert.equal(product.categoryId, "build-your-own");
+    assert.equal(product.pickupEligible, false, `${productId} must not be sellable on pickup`);
+    assert.equal(product.deliveryEligible, true, `${productId} must stay sellable on delivery`);
+    // One option, not a 1-topping and a 3-topping one, because the price no
+    // longer varies with how many of the four included toppings are used.
+    assert.equal(product.variations?.length, 1);
+    assert.equal(
+      product.variations?.[0].includedToppingUnitsBps,
+      PIZZA_BY_SIZE_INCLUDED_TOPPINGS * 10_000,
+    );
+    assert.equal(product.variations?.[0].basePriceCents, product.basePriceCents);
+  }
+  // The reason pickup is excluded: every pickup single pizza undercuts the
+  // delivery list, so offering both on pickup would sell the cheap one twice.
+  const pickupSingles = MENU_PRODUCTS.filter(
+    (product) => product.categoryId === "pickup-specials" && product.productType === "pizza",
+  );
+  const cheapestBySize = Math.min(...PIZZA_SIZES.map((size) => size.basePriceCents));
+  assert.ok(pickupSingles.length > 0);
+  assert.ok(
+    pickupSingles.every((product) => product.pickupEligible === true && product.deliveryEligible === false),
+  );
+  assert.ok(Math.min(...pickupSingles.map((product) => product.basePriceCents)) < cheapestBySize);
+});
+
+test("orders a menu category by price, cheapest first", () => {
+  const category = [
+    { id: "c", name: "Two Large Feast", base_price_cents: 5399 },
+    { id: "a", name: "Slice Combo", base_price_cents: 450 },
+    { id: "b", name: "2 Slice Combo", base_price_cents: 725 },
+    { id: "d", name: "1 Slice", base_price_cents: 275 },
+  ];
+  assert.deepEqual(
+    [...category].sort(compareMenuPrice).map((product) => product.id),
+    ["d", "a", "b", "c"],
+  );
+  // Equal prices settle on the name, so the order does not depend on the order
+  // the rows came back in.
+  const tied = [
+    { id: "second", name: "Water Bottle", base_price_cents: 160 },
+    { id: "first", name: "1 Pop", base_price_cents: 160 },
+  ];
+  assert.deepEqual(
+    [...tied].sort(compareMenuPrice).map((product) => product.id),
+    ["first", "second"],
+  );
+  // Sorting is stable enough to be idempotent.
+  const once = [...category].sort(compareMenuPrice);
+  assert.deepEqual([...once].sort(compareMenuPrice), once);
 });
 
 test("limits Hamilton Heroes to the flyer window in Toronto", () => {

@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { formatMoney } from "@/lib/domain";
+import { compareMenuPrice, formatMoney } from "@/lib/domain";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
 import {
@@ -140,10 +140,18 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
    * ticket produces an order that is rejected after it has been keyed in with a
    * customer on the phone.
    */
-  const sellable = dashboard.products.filter((product) => {
-    if (!product.active || product.sold_out || product.setup_required) return false;
-    return Boolean(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible);
-  });
+  const categoryOrder = new Map(dashboard.categories.map((category) => [category.id, category.display_order]));
+  const sellable = dashboard.products
+    .filter((product) => {
+      if (!product.active || product.sold_out || product.setup_required) return false;
+      return Boolean(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible);
+    })
+    // Same order the website shows: categories in menu order, cheapest first
+    // inside each one. The counter reads down a price column while a customer
+    // is on the phone, so a category whose items are in seed order costs time.
+    .sort((left, right) =>
+      (categoryOrder.get(left.category_id) ?? 0) - (categoryOrder.get(right.category_id) ?? 0)
+      || compareMenuPrice(left, right));
 
   // Read straight off the same settings row the storefront reads, so a pizza
   // built at the counter is charged for a half topping exactly as one built at

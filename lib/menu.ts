@@ -1,4 +1,4 @@
-import { PIZZA_SIZES } from "@/lib/launch-config";
+import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES } from "@/lib/launch-config";
 import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection } from "@/lib/domain";
 
 // The pop and wing-sauce lists are not seed data: an option group stores the
@@ -30,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-08-27-pickup-specials-r1";
+export const MENU_SEED_VERSION = "2026-08-28-delivery-pizza-by-size-r1";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -217,29 +217,28 @@ const bundle = (
   configuration: { sections: orderModifierSections(sections), specialInstructionsEnabled: true },
 });
 
+// Delivery only, and one price per size: the customer picks one to four
+// toppings and pays the same either way, so there is a single variation rather
+// than a 1-topping and a 3-topping one. Pickup buys these pizzas from the
+// Pickup Specials category instead — see PIZZA_SIZES for why.
 const standalonePizzas: MenuProductSeed[] = PIZZA_SIZES.map((size) => ({
   id: `${size.id}-pizza`,
   categoryId: "build-your-own",
   name: `${size.name} Pizza`,
-  description: `Choose a 1-topping or 3-topping ${size.name.toLowerCase()} pizza. Extra toppings are charged at the ${size.name.toLowerCase()} rate.`,
+  description: `Any ${PIZZA_BY_SIZE_INCLUDED_TOPPINGS} toppings for one price — pick as few as 1. Extra toppings are charged at the ${size.name.toLowerCase()} rate. Delivery only.`,
   productType: "pizza",
   basePriceCents: size.basePriceCents,
+  pickupEligible: false,
+  deliveryEligible: true,
   halalCapable: true,
-  configuration: { variationLabel: "Choose your topping offer", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
+  configuration: { variationLabel: "Your pizza", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [
     {
-      id: `${size.id}-pizza-one-topping`,
-      name: "1 Topping",
+      id: `${size.id}-pizza-four-toppings`,
+      name: `Up to ${PIZZA_BY_SIZE_INCLUDED_TOPPINGS} Toppings`,
       basePriceCents: size.basePriceCents,
       extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 10_000,
-    },
-    {
-      id: `${size.id}-pizza-three-toppings`,
-      name: "3 Toppings",
-      basePriceCents: size.threeToppingPriceCents,
-      extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 30_000,
+      includedToppingUnitsBps: PIZZA_BY_SIZE_INCLUDED_TOPPINGS * 10_000,
     },
   ],
 }));
@@ -546,3 +545,10 @@ export const PICKUP_SPECIALS_RELEASE_PRODUCT_IDS = [
   "four-pops",
   ...singlePizzaPickupSpecials.map((product) => product.id),
 ] as const;
+
+/**
+ * The Pizza by Size products, whose price, topping allowance and fulfilment all
+ * changed in the 2026-08-28 release. Exported for the data migration that has to
+ * reprice rows an insert-only seed will not touch.
+ */
+export const PIZZA_BY_SIZE_PRODUCT_IDS = standalonePizzas.map((product) => product.id);
