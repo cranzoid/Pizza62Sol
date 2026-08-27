@@ -4,6 +4,7 @@ import {
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
+  PICKUP_SPECIALS_RELEASE_PRODUCT_IDS,
   TOPPING_SEEDS,
   type ModifierSectionSeed,
 } from "@/lib/menu";
@@ -133,7 +134,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
              (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
               pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
               setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
           .bind(
@@ -144,6 +145,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
             product.description,
             product.productType,
             product.basePriceCents,
+            product.taxable === false ? 0 : 1,
             product.pickupEligible === false ? 0 : 1,
             product.deliveryEligible === false ? 0 : 1,
             product.halalCapable ? 1 : 0,
@@ -560,6 +562,84 @@ const DATA_MIGRATIONS: Array<{
         )
         .bind(now),
     ],
+  },
+  {
+    // The ten size/item pickup pizzas existed in an early database seed and were
+    // later retired because their prices had not been confirmed. The owner has
+    // now supplied the exact products and prices. An insert-only seed cannot
+    // reactivate those old rows, so this one-time migration deliberately restores
+    // this release's products while leaving every unrelated owner edit alone.
+    id: "2026-08-27-confirm-pickup-specials",
+    run: (database, now) => {
+      const releaseIds = new Set<string>(PICKUP_SPECIALS_RELEASE_PRODUCT_IDS);
+      const statements: D1PreparedStatement[] = [];
+      for (const [displayOrder, product] of MENU_PRODUCTS.entries()) {
+        if (!releaseIds.has(product.id)) continue;
+        statements.push(
+          database
+            .prepare(
+              `UPDATE products
+               SET category_id = ?, name = ?, slug = ?, description = ?, product_type = ?,
+                   base_price_cents = ?, taxable = ?, pickup_eligible = ?, delivery_eligible = ?,
+                   halal_capable = ?, promotion_eligible = 1, active = 1, sold_out = 0,
+                   setup_required = 0, kitchen_label = ?, configuration_json = ?,
+                   display_order = ?, updated_at = ?
+               WHERE id = ?`,
+            )
+            .bind(
+              product.categoryId,
+              product.name,
+              product.id,
+              product.description,
+              product.productType,
+              product.basePriceCents,
+              product.taxable === false ? 0 : 1,
+              product.pickupEligible === false ? 0 : 1,
+              product.deliveryEligible === false ? 0 : 1,
+              product.halalCapable ? 1 : 0,
+              product.name.toUpperCase().slice(0, 40),
+              JSON.stringify(product.configuration ?? {}),
+              displayOrder,
+              now,
+              product.id,
+            ),
+        );
+        if (product.productType !== "pizza") continue;
+        statements.push(
+          database
+            .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")
+            .bind(now, product.id),
+        );
+        for (const [variationOrder, variation] of (product.variations ?? []).entries()) {
+          statements.push(
+            database
+              .prepare(
+                `INSERT INTO product_variations
+                 (id, product_id, name, base_price_cents, extra_topping_price_cents,
+                  included_topping_units_bps, active, display_order, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id,
+                   name = excluded.name, base_price_cents = excluded.base_price_cents,
+                   extra_topping_price_cents = excluded.extra_topping_price_cents,
+                   included_topping_units_bps = excluded.included_topping_units_bps,
+                   active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+              )
+              .bind(
+                variation.id,
+                product.id,
+                variation.name,
+                variation.basePriceCents,
+                variation.extraToppingPriceCents,
+                variation.includedToppingUnitsBps ?? 0,
+                variationOrder,
+                now,
+                now,
+              ),
+          );
+        }
+      }
+      return statements;
+    },
   },
 ];
 

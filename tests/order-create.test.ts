@@ -139,6 +139,58 @@ withDb("lands every side effect of an accepted order", async () => {
   assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: 3 });
 });
 
+withDb("persists mixed taxable and tax-exempt lines with the exact payment total", async () => {
+  const response = await post(await orderBody({
+    items: [
+      {
+        productId: "slice-combo",
+        quantity: 1,
+        modifiers: [
+          { id: "slice-topping", values: ["pepperoni"] },
+          { id: "included-dip", values: ["Dipping Sauce"] },
+          { id: "drink-1", values: ["Coke"] },
+        ],
+      },
+      { productId: "poutine", quantity: 1 },
+    ],
+  }));
+  assert.equal(response.status, 201, await response.clone().text());
+  const result = await json(response);
+  const price = result.price as Record<string, number>;
+  assert.equal(price.menuSubtotalCents, 1349);
+  assert.equal(price.taxableSubtotalCents, 899);
+  assert.equal(price.nonTaxableSubtotalCents, 450);
+  assert.equal(price.taxCents, 117);
+  assert.equal(price.totalCents, 1466);
+
+  const orderId = String(result.orderId);
+  const stored = await getPool().query<{
+    pricing_json: string;
+    tax_cents: number;
+    total_cents: number;
+    payment_amount_cents: number;
+  }>(
+    `SELECT o.pricing_json, o.tax_cents, o.total_cents, p.amount_cents AS payment_amount_cents
+     FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.id = $1`,
+    [orderId],
+  );
+  const persistedPrice = JSON.parse(stored.rows[0].pricing_json) as Record<string, number>;
+  assert.equal(persistedPrice.taxableSubtotalCents, 899);
+  assert.equal(persistedPrice.nonTaxableSubtotalCents, 450);
+  assert.equal(stored.rows[0].tax_cents, 117);
+  assert.equal(stored.rows[0].total_cents, 1466);
+  assert.equal(stored.rows[0].payment_amount_cents, 1466);
+
+  const items = await getPool().query<{ product_id: string; taxable: number }>(
+    "SELECT product_id, taxable FROM order_items WHERE order_id = $1 ORDER BY product_id",
+    [orderId],
+  );
+  assert.deepEqual(items.rows, [
+    { product_id: "poutine", taxable: 1 },
+    { product_id: "slice-combo", taxable: 0 },
+  ]);
+});
+
 withDb("a pay-at-store order parks no payment with a provider", async () => {
   const result = await json(await post(await orderBody()));
   const payment = await getPool().query<{ provider: string; status: string }>(

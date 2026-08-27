@@ -89,6 +89,92 @@ withDb("quotes a pickup cart with the full breakdown", async () => {
   assert.equal(quote.taxRateBps, 1300);
 });
 
+const sliceCombo = {
+  productId: "slice-combo",
+  quantity: 1,
+  modifiers: [
+    { id: "slice-topping", values: ["pepperoni"] },
+    { id: "included-dip", values: ["Dipping Sauce"] },
+    { id: "drink-1", values: ["Coke"] },
+  ],
+};
+
+withDb("quotes tax-exempt slice products and mixed carts from product taxability", async () => {
+  const exempt = await quoteOrder({
+    fulfilment: "pickup",
+    items: [sliceCombo],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(exempt.ok, true, exempt.issues.map((issue) => issue.message).join("; "));
+  assert.equal(exempt.totals.menuSubtotalCents, 450);
+  assert.equal(exempt.totals.taxableSubtotalCents, 0);
+  assert.equal(exempt.totals.nonTaxableSubtotalCents, 450);
+  assert.equal(exempt.totals.taxCents, 0);
+  assert.equal(exempt.totals.totalCents, 450);
+
+  const mixed = await quoteOrder({
+    fulfilment: "pickup",
+    items: [sliceCombo, { productId: "poutine", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(mixed.ok, true, mixed.issues.map((issue) => issue.message).join("; "));
+  assert.equal(mixed.totals.menuSubtotalCents, 1349);
+  assert.equal(mixed.totals.taxableSubtotalCents, 899);
+  assert.equal(mixed.totals.nonTaxableSubtotalCents, 450);
+  assert.equal(mixed.totals.taxCents, 117);
+  assert.equal(mixed.totals.totalCents, 1466);
+});
+
+withDb("requires every slice-combo choice and every confirmed pizza topping", async () => {
+  const incompleteCombo = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "slice-combo", quantity: 1, modifiers: [{ id: "slice-topping", values: ["pepperoni"] }] }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(incompleteCombo.ok, false);
+  assert.ok(incompleteCombo.issues.some((issue) => /Dip|Pop/.test(issue.message)));
+
+  const incompletePizza = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-three",
+      variationId: "pickup-medium-three-size",
+      quantity: 1,
+      toppings: [
+        { toppingId: "pepperoni", placement: "whole" },
+        { toppingId: "mushrooms", placement: "whole" },
+      ],
+    }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(incompletePizza.ok, false);
+  assert.ok(incompletePizza.issues.some((issue) => issue.code === "TOPPINGS_INCOMPLETE"));
+
+  const completePizza = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-three",
+      variationId: "pickup-medium-three-size",
+      quantity: 1,
+      toppings: [
+        { toppingId: "pepperoni", placement: "whole" },
+        { toppingId: "mushrooms", placement: "whole" },
+        { toppingId: "onions", placement: "whole" },
+      ],
+    }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(completePizza.ok, true, completePizza.issues.map((issue) => issue.message).join("; "));
+  assert.equal(completePizza.totals.menuSubtotalCents, 1249);
+});
+
 withDb("the quoted total is the total charged", async () => {
   // The whole point. Same cart, same tip, through both paths.
   //

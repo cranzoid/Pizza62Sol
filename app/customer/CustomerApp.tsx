@@ -78,6 +78,8 @@ type Quote = {
     menuSubtotalCents: number;
     discountCents: number;
     discountedMenuSubtotalCents: number;
+    taxableSubtotalCents: number;
+    nonTaxableSubtotalCents: number;
     taxCents: number;
     deliveryFeeCents: number;
     tipCents: number;
@@ -96,6 +98,8 @@ const EMPTY_TOTALS: Quote["totals"] = {
   menuSubtotalCents: 0,
   discountCents: 0,
   discountedMenuSubtotalCents: 0,
+  taxableSubtotalCents: 0,
+  nonTaxableSubtotalCents: 0,
   taxCents: 0,
   deliveryFeeCents: 0,
   tipCents: 0,

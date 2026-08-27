@@ -161,12 +161,14 @@ export function ToppingPicker({
   toppings,
   selected,
   halalOnly,
+  allowPlacement = true,
   onToggle,
   onPlacement,
 }: {
   toppings: CustomizerTopping[];
   selected: SelectedTopping[];
   halalOnly: boolean;
+  allowPlacement?: boolean;
   onToggle: (topping: CustomizerTopping) => void;
   onPlacement: (toppingId: string, placement: ToppingPlacement) => void;
 }) {
@@ -178,7 +180,7 @@ export function ToppingPicker({
         <span>{entry ? "✓" : unavailableForHalal ? "×" : "+"}</span>{topping.name}
         {halalOnly && topping.is_meat ? <small>{unavailableForHalal ? "Not halal" : "Halal"}</small> : null}
       </button>
-      {entry ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
+      {entry && allowPlacement ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
         {PLACEMENTS.map(([placement, symbol, label]) => <button
           key={placement}
           type="button"
@@ -270,7 +272,14 @@ export function PizzaCustomizer({
     : null;
   const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000;
   const selectedUnits = (price?.toppingUnitsBps ?? 0) / 10_000;
-  const selectionValid = Boolean(variation && (configuration.fixedRecipe || includedCount === 0 || selected.length >= 1));
+  const selectedToppingUnits = modifierUnitsBps(
+    selected.map((entry) => ({ value: entry.toppingId, placement: entry.placement })),
+    halfToppingUnitsBps,
+  ) / 10_000;
+  const requiredToppingUnits = configuration.requireIncludedToppings ? includedCount : includedCount > 0 ? 1 : 0;
+  const selectionValid = Boolean(
+    variation && (configuration.fixedRecipe || selectedToppingUnits >= requiredToppingUnits),
+  );
   const toggleTopping = (topping: CustomizerTopping) => setSelected((current) => {
     // A recipe topping cannot be toggled off here; use "Leave it off" instead.
     if (fixedRecipe && recipeToppingIds.includes(topping.id)) return current;
@@ -323,10 +332,10 @@ export function PizzaCustomizer({
                   </div>;
                 })}
               </div>
-            </> : <div className="setup-alert"><strong>{includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
+            </> : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
             {fixedRecipe ? <p className="editor-hint">Add anything extra below.</p> : null}
             <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} halalOnly={halal} onToggle={toggleTopping} onPlacement={setPlacement} />
-            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selected.length ? "Included in the price" : "Choose at least 1"}</b></div>
+            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
   if (crust) modifiers.push({ id: "pizza-crust", label: "Crust", values: [{ value: crust, label: crust }] });
@@ -468,6 +477,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
                       toppings={toppings}
                       selected={values.map((entry) => ({ toppingId: entry.value, placement: entry.placement ?? "whole", name: entry.label }))}
                       halalOnly={halalFor(section)}
+                      allowPlacement={section.max > 1}
                       onToggle={(topping) => toggle(section, { value: topping.id, label: topping.name })}
                       onPlacement={(toppingId, placement) => setPlacement(section.id, toppingId, placement)}
                     />

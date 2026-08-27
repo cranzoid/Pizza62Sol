@@ -23,6 +23,7 @@ import { ensureDatabase, getD1, safeJson, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { ORDER_CHANNELS } from "@/db/schema";
 import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
+import { orderSalesBreakdown } from "@/lib/reporting";
 
 const CHANNELS = new Set<string>(ORDER_CHANNELS);
 const PAGE_SIZE = 100;
@@ -89,7 +90,7 @@ function buildFilters(url: URL): Filters {
 
 const ORDER_COLUMNS = `id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,
    status, payment_status, payment_method, schedule_type, scheduled_for, created_at,
-   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents`;
+   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, pricing_json`;
 
 export async function GET(request: Request) {
   try {
@@ -168,7 +169,7 @@ export async function GET(request: Request) {
         .prepare(
           `SELECT COUNT(*) AS count,
                   COALESCE(SUM(total_cents), 0) AS total_cents,
-                  COALESCE(SUM(CASE WHEN status <> 'cancelled' AND (payment_method = 'pay_at_store' OR payment_status = 'paid')
+                  COALESCE(SUM(CASE WHEN status <> 'cancelled' AND (payment_method = 'pay_at_store' OR payment_status IN ('paid', 'partially_refunded', 'refunded'))
                                     THEN total_cents ELSE 0 END), 0) AS paid_cents
            FROM orders ${where}`,
         )
@@ -187,6 +188,8 @@ export async function GET(request: Request) {
     return Response.json({
       orders: rows.results.map((order) => ({
         ...order,
+        ...orderSalesBreakdown(order),
+        pricing_json: undefined,
         customer_phone: canViewContact ? order.customer_phone : undefined,
         customer_email: canViewContact ? order.customer_email : undefined,
         contactRedacted: !canViewContact,
@@ -220,12 +223,14 @@ const CSV_HEADERS = [
   "Customer",
   "Phone",
   "Email",
-  "Subtotal",
+  "Gross food sales",
   "Discount",
+  "Taxable food sales",
+  "Tax-exempt food sales",
   "Delivery fee",
-  "HST",
+  "HST collected",
   "Tip",
-  "Total",
+  "Final order total",
 ];
 
 /**
@@ -251,6 +256,7 @@ const stamp = (value: unknown) =>
 function toCsv(rows: Array<Record<string, unknown>>, canViewContact: boolean): string {
   const lines = [CSV_HEADERS.map(csvField).join(",")];
   for (const row of rows) {
+    const sales = orderSalesBreakdown(row);
     lines.push(
       [
         row.order_number,
@@ -268,6 +274,8 @@ function toCsv(rows: Array<Record<string, unknown>>, canViewContact: boolean): s
         canViewContact ? row.customer_email : "redacted",
         money(row.subtotal_cents),
         money(row.discount_cents),
+        money(sales.taxableSalesCents),
+        money(sales.nonTaxableSalesCents),
         money(row.delivery_fee_cents),
         money(row.tax_cents),
         money(row.tip_cents),

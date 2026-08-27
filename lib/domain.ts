@@ -88,6 +88,7 @@ export type CartPricingResult = {
   discountCents: number;
   discountedMenuSubtotalCents: number;
   taxableSubtotalCents: number;
+  nonTaxableSubtotalCents: number;
   taxCents: number;
   deliveryFeeCents: number;
   tipBasisCents: number;
@@ -433,9 +434,11 @@ export function priceSharedToppingPool(
 function eligibleLineSubtotal(
   lines: CartLinePrice[],
   promotion: PromotionRule,
+  taxableOnly = false,
 ): number {
   return lines.reduce((sum, line) => {
     if (!line.promotionEligible) return sum;
+    if (taxableOnly && !line.taxable) return sum;
     if (promotion.productIds?.length && !promotion.productIds.includes(line.productId)) {
       return sum;
     }
@@ -453,7 +456,7 @@ export function applyPromotions(
   lines: CartLinePrice[],
   promotions: PromotionRule[],
   fulfilment: Fulfilment,
-): { discountCents: number; freeDelivery: boolean; applied: AppliedPromotion[] } {
+): { discountCents: number; taxableDiscountCents: number; freeDelivery: boolean; applied: AppliedPromotion[] } {
   const subtotal = lines.reduce(
     (sum, line) => sum + line.unitPriceCents * line.quantity,
     0,
@@ -464,6 +467,7 @@ export function applyPromotions(
   const usedStackGroups = new Set<string>();
   const applied: AppliedPromotion[] = [];
   let discountCents = 0;
+  let taxableDiscountCents = 0;
   let freeDelivery = false;
   let exclusiveApplied = false;
 
@@ -498,6 +502,10 @@ export function applyPromotions(
     }
     amount = Math.min(amount, subtotal - discountCents);
     if (amount === 0 && promotion.type !== "free_delivery") continue;
+    if (amount > 0 && eligibleCents > 0) {
+      const taxableEligibleCents = eligibleLineSubtotal(lines, promotion, true);
+      taxableDiscountCents += Math.round((amount * taxableEligibleCents) / eligibleCents);
+    }
     discountCents += amount;
     if (promotion.stackGroup) usedStackGroups.add(promotion.stackGroup);
     exclusiveApplied = promotion.exclusive || !promotion.combinable;
@@ -511,7 +519,7 @@ export function applyPromotions(
           : `Applied by priority ${promotion.priority}`,
     });
   }
-  return { discountCents, freeDelivery, applied };
+  return { discountCents, taxableDiscountCents, freeDelivery, applied };
 }
 
 export function priceCart(input: CartPricingInput): CartPricingResult {
@@ -539,10 +547,13 @@ export function priceCart(input: CartPricingInput): CartPricingResult {
       sum + (line.taxable ? line.unitPriceCents * line.quantity : 0),
     0,
   );
-  const taxableShare =
-    menuSubtotalCents === 0 ? 0 : taxableBeforeDiscount / menuSubtotalCents;
-  const taxableSubtotalCents = Math.round(
-    discountedMenuSubtotalCents * taxableShare,
+  const taxableSubtotalCents = Math.min(
+    discountedMenuSubtotalCents,
+    Math.max(0, taxableBeforeDiscount - promotionResult.taxableDiscountCents),
+  );
+  const nonTaxableSubtotalCents = Math.max(
+    0,
+    discountedMenuSubtotalCents - taxableSubtotalCents,
   );
   const deliveryFeeCents =
     input.fulfilment === "delivery" && !promotionResult.freeDelivery
@@ -573,6 +584,7 @@ export function priceCart(input: CartPricingInput): CartPricingResult {
     discountCents: promotionResult.discountCents,
     discountedMenuSubtotalCents,
     taxableSubtotalCents,
+    nonTaxableSubtotalCents,
     taxCents,
     deliveryFeeCents,
     tipBasisCents,

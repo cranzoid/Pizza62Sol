@@ -16,6 +16,7 @@ export type MenuProductSeed = {
   description: string;
   productType: "pizza" | "simple" | "bundle" | "configurable";
   basePriceCents: number;
+  taxable?: boolean;
   pickupEligible?: boolean;
   deliveryEligible?: boolean;
   halalCapable?: boolean;
@@ -29,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-07-27-pizza-options-r5";
+export const MENU_SEED_VERSION = "2026-08-27-pickup-specials-r1";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -145,6 +146,27 @@ const drinks = (count: number): ModifierSectionSeed[] =>
     min: 1,
     max: 1,
   }));
+
+const includedDip = (): ModifierSectionSeed => ({
+  id: "included-dip",
+  label: "Dip",
+  group: "Included with your combo",
+  options: ["Dipping Sauce"],
+  min: 1,
+  max: 1,
+  included: 1,
+});
+
+const sliceTopping = (id: string, group: string): ModifierSectionSeed => ({
+  id,
+  label: "Choose 1 topping",
+  group,
+  source: "toppings",
+  min: 1,
+  max: 1,
+  included: 1,
+  extraPriceCents: 0,
+});
 
 // Every pizza inside a deal is built in the same order as a pizza ordered on its
 // own: cheese and halal, then crust and bake/sauce, then toppings. `index` is null
@@ -355,7 +377,104 @@ const pickupPizza = (id: string, name: string, price: number, size: string, extr
   variations: [{ id: `${id}-size`, name: size, basePriceCents: price, extraToppingPriceCents: extra, includedToppingUnitsBps: included * 10_000 }],
 });
 
+const confirmedPickupPizza = (
+  id: string,
+  size: string,
+  itemCount: 1 | 3,
+  price: number,
+  extraToppingPriceCents: number,
+): MenuProductSeed => ({
+  ...pickupPizza(
+    id,
+    `${size.startsWith("Slab") ? "Slab Pizza · 24 Slices" : `${size} Pizza`} · ${itemCount} Item${itemCount === 1 ? "" : "s"}`,
+    price,
+    size,
+    extraToppingPriceCents,
+    itemCount,
+  ),
+  description: `${itemCount} topping${itemCount === 1 ? "" : "s"} required and included. Pickup only.`,
+  configuration: {
+    crustOptions: [...CRUST_OPTIONS],
+    bakeSauceOptions: [...BAKE_SAUCE_OPTIONS],
+    cheeseEnabled: true,
+    requireIncludedToppings: true,
+    specialInstructionsEnabled: true,
+  },
+});
+
+const sliceSpecials: MenuProductSeed[] = [
+  {
+    id: "slice-combo",
+    categoryId: "pickup-specials",
+    name: "Slice Combo",
+    description: "One pizza slice with 1 topping, one dipping sauce and 1 canned pop.",
+    productType: "configurable",
+    basePriceCents: 450,
+    taxable: false,
+    pickupEligible: true,
+    deliveryEligible: false,
+    configuration: {
+      sections: orderModifierSections([
+        sliceTopping("slice-topping", "Your slice"),
+        includedDip(),
+        ...drinks(1),
+      ]),
+      specialInstructionsEnabled: true,
+    },
+  },
+  {
+    id: "two-slice-combo",
+    categoryId: "pickup-specials",
+    name: "2 Slice Combo",
+    description: "Two pizza slices with 1 topping each, one dipping sauce and 1 canned pop.",
+    productType: "configurable",
+    basePriceCents: 725,
+    taxable: false,
+    pickupEligible: true,
+    deliveryEligible: false,
+    configuration: {
+      sections: orderModifierSections([
+        sliceTopping("slice-1-topping", "Slice 1"),
+        sliceTopping("slice-2-topping", "Slice 2"),
+        includedDip(),
+        ...drinks(1),
+      ]),
+      specialInstructionsEnabled: true,
+    },
+  },
+  {
+    id: "pickup-one-slice",
+    categoryId: "pickup-specials",
+    name: "1 Slice",
+    description: "One pizza slice with 1 topping.",
+    productType: "configurable",
+    basePriceCents: 275,
+    taxable: false,
+    pickupEligible: true,
+    deliveryEligible: false,
+    configuration: {
+      sections: [sliceTopping("slice-topping", "Your slice")],
+      specialInstructionsEnabled: true,
+    },
+  },
+];
+
+const singlePizzaPickupSpecials: MenuProductSeed[] = [
+  confirmedPickupPizza("pickup-medium-one", "Medium", 1, 899, 210),
+  confirmedPickupPizza("pickup-medium-three", "Medium", 3, 1249, 210),
+  confirmedPickupPizza("pickup-large-one", "Large", 1, 1199, 230),
+  confirmedPickupPizza("pickup-large-three", "Large", 3, 1499, 230),
+  confirmedPickupPizza("pickup-xl-one", "X-Large", 1, 1299, 260),
+  confirmedPickupPizza("pickup-xl-three", "X-Large", 3, 1599, 260),
+  confirmedPickupPizza("pickup-jumbo-one", "Jumbo", 1, 2049, 290),
+  confirmedPickupPizza("pickup-jumbo-three", "Jumbo", 3, 2399, 290),
+  confirmedPickupPizza("pickup-slab-one", "Slab · 24 slices", 1, 2199, 290),
+  confirmedPickupPizza("pickup-slab-three", "Slab · 24 slices", 3, 2599, 290),
+];
+
 const pickupSpecials: MenuProductSeed[] = [
+  ...sliceSpecials,
+  ...singlePizzaPickupSpecials,
   bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings & 3 Pops", 2599, "Large pizza with 3 toppings, 1 lb wings and 3 canned pops.", [
     ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3),
   ], true),
@@ -394,8 +513,36 @@ export const MENU_PRODUCTS: MenuProductSeed[] = [
   ...wings,
   ...sides,
   ...configurableSides,
+  {
+    id: "one-pop",
+    categoryId: "drinks",
+    name: "1 Pop",
+    description: "1 canned pop.",
+    productType: "configurable",
+    basePriceCents: 160,
+    configuration: { sections: drinks(1), specialInstructionsEnabled: true },
+  },
+  {
+    id: "four-pops",
+    categoryId: "drinks",
+    name: "4 Pops",
+    description: "4 canned pops.",
+    productType: "configurable",
+    basePriceCents: 499,
+    configuration: { sections: drinks(4), specialInstructionsEnabled: true },
+  },
   { id: "water-bottle", categoryId: "drinks", name: "Water Bottle", description: "Chilled bottled water.", productType: "simple", basePriceCents: 160 },
   { id: "chocolate-brownie", categoryId: "desserts", name: "Chocolate Brownie", description: "A rich chocolate brownie for a sweet finish.", productType: "simple", basePriceCents: 299 },
   ...pickupSpecials,
   ...heroes,
 ];
+
+/** Products explicitly confirmed for the 2026-08-27 menu release. */
+export const PICKUP_SPECIALS_RELEASE_PRODUCT_IDS = [
+  "slice-combo",
+  "two-slice-combo",
+  "pickup-one-slice",
+  "one-pop",
+  "four-pops",
+  ...singlePizzaPickupSpecials.map((product) => product.id),
+] as const;

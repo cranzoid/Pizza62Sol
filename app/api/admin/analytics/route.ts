@@ -1,6 +1,7 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { zonedParts } from "@/lib/domain";
+import { orderSalesBreakdown } from "@/lib/reporting";
 
 const MAX_DAYS = 180;
 const TIME_ZONE = "America/Toronto";
@@ -30,14 +31,24 @@ export async function GET(request: Request) {
     // The window starts at midnight of the first local day so day buckets are whole.
     const start = from - zonedParts(from, TIME_ZONE).minute * 60_000;
     const previousStart = start - days * 86_400_000;
-    const paidFilter = "status != 'cancelled' AND (payment_method = 'pay_at_store' OR payment_status = 'paid')";
+    const paidFilter = "status != 'cancelled' AND (payment_method = 'pay_at_store' OR payment_status IN ('paid', 'partially_refunded', 'refunded'))";
     const database = getD1();
-    const [orderRows, totals, previousTotals, fulfilment, payment, schedule, statuses, topProducts, events, ratings, customers] =
+    const [orderRows, totals, previousTotals, fulfilment, payment, schedule, statuses, topProducts, categorySales, events, ratings, customers] =
       await Promise.all([
         database
-          .prepare(`SELECT created_at, total_cents FROM orders WHERE created_at >= ? AND ${paidFilter} ORDER BY created_at`)
+          .prepare(
+            `SELECT created_at, subtotal_cents, discount_cents, tax_cents, total_cents, pricing_json
+             FROM orders WHERE created_at >= ? AND ${paidFilter} ORDER BY created_at`,
+          )
           .bind(start)
-          .all<{ created_at: number; total_cents: number }>(),
+          .all<{
+            created_at: number;
+            subtotal_cents: number;
+            discount_cents: number;
+            tax_cents: number;
+            total_cents: number;
+            pricing_json: string;
+          }>(),
         database
           .prepare(
             `SELECT COUNT(*) AS orders, COALESCE(SUM(total_cents), 0) AS sales_cents,
@@ -85,10 +96,29 @@ export async function GET(request: Request) {
         database
           .prepare(
             `SELECT i.product_name AS name, SUM(i.quantity) AS quantity,
-                    COALESCE(SUM(i.line_total_cents), 0) AS sales_cents
+                    COALESCE(SUM(i.line_total_cents), 0) AS sales_cents,
+                    COALESCE(SUM(CASE WHEN i.taxable = 1 THEN i.line_total_cents ELSE 0 END), 0) AS taxable_sales_cents,
+                    COALESCE(SUM(CASE WHEN i.taxable = 0 THEN i.line_total_cents ELSE 0 END), 0) AS non_taxable_sales_cents
              FROM order_items i JOIN orders o ON o.id = i.order_id
              WHERE o.created_at >= ? AND o.status != 'cancelled'
+               AND (o.payment_method = 'pay_at_store' OR o.payment_status IN ('paid', 'partially_refunded', 'refunded'))
              GROUP BY i.product_name ORDER BY quantity DESC LIMIT 12`,
+          )
+          .bind(start)
+          .all<Record<string, unknown>>(),
+        database
+          .prepare(
+            `SELECT c.name AS name, SUM(i.quantity) AS quantity,
+                    COALESCE(SUM(i.line_total_cents), 0) AS sales_cents,
+                    COALESCE(SUM(CASE WHEN i.taxable = 1 THEN i.line_total_cents ELSE 0 END), 0) AS taxable_sales_cents,
+                    COALESCE(SUM(CASE WHEN i.taxable = 0 THEN i.line_total_cents ELSE 0 END), 0) AS non_taxable_sales_cents
+             FROM order_items i
+             JOIN orders o ON o.id = i.order_id
+             JOIN products p ON p.id = i.product_id
+             JOIN categories c ON c.id = p.category_id
+             WHERE o.created_at >= ? AND o.status != 'cancelled'
+               AND (o.payment_method = 'pay_at_store' OR o.payment_status IN ('paid', 'partially_refunded', 'refunded'))
+             GROUP BY c.id, c.name ORDER BY sales_cents DESC`,
           )
           .bind(start)
           .all<Record<string, unknown>>(),
@@ -150,6 +180,17 @@ export async function GET(request: Request) {
     ];
     const ratingRows = ratings.results.map((row) => ({ rating: Number(row.rating), responses: Number(row.responses) }));
     const ratingCount = ratingRows.reduce((sum, row) => sum + row.responses, 0);
+    const accounting = orderRows.results.reduce(
+      (sum, order) => {
+        const breakdown = orderSalesBreakdown(order);
+        sum.grossSalesCents += breakdown.grossSalesCents;
+        sum.taxableSalesCents += breakdown.taxableSalesCents;
+        sum.nonTaxableSalesCents += breakdown.nonTaxableSalesCents;
+        sum.finalTotalCents += breakdown.finalTotalCents;
+        return sum;
+      },
+      { grossSalesCents: 0, taxableSalesCents: 0, nonTaxableSalesCents: 0, finalTotalCents: 0 },
+    );
 
     return Response.json({
       user: { id: user.id, role: user.role },
@@ -162,6 +203,10 @@ export async function GET(request: Request) {
         discountCents: Number(totals?.discount_cents ?? 0),
         deliveryCents: Number(totals?.delivery_cents ?? 0),
         taxCents: Number(totals?.tax_cents ?? 0),
+        grossSalesCents: accounting.grossSalesCents,
+        taxableSalesCents: accounting.taxableSalesCents,
+        nonTaxableSalesCents: accounting.nonTaxableSalesCents,
+        finalTotalCents: accounting.finalTotalCents,
       },
       previous: { orders: Number(previousTotals?.orders ?? 0), salesCents: Number(previousTotals?.sales_cents ?? 0) },
       daily: [...daily.entries()].map(([date, value]) => ({ date, ...value })),
@@ -171,7 +216,20 @@ export async function GET(request: Request) {
       payment: payment.results.map((row) => ({ method: String(row.payment_method), orders: Number(row.orders) })),
       schedule: schedule.results.map((row) => ({ type: String(row.schedule_type), orders: Number(row.orders) })),
       statuses: statuses.results.map((row) => ({ status: String(row.status), orders: Number(row.orders) })),
-      topProducts: topProducts.results.map((row) => ({ name: String(row.name), quantity: Number(row.quantity), salesCents: Number(row.sales_cents) })),
+      topProducts: topProducts.results.map((row) => ({
+        name: String(row.name),
+        quantity: Number(row.quantity),
+        salesCents: Number(row.sales_cents),
+        taxableSalesCents: Number(row.taxable_sales_cents),
+        nonTaxableSalesCents: Number(row.non_taxable_sales_cents),
+      })),
+      categorySales: categorySales.results.map((row) => ({
+        name: String(row.name),
+        quantity: Number(row.quantity),
+        salesCents: Number(row.sales_cents),
+        taxableSalesCents: Number(row.taxable_sales_cents),
+        nonTaxableSalesCents: Number(row.non_taxable_sales_cents),
+      })),
       funnel,
       conversionBps: visits ? Math.round(((eventCounts.get("purchase_completed") ?? 0) / visits) * 10_000) : 0,
       ratings: {

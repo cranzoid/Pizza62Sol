@@ -163,6 +163,7 @@ type ProductConfiguration = {
   crustOptions?: string[];
   bakeSauceOptions?: string[];
   cheeseEnabled?: boolean;
+  requireIncludedToppings?: boolean;
   toppingsFirst?: boolean;
   freeDelivery?: boolean;
   availability?: WeeklyAvailability;
@@ -530,6 +531,20 @@ async function validateItems(
         extraCheese: Boolean(input.extraCheese),
         halalSurchargeCents,
       });
+      if (productConfiguration.requireIncludedToppings) {
+        const selectedToppingUnitsBps = modifierUnitsBps(
+          pizza.normalizedToppings.map((entry) => ({ value: entry.toppingId, placement: entry.placement })),
+          operations.halfToppingUnitsBps,
+        );
+        if (selectedToppingUnitsBps < variation.included_topping_units_bps) {
+          const required = variation.included_topping_units_bps / 10_000;
+          throw new OrderValidationError(
+            `${product.name} requires at least ${required} topping${required === 1 ? "" : "s"}.`,
+            422,
+            "TOPPINGS_INCOMPLETE",
+          );
+        }
+      }
       unitPriceCents = pizza.totalCents;
       const validatedModifiers = validateModifiers(
         input.modifiers,
@@ -707,6 +722,8 @@ export type OrderQuote = {
     menuSubtotalCents: number;
     discountCents: number;
     discountedMenuSubtotalCents: number;
+    taxableSubtotalCents: number;
+    nonTaxableSubtotalCents: number;
     taxCents: number;
     deliveryFeeCents: number;
     tipCents: number;
@@ -986,6 +1003,8 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
       menuSubtotalCents: price.menuSubtotalCents,
       discountCents: price.discountCents,
       discountedMenuSubtotalCents: price.discountedMenuSubtotalCents,
+      taxableSubtotalCents: price.taxableSubtotalCents,
+      nonTaxableSubtotalCents: price.nonTaxableSubtotalCents,
       taxCents: price.taxCents,
       deliveryFeeCents: price.deliveryFeeCents,
       tipCents: price.tipCents,

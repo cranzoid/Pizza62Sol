@@ -11,7 +11,19 @@ const SERIES = "var(--viz-series-1)";
 
 export type Analytics = {
   range: { days: number; start: number; end: number; timeZone: string };
-  totals: { orders: number; salesCents: number; averageCents: number; tipCents: number; discountCents: number; deliveryCents: number; taxCents: number };
+  totals: {
+    orders: number;
+    salesCents: number;
+    averageCents: number;
+    tipCents: number;
+    discountCents: number;
+    deliveryCents: number;
+    taxCents: number;
+    grossSalesCents: number;
+    taxableSalesCents: number;
+    nonTaxableSalesCents: number;
+    finalTotalCents: number;
+  };
   previous: { orders: number; salesCents: number };
   daily: Array<{ date: string; orders: number; salesCents: number }>;
   hourly: Array<{ hour: number; orders: number; salesCents: number }>;
@@ -20,11 +32,20 @@ export type Analytics = {
   payment: Array<{ method: string; orders: number }>;
   schedule: Array<{ type: string; orders: number }>;
   statuses: Array<{ status: string; orders: number }>;
-  topProducts: Array<{ name: string; quantity: number; salesCents: number }>;
+  topProducts: SalesRow[];
+  categorySales: SalesRow[];
   funnel: Array<{ step: string; sessions: number }>;
   conversionBps: number;
   ratings: { count: number; average: number; distribution: Array<{ rating: number; responses: number }> };
   customers: { total: number; returning: number };
+};
+
+type SalesRow = {
+  name: string;
+  quantity: number;
+  salesCents: number;
+  taxableSalesCents: number;
+  nonTaxableSalesCents: number;
 };
 
 const RANGES = [
@@ -66,7 +87,7 @@ export function AdminAnalyticsPanel() {
   if (error) return <div className="staff-panel"><div className="form-error" role="alert">{error}</div></div>;
   if (!data) return <div className="staff-panel" role="status">Loading your numbers…</div>;
 
-  const salesDelta = delta(data.totals.salesCents, data.previous.salesCents);
+  const salesDelta = delta(data.totals.finalTotalCents, data.previous.salesCents);
   const orderDelta = delta(data.totals.orders, data.previous.orders);
   const busiestHour = [...data.hourly].sort((a, b) => b.orders - a.orders)[0];
   const busiestDay = [...data.weekday].sort((a, b) => b.orders - a.orders)[0];
@@ -81,7 +102,11 @@ export function AdminAnalyticsPanel() {
     </div>
 
     <section className="stats-grid">
-      <StatTile label="Sales" value={formatMoney(data.totals.salesCents)} delta={salesDelta} />
+      <StatTile label="Gross food sales" value={formatMoney(data.totals.grossSalesCents)} note={`${formatMoney(data.totals.discountCents)} in discounts`} />
+      <StatTile label="Taxable food sales" value={formatMoney(data.totals.taxableSalesCents)} note="After discounts" />
+      <StatTile label="Tax-exempt food sales" value={formatMoney(data.totals.nonTaxableSalesCents)} note="After discounts" />
+      <StatTile label="HST collected" value={formatMoney(data.totals.taxCents)} />
+      <StatTile label="Final order total" value={formatMoney(data.totals.finalTotalCents)} delta={salesDelta} />
       <StatTile label="Orders" value={compact(data.totals.orders)} delta={orderDelta} />
       <StatTile label="Average order" value={formatMoney(data.totals.averageCents)} note={`${formatMoney(data.totals.tipCents)} in tips`} />
       <StatTile label="Visitors who ordered" value={`${(data.conversionBps / 100).toFixed(1)}%`} note={`${compact(visits)} website visits`} />
@@ -109,6 +134,11 @@ export function AdminAnalyticsPanel() {
         />
       </section>
     </div>
+
+    <section className="staff-panel">
+      <div className="staff-panel-head"><h2>Sales by category</h2><span className="live-chip">Gross line sales</span></div>
+      <SalesTable rows={data.categorySales} firstColumn="Category" />
+    </section>
 
     <div className="staff-grid viz-pair">
       <section className="staff-panel">
@@ -272,11 +302,27 @@ function RankedTable({ rows }: { rows: Analytics["topProducts"] }) {
   const max = Math.max(1, ...rows.map((row) => row.quantity));
   if (!rows.length) return <div className="staff-empty">No items sold in this period yet.</div>;
   return <div className="table-scroll" role="region" aria-label="Top-selling items" tabIndex={0}><table className="viz-table">
-    <thead><tr><th scope="col">Item</th><th scope="col">Sold</th><th scope="col">Sales</th></tr></thead>
+    <thead><tr><th scope="col">Item</th><th scope="col">Sold</th><th scope="col">Gross</th><th scope="col">Taxable</th><th scope="col">Tax-exempt</th></tr></thead>
     <tbody>{rows.map((row) => <tr key={row.name}>
       <th scope="row"><span className="viz-bar-cell"><i style={{ width: `${(row.quantity / max) * 100}%`, background: SERIES }} /></span>{row.name}</th>
       <td>{row.quantity}</td>
       <td>{formatMoney(row.salesCents)}</td>
+      <td>{formatMoney(row.taxableSalesCents)}</td>
+      <td>{formatMoney(row.nonTaxableSalesCents)}</td>
+    </tr>)}</tbody>
+  </table></div>;
+}
+
+function SalesTable({ rows, firstColumn }: { rows: SalesRow[]; firstColumn: string }) {
+  if (!rows.length) return <div className="staff-empty">No paid sales in this period yet.</div>;
+  return <div className="table-scroll" role="region" aria-label="Sales by category" tabIndex={0}><table className="viz-table">
+    <thead><tr><th scope="col">{firstColumn}</th><th scope="col">Items</th><th scope="col">Gross</th><th scope="col">Taxable</th><th scope="col">Tax-exempt</th></tr></thead>
+    <tbody>{rows.map((row) => <tr key={row.name}>
+      <th scope="row">{row.name}</th>
+      <td>{row.quantity}</td>
+      <td>{formatMoney(row.salesCents)}</td>
+      <td>{formatMoney(row.taxableSalesCents)}</td>
+      <td>{formatMoney(row.nonTaxableSalesCents)}</td>
     </tr>)}</tbody>
   </table></div>;
 }

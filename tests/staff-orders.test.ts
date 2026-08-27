@@ -398,6 +398,41 @@ withDb("quotes without creating anything", async () => {
   assert.equal(before.rows[0].count, after.rows[0].count);
 });
 
+withDb("rings in a tax-exempt slice combo through the shared till customizer contract", async () => {
+  const cookie = await signedInAs("owner");
+  const response = await staffOrder(cookie, {
+    fulfilment: "pickup",
+    items: [{
+      productId: "slice-combo",
+      quantity: 1,
+      modifiers: [
+        { id: "slice-topping", values: ["pepperoni"] },
+        { id: "included-dip", values: ["Dipping Sauce"] },
+        { id: "drink-1", values: ["Coke"] },
+      ],
+    }],
+    paymentMethod: "pay_at_store",
+    schedule,
+    channel: "walk_in",
+    idempotencyKey: nextKey(),
+    customer: { name: "Slice guest" },
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+  const result = (await response.json()) as { orderId: string; printOrder: { tax_cents: number; total_cents: number } };
+  assert.equal(result.printOrder.tax_cents, 0);
+  assert.equal(result.printOrder.total_cents, 450);
+
+  const item = (
+    await getPool().query<{ taxable: number; snapshot_json: string }>(
+      "SELECT taxable, snapshot_json FROM order_items WHERE order_id = $1",
+      [result.orderId],
+    )
+  ).rows[0];
+  assert.equal(item.taxable, 0);
+  const snapshot = JSON.parse(item.snapshot_json) as { modifiers: Array<{ id: string }> };
+  assert.deepEqual(snapshot.modifiers.map((modifier) => modifier.id), ["slice-topping", "included-dip", "drink-1"]);
+});
+
 // --- phone deliveries -------------------------------------------------------
 //
 // The till was pickup-only, which meant the one thing the phone is actually used
