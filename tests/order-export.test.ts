@@ -73,18 +73,35 @@ async function seedOrder(overrides: {
   channel?: string;
   fulfilment?: string;
   createdAt?: number;
+  subtotalCents?: number;
+  taxableSalesCents?: number;
+  nonTaxableSalesCents?: number;
+  taxCents?: number;
   totalCents?: number;
 } = {}): Promise<string> {
   const id = crypto.randomUUID();
   const orderNumber = `P62-X${RUN}-${(counter += 1)}`;
   const now = overrides.createdAt ?? Date.now();
   const fulfilment = overrides.fulfilment ?? "pickup";
+  const subtotal = overrides.subtotalCents ?? 899;
+  const taxable = overrides.taxableSalesCents ?? subtotal;
+  const nonTaxable = overrides.nonTaxableSalesCents ?? Math.max(0, subtotal - taxable);
+  const tax = overrides.taxCents ?? 117;
+  const total = overrides.totalCents ?? subtotal + tax;
+  const pricing = JSON.stringify({
+    menuSubtotalCents: subtotal,
+    discountedMenuSubtotalCents: subtotal,
+    taxableSubtotalCents: taxable,
+    nonTaxableSubtotalCents: nonTaxable,
+    taxCents: tax,
+    totalCents: total,
+  });
   await getPool().query(
     `INSERT INTO orders (id,order_number,tracking_token_hash,feedback_token_hash,customer_name,customer_phone,
        customer_email,fulfilment,channel,status,payment_status,payment_method,schedule_type,estimated_for,pricing_json,
        subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,address_json,created_at,updated_at)
      VALUES ($1,$2,$3,$4,$5,'9055550142','ada@example.test',$6,$7,'completed','paid','online','asap',
-       $8,'{}',899,0,117,0,0,$9,$10,$8,$8)`,
+       $8,$9,$10,0,$11,0,0,$12,$13,$8,$8)`,
     [
       id,
       orderNumber,
@@ -94,7 +111,10 @@ async function seedOrder(overrides: {
       fulfilment,
       overrides.channel ?? "online",
       now,
-      overrides.totalCents ?? 1016,
+      pricing,
+      subtotal,
+      tax,
+      total,
       fulfilment === "delivery" ? JSON.stringify({ line1: "1 Test St" }) : null,
     ],
   );
@@ -124,6 +144,28 @@ withDb("exports a CSV with a filename and no-store caching", async () => {
   assert.ok(csv.split("\r\n")[0].includes('"Order"'), "the first row is a header");
   // Money in decimal dollars — the export's next stop is a spreadsheet.
   assert.ok(csv.includes('"10.16"'), "totals are exported as dollars, not cents");
+  assert.ok(csv.split("\r\n")[0].includes('"Taxable food sales"'));
+  assert.ok(csv.split("\r\n")[0].includes('"Tax-exempt food sales"'));
+});
+
+withDb("exports the persisted tax-exempt sales separately from HST", async () => {
+  const cookie = await signedInAs("owner");
+  const orderNumber = await seedOrder({
+    subtotalCents: 450,
+    taxableSalesCents: 0,
+    nonTaxableSalesCents: 450,
+    taxCents: 0,
+    totalCents: 450,
+  });
+  const csv = await (await records(cookie, { format: "csv", query: orderNumber })).text();
+  const [header, line] = csv.split("\r\n");
+  const columns = header.split(",").map((value) => value.replace(/^\uFEFF?"|"$/g, ""));
+  const values = line.match(/"(?:[^"]|"")*"/g)?.map((value) => value.slice(1, -1)) ?? [];
+  assert.equal(values[columns.indexOf("Gross food sales")], "4.50");
+  assert.equal(values[columns.indexOf("Taxable food sales")], "0.00");
+  assert.equal(values[columns.indexOf("Tax-exempt food sales")], "4.50");
+  assert.equal(values[columns.indexOf("HST collected")], "0.00");
+  assert.equal(values[columns.indexOf("Final order total")], "4.50");
 });
 
 withDb("neutralises a spreadsheet formula in customer data", async () => {

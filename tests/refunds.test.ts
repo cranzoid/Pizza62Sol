@@ -146,6 +146,51 @@ withDb("records a card refund against its Clover reference", async () => {
   assert.ok(listed.refunds[0].actor_id);
 });
 
+withDb("a refund preserves the order's tax-exempt classification", async () => {
+  const cookie = await signedInAs("owner", ["view_orders", "issue_refunds"]);
+  const { orderId } = await seedPaidOrder({ method: "online", totalCents: 450 });
+  const pricing = JSON.stringify({
+    menuSubtotalCents: 450,
+    discountedMenuSubtotalCents: 450,
+    taxableSubtotalCents: 0,
+    nonTaxableSubtotalCents: 450,
+    taxCents: 0,
+    totalCents: 450,
+  });
+  await getPool().query(
+    "UPDATE orders SET pricing_json = $1, subtotal_cents = 450, tax_cents = 0, total_cents = 450 WHERE id = $2",
+    [pricing, orderId],
+  );
+  await getPool().query(
+    `INSERT INTO order_items (id,order_id,product_id,product_name,variation_name,quantity,unit_price_cents,
+       line_total_cents,taxable,snapshot_json,instructions,created_at)
+     VALUES ($1,$2,'slice-combo','Slice Combo',NULL,1,450,450,0,'{}',NULL,$3)`,
+    [crypto.randomUUID(), orderId, Date.now()],
+  );
+
+  const response = await post(cookie, {
+    action: "refund.record",
+    orderId,
+    amountCents: 450,
+    reason: "Order returned",
+    providerReference: "CLOVER-TAX-FREE-REFUND",
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+
+  const stored = (
+    await getPool().query<{ pricing_json: string; tax_cents: number; taxable: number }>(
+      `SELECT o.pricing_json, o.tax_cents, i.taxable
+       FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.id = $1`,
+      [orderId],
+    )
+  ).rows[0];
+  const after = JSON.parse(stored.pricing_json) as Record<string, number>;
+  assert.equal(stored.tax_cents, 0);
+  assert.equal(stored.taxable, 0);
+  assert.equal(after.taxableSubtotalCents, 0);
+  assert.equal(after.nonTaxableSubtotalCents, 450);
+});
+
 withDb("will not record a card refund without the Clover reference", async () => {
   // The reference is the only thing tying this record to money actually moving.
   // Without it the entry is an assertion that a refund happened, and nothing more.

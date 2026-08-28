@@ -89,6 +89,92 @@ withDb("quotes a pickup cart with the full breakdown", async () => {
   assert.equal(quote.taxRateBps, 1300);
 });
 
+const sliceCombo = {
+  productId: "slice-combo",
+  quantity: 1,
+  modifiers: [
+    { id: "slice-topping", values: ["pepperoni"] },
+    { id: "included-dip", values: ["Dipping Sauce"] },
+    { id: "drink-1", values: ["Coke"] },
+  ],
+};
+
+withDb("quotes tax-exempt slice products and mixed carts from product taxability", async () => {
+  const exempt = await quoteOrder({
+    fulfilment: "pickup",
+    items: [sliceCombo],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(exempt.ok, true, exempt.issues.map((issue) => issue.message).join("; "));
+  assert.equal(exempt.totals.menuSubtotalCents, 450);
+  assert.equal(exempt.totals.taxableSubtotalCents, 0);
+  assert.equal(exempt.totals.nonTaxableSubtotalCents, 450);
+  assert.equal(exempt.totals.taxCents, 0);
+  assert.equal(exempt.totals.totalCents, 450);
+
+  const mixed = await quoteOrder({
+    fulfilment: "pickup",
+    items: [sliceCombo, { productId: "poutine", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(mixed.ok, true, mixed.issues.map((issue) => issue.message).join("; "));
+  assert.equal(mixed.totals.menuSubtotalCents, 1349);
+  assert.equal(mixed.totals.taxableSubtotalCents, 899);
+  assert.equal(mixed.totals.nonTaxableSubtotalCents, 450);
+  assert.equal(mixed.totals.taxCents, 117);
+  assert.equal(mixed.totals.totalCents, 1466);
+});
+
+withDb("requires every slice-combo choice and every confirmed pizza topping", async () => {
+  const incompleteCombo = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "slice-combo", quantity: 1, modifiers: [{ id: "slice-topping", values: ["pepperoni"] }] }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(incompleteCombo.ok, false);
+  assert.ok(incompleteCombo.issues.some((issue) => /Dip|Pop/.test(issue.message)));
+
+  const incompletePizza = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-three",
+      variationId: "pickup-medium-three-size",
+      quantity: 1,
+      toppings: [
+        { toppingId: "pepperoni", placement: "whole" },
+        { toppingId: "mushrooms", placement: "whole" },
+      ],
+    }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(incompletePizza.ok, false);
+  assert.ok(incompletePizza.issues.some((issue) => issue.code === "TOPPINGS_INCOMPLETE"));
+
+  const completePizza = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-three",
+      variationId: "pickup-medium-three-size",
+      quantity: 1,
+      toppings: [
+        { toppingId: "pepperoni", placement: "whole" },
+        { toppingId: "mushrooms", placement: "whole" },
+        { toppingId: "onions", placement: "whole" },
+      ],
+    }],
+    paymentMethod: "pay_at_store",
+    schedule: openSchedule,
+  });
+  assert.equal(completePizza.ok, true, completePizza.issues.map((issue) => issue.message).join("; "));
+  assert.equal(completePizza.totals.menuSubtotalCents, 1249);
+});
+
 withDb("the quoted total is the total charged", async () => {
   // The whole point. Same cart, same tip, through both paths.
   //
@@ -130,6 +216,82 @@ withDb("the quoted total is the total charged", async () => {
   assert.equal(quote.totals.tipCents, row.tip_cents);
   assert.equal(quote.totals.discountCents, row.discount_cents);
   assert.equal(quote.totals.menuSubtotalCents, row.subtotal_cents);
+});
+
+/**
+ * Pizza by Size after the 2026-08-28 change: the delivery pizza list, one price
+ * per size for any one to four toppings.
+ *
+ * Both halves matter. If the allowance regressed to one included topping a
+ * customer would be billed three times over for the pizza the menu advertises;
+ * if the fulfilment rule regressed, a pickup customer would be sold a $16.99
+ * medium the Pickup Specials sell for $8.99.
+ */
+const bySizeToppings = ["pepperoni", "mushrooms", "onions", "green-peppers", "tomatoes"];
+const mediumBySize = (toppingCount: number) => ({
+  productId: "medium-pizza",
+  variationId: "medium-pizza-four-toppings",
+  // Two, so the cart clears the $20 delivery minimum on its own and the quote
+  // is testing the pizza rather than the shortfall rule.
+  quantity: 2,
+  toppings: bySizeToppings
+    .slice(0, toppingCount)
+    .map((toppingId) => ({ toppingId, placement: "whole" as const })),
+});
+
+withDb("charges one Pizza by Size price for one to four toppings, and bills the fifth", async () => {
+  const unitPrice = async (toppingCount: number) => {
+    const quote = await quoteOrder({
+      fulfilment: "delivery",
+      items: [mediumBySize(toppingCount)],
+      // Pay at store is a pickup-only method, and online payment reports a
+      // credentials issue on a test database — neither says anything about the
+      // pizza, so the assertion is that nothing was wrong with *this item*.
+      paymentMethod: "online",
+      tip: { type: "none" },
+      schedule: openSchedule,
+    });
+    const rejected = quote.issues.filter((issue) => /Pizza/i.test(issue.message));
+    assert.deepEqual(rejected, [], rejected.map((issue) => issue.message).join("; "));
+    return quote.lines[0].unitPriceCents;
+  };
+  assert.equal(await unitPrice(1), 1699);
+  assert.equal(await unitPrice(2), 1699);
+  assert.equal(await unitPrice(3), 1699);
+  assert.equal(await unitPrice(4), 1699);
+  // The fifth is the first topping the customer pays for, at the medium rate.
+  assert.equal(await unitPrice(5), 1699 + 210);
+});
+
+withDb("does not sell Pizza by Size on a pickup order", async () => {
+  const quote = await quoteOrder({
+    fulfilment: "pickup",
+    items: [mediumBySize(1)],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(quote.ok, false);
+  assert.ok(
+    quote.issues.some((issue) => /Medium Pizza is not available for pickup/.test(issue.message)),
+    `expected a pickup refusal, got: ${quote.issues.map((issue) => issue.message).join("; ")}`,
+  );
+
+  // And the pickup single it exists to protect is still sellable, and cheaper.
+  const special = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{
+      productId: "pickup-medium-one",
+      variationId: "pickup-medium-one-size",
+      quantity: 1,
+      toppings: [{ toppingId: "pepperoni", placement: "whole" as const }],
+    }],
+    paymentMethod: "pay_at_store",
+    tip: { type: "none" },
+    schedule: openSchedule,
+  });
+  assert.equal(special.ok, true, special.issues.map((issue) => issue.message).join("; "));
+  assert.equal(special.lines[0].unitPriceCents, 899);
 });
 
 withDb("taxes the delivery fee, and says so", async () => {
@@ -185,6 +347,59 @@ withDb("a rejected coupon does not stop the cart being priced", async () => {
   // The customer must still see their total, and see that no discount applied.
   assert.equal(quote.totals.discountCents, 0);
   assert.ok(quote.totals.totalCents > 0);
+});
+
+/**
+ * The feedback thank-you is a garlic bread or a drink.
+ *
+ * Two failures matter here and only one of them is arithmetic. The first is the
+ * code coming off a pizza order it was never meant for. The second is quieter
+ * and worse: the checkout saying "THANKS62 applied." above a total that has not
+ * moved, so the customer finds out at the counter that their thank-you was
+ * worth nothing. The message has to name the items, because "not eligible"
+ * leaves them with no idea what to do next.
+ */
+withDb("tells a customer THANKS62 is only good on garlic bread or a drink", async () => {
+  const pizzaOnly = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "poutine", quantity: 2 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.equal(pizzaOnly.totals.discountCents, 0, "the code must not come off an ineligible order");
+  assert.ok(pizzaOnly.coupon);
+  assert.equal(pizzaOnly.coupon.accepted, false, "a code that took nothing off has not applied");
+  assert.match(String(pizzaOnly.coupon.message), /Garlic Bread/i);
+  assert.match(String(pizzaOnly.coupon.message), /Pop/i);
+  // Reporting, not refusing: dinner is still orderable at full price.
+  assert.ok(pizzaOnly.totals.totalCents > 0);
+
+  const withGarlicBread = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "poutine", quantity: 2 }, { productId: "garlic-bread", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.ok(withGarlicBread.coupon);
+  assert.equal(withGarlicBread.coupon.accepted, true);
+  assert.equal(withGarlicBread.totals.discountCents, 399, "a garlic bread is what the code is worth");
+});
+
+withDb("says how far short an order is rather than just refusing the code", async () => {
+  const quote = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "garlic-bread", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.ok(quote.coupon);
+  assert.equal(quote.coupon.accepted, false);
+  assert.match(String(quote.coupon.message), /\$15\.00/);
+  assert.match(String(quote.coupon.message), /\$11\.01/);
+  assert.equal(quote.totals.discountCents, 0);
 });
 
 withDb("describes every unavailable line at once, not one at a time", async () => {

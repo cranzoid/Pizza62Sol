@@ -4,6 +4,9 @@ import {
   ONTARIO_WEEKLY_OVERTIME_MINUTES,
   applyPromotions,
   buildTimesheet,
+  cashChange,
+  explainPromotionMiss,
+  roundCashCents,
   buildWorkSessions,
   grossPayCents,
   payPeriodFor,
@@ -30,46 +33,107 @@ import {
   validateDelivery,
   validateRefundAmount,
   CRUST_OPTIONS,
+  compareMenuPrice,
 } from "../lib/domain.ts";
-import { MENU_PRODUCTS } from "../lib/menu.ts";
-import { PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
+import { FEEDBACK_REWARD_PRODUCT_IDS, MENU_PRODUCTS, PIZZA_BY_SIZE_PRODUCT_IDS } from "../lib/menu.ts";
+import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
 import { resolveFsaCentroid } from "../lib/delivery-area.ts";
 
-test("uses flyer prices and only charges toppings beyond each included offer", () => {
+test("charges one Pizza by Size price for any one to four toppings", () => {
   const expected = [
-    ["Medium", 840, 1260, 210],
-    ["Large", 1149, 1609, 230],
-    ["X-Large", 1249, 1769, 260],
-    ["Jumbo", 1999, 2579, 290],
-    ["Slab", 2149, 2729, 290],
+    ["Medium", 1699, 210],
+    ["Large", 1799, 230],
+    ["X-Large", 1899, 260],
+    ["Jumbo", 2399, 290],
+    ["Slab", 2799, 290],
   ];
   assert.deepEqual(
-    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.threeToppingPriceCents, size.extraToppingPriceCents]),
+    PIZZA_SIZES.map((size) => [size.name, size.basePriceCents, size.extraToppingPriceCents]),
     expected,
   );
+  const included = PIZZA_BY_SIZE_INCLUDED_TOPPINGS;
+  assert.equal(included, 4);
+  const toppings = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ toppingId: `topping-${index}`, placement: "whole" as const }));
   for (const size of PIZZA_SIZES) {
-    const included = pricePizza({
+    // One topping or all four, the customer pays the same.
+    for (let count = 1; count <= included; count += 1) {
+      const price = pricePizza({
+        basePriceCents: size.basePriceCents,
+        extraToppingPriceCents: size.extraToppingPriceCents,
+        includedToppingUnitsBps: included * 10_000,
+        halfToppingUnitsBps: 10_000,
+        toppings: toppings(count),
+        extraCheese: false,
+      });
+      assert.equal(price.totalCents, size.basePriceCents, `${size.name} with ${count} topping(s)`);
+    }
+    // The fifth is the first one charged for.
+    const fifth = pricePizza({
       basePriceCents: size.basePriceCents,
       extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 10_000,
+      includedToppingUnitsBps: included * 10_000,
       halfToppingUnitsBps: 10_000,
-      toppings: [{ toppingId: "approved-topping", placement: "whole" }],
+      toppings: toppings(included + 1),
       extraCheese: false,
     });
-    assert.equal(included.totalCents, size.basePriceCents);
-    const extra = pricePizza({
-      basePriceCents: size.basePriceCents,
-      extraToppingPriceCents: size.extraToppingPriceCents,
-      includedToppingUnitsBps: 10_000,
-      halfToppingUnitsBps: 10_000,
-      toppings: [
-        { toppingId: "approved-topping", placement: "whole" },
-        { toppingId: "extra-topping", placement: "whole" },
-      ],
-      extraCheese: false,
-    });
-    assert.equal(extra.totalCents, size.basePriceCents + size.extraToppingPriceCents);
+    assert.equal(fifth.totalCents, size.basePriceCents + size.extraToppingPriceCents);
   }
+});
+
+test("sells Pizza by Size on delivery only, and never under the pickup special", () => {
+  const byId = new Map(MENU_PRODUCTS.map((product) => [product.id, product]));
+  for (const productId of PIZZA_BY_SIZE_PRODUCT_IDS) {
+    const product = byId.get(productId)!;
+    assert.equal(product.categoryId, "build-your-own");
+    assert.equal(product.pickupEligible, false, `${productId} must not be sellable on pickup`);
+    assert.equal(product.deliveryEligible, true, `${productId} must stay sellable on delivery`);
+    // One option, not a 1-topping and a 3-topping one, because the price no
+    // longer varies with how many of the four included toppings are used.
+    assert.equal(product.variations?.length, 1);
+    assert.equal(
+      product.variations?.[0].includedToppingUnitsBps,
+      PIZZA_BY_SIZE_INCLUDED_TOPPINGS * 10_000,
+    );
+    assert.equal(product.variations?.[0].basePriceCents, product.basePriceCents);
+  }
+  // The reason pickup is excluded: every pickup single pizza undercuts the
+  // delivery list, so offering both on pickup would sell the cheap one twice.
+  const pickupSingles = MENU_PRODUCTS.filter(
+    (product) => product.categoryId === "pickup-specials" && product.productType === "pizza",
+  );
+  const cheapestBySize = Math.min(...PIZZA_SIZES.map((size) => size.basePriceCents));
+  assert.ok(pickupSingles.length > 0);
+  assert.ok(
+    pickupSingles.every((product) => product.pickupEligible === true && product.deliveryEligible === false),
+  );
+  assert.ok(Math.min(...pickupSingles.map((product) => product.basePriceCents)) < cheapestBySize);
+});
+
+test("orders a menu category by price, cheapest first", () => {
+  const category = [
+    { id: "c", name: "Two Large Feast", base_price_cents: 5399 },
+    { id: "a", name: "Slice Combo", base_price_cents: 450 },
+    { id: "b", name: "2 Slice Combo", base_price_cents: 725 },
+    { id: "d", name: "1 Slice", base_price_cents: 275 },
+  ];
+  assert.deepEqual(
+    [...category].sort(compareMenuPrice).map((product) => product.id),
+    ["d", "a", "b", "c"],
+  );
+  // Equal prices settle on the name, so the order does not depend on the order
+  // the rows came back in.
+  const tied = [
+    { id: "second", name: "Water Bottle", base_price_cents: 160 },
+    { id: "first", name: "1 Pop", base_price_cents: 160 },
+  ];
+  assert.deepEqual(
+    [...tied].sort(compareMenuPrice).map((product) => product.id),
+    ["first", "second"],
+  );
+  // Sorting is stable enough to be idempotent.
+  const once = [...category].sort(compareMenuPrice);
+  assert.deepEqual([...once].sort(compareMenuPrice), once);
 });
 
 test("limits Hamilton Heroes to the flyer window in Toronto", () => {
@@ -176,6 +240,143 @@ test("applies stackable discounts deterministically and blocks incompatible ones
   ], "pickup");
   assert.equal(applied.discountCents, 700);
   assert.deepEqual(applied.applied.map((entry) => entry.id), ["ten", "five"]);
+});
+
+/**
+ * THANKS62 is a garlic bread or a drink, and nothing else.
+ *
+ * The failure this guards is quiet and expensive: a fixed C$3.99 with no
+ * product targeting comes off a C$40 pizza order exactly as happily as off the
+ * side it was meant for, and nothing on the receipt says so.
+ */
+test("the feedback thank-you comes off garlic bread and drinks only", () => {
+  const reward = {
+    id: "feedback-thank-you",
+    name: "Feedback thank-you",
+    code: "THANKS62",
+    type: "fixed" as const,
+    amount: 399,
+    priority: 0,
+    combinable: true,
+    exclusive: false,
+    minimumCents: 1500,
+    productIds: [...FEEDBACK_REWARD_PRODUCT_IDS],
+  };
+  const pizzaOnly = [{ id: "1", productId: "large-pizza", categoryId: "build-your-own", quantity: 1, unitPriceCents: 2400, taxable: true, promotionEligible: true }];
+  assert.equal(applyPromotions(pizzaOnly, [reward], "pickup").discountCents, 0);
+
+  const withGarlicBread = [
+    ...pizzaOnly,
+    { id: "2", productId: "garlic-bread", categoryId: "sides", quantity: 1, unitPriceCents: 399, taxable: true, promotionEligible: true },
+  ];
+  assert.equal(applyPromotions(withGarlicBread, [reward], "pickup").discountCents, 399);
+
+  // Never more than the eligible line is worth: a C$1.60 pop is free, not free
+  // with C$2.39 off the pizza beside it.
+  const withOnePop = [
+    ...pizzaOnly,
+    { id: "3", productId: "one-pop", categoryId: "drinks", quantity: 1, unitPriceCents: 160, taxable: true, promotionEligible: true },
+  ];
+  assert.equal(applyPromotions(withOnePop, [reward], "pickup").discountCents, 160);
+});
+
+test("says why a code did not come off, in the order the pricing decides it", () => {
+  const reward = {
+    id: "feedback-thank-you",
+    name: "Feedback thank-you",
+    code: "THANKS62",
+    type: "fixed" as const,
+    amount: 399,
+    priority: 0,
+    combinable: true,
+    exclusive: false,
+    minimumCents: 1500,
+    productIds: [...FEEDBACK_REWARD_PRODUCT_IDS],
+  };
+  const pizza = { id: "1", productId: "large-pizza", categoryId: "build-your-own", quantity: 1, unitPriceCents: 2400, taxable: true, promotionEligible: true };
+  const bread = { id: "2", productId: "garlic-bread", categoryId: "sides", quantity: 1, unitPriceCents: 399, taxable: true, promotionEligible: true };
+
+  // A big enough order with nothing eligible in it: the reason is the items.
+  assert.deepEqual(explainPromotionMiss([pizza], reward, "pickup"), { reason: "items" });
+
+  // The minimum is reported before the items, because it is checked first and
+  // because "add C$11.01 more" is the more useful of the two answers.
+  const miss = explainPromotionMiss([bread], reward, "pickup");
+  assert.deepEqual(miss, { reason: "minimum", minimumCents: 1500, shortfallCents: 1101 });
+
+  // Fulfilment beats both.
+  assert.deepEqual(
+    explainPromotionMiss([pizza], { ...reward, fulfilments: ["pickup"] }, "delivery"),
+    { reason: "fulfilment", fulfilments: ["pickup"] },
+  );
+
+  // Eligible on every count, so what stopped it was the offer already applied.
+  assert.deepEqual(
+    explainPromotionMiss([pizza, bread], reward, "pickup", [{ id: "deal", name: "Two for one", discountCents: 500, reason: "" }]),
+    { reason: "combination" },
+  );
+
+  // And an offer that would have applied has no explanation to give.
+  assert.equal(explainPromotionMiss([pizza, bread], reward, "pickup"), null);
+});
+
+/**
+ * Change at the counter.
+ *
+ * The penny has not been minted since 2012, so a cash total settles to the
+ * nearest nickel while the bill itself does not move — get that backwards and
+ * the till is out against the books by a cent or two on every cash order, which
+ * is the kind of drift nobody finds for a month.
+ */
+test("rounds cash to the nearest nickel without moving the bill", () => {
+  assert.equal(roundCashCents(1698), 1700);
+  assert.equal(roundCashCents(1697), 1695);
+  assert.equal(roundCashCents(1696), 1695);
+  assert.equal(roundCashCents(1_23), 125);
+  assert.equal(roundCashCents(1702), 1700);
+  assert.equal(roundCashCents(0), 0);
+
+  const change = cashChange(1698, 2000);
+  assert.equal(change.totalCents, 1698, "the bill is untouched");
+  assert.equal(change.roundedTotalCents, 1700);
+  assert.equal(change.roundingCents, 2);
+  assert.equal(change.changeCents, 300);
+  assert.equal(change.shortCents, 0);
+  assert.deepEqual(change.breakdown, [
+    { label: "toonie", count: 1, valueCents: 200 },
+    { label: "loonie", count: 1, valueCents: 100 },
+  ]);
+});
+
+test("counts change out into notes and coins that add up", () => {
+  const change = cashChange(1234, 5000);
+  // 12.34 pays as 12.35, so 37.65 back.
+  assert.equal(change.changeCents, 3765);
+  assert.equal(
+    change.breakdown.reduce((sum, part) => sum + part.count * part.valueCents, 0),
+    change.changeCents,
+    "the coins handed back have to equal the change owed",
+  );
+  assert.deepEqual(change.breakdown, [
+    { label: "$20", count: 1, valueCents: 2000 },
+    { label: "$10", count: 1, valueCents: 1000 },
+    { label: "$5", count: 1, valueCents: 500 },
+    { label: "toonie", count: 1, valueCents: 200 },
+    { label: "quarter", count: 2, valueCents: 25 },
+    { label: "dime", count: 1, valueCents: 10 },
+    { label: "nickel", count: 1, valueCents: 5 },
+  ]);
+});
+
+test("reports a short payment rather than negative change", () => {
+  const change = cashChange(2000, 1000);
+  assert.equal(change.changeCents, 0);
+  assert.equal(change.shortCents, 1000);
+  assert.deepEqual(change.breakdown, []);
+  // Exact money is neither short nor owed.
+  const exact = cashChange(2000, 2000);
+  assert.equal(exact.changeCents, 0);
+  assert.equal(exact.shortCents, 0);
 });
 
 // Owner decision, 2026-08-21: HST applies to the delivery fee. The tip basis is

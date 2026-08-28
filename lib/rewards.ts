@@ -33,6 +33,16 @@ export type FeedbackReward = {
   worth: string;
   minimumCents: number;
   endsAt: number | null;
+  /**
+   * What the code can be spent on, named from the promotion's own targeting —
+   * "Garlic Bread, Garlic Bread with Cheese, 1 Pop, 4 Pops or Water Bottle" —
+   * or null when the offer is good on anything.
+   *
+   * Read from the promotion for the same reason the value is: a restriction the
+   * checkout enforces and the email does not mention is a customer arriving with
+   * a pizza order and a code that will not come off it.
+   */
+  restrictedTo: string | null;
 };
 
 type PromotionRow = {
@@ -41,6 +51,7 @@ type PromotionRow = {
   amount: number;
   min_subtotal_cents: number;
   ends_at: number | null;
+  rule_json: string | null;
 };
 
 const DEFAULT_OFFER = "something on us";
@@ -62,7 +73,7 @@ export async function activeFeedbackReward(): Promise<FeedbackReward | null> {
   const now = Date.now();
   const promotion = await getD1()
     .prepare(
-      `SELECT code, type, amount, min_subtotal_cents, ends_at
+      `SELECT code, type, amount, min_subtotal_cents, ends_at, rule_json
        FROM promotions
        WHERE UPPER(code) = ? AND active = 1
          AND (starts_at IS NULL OR starts_at <= ?)
@@ -83,7 +94,41 @@ export async function activeFeedbackReward(): Promise<FeedbackReward | null> {
     worth,
     minimumCents: Number(promotion.min_subtotal_cents ?? 0),
     endsAt: promotion.ends_at ?? null,
+    restrictedTo: await describeRestriction(promotion.rule_json),
   };
+}
+
+/**
+ * The products the code is limited to, in the menu's own words.
+ *
+ * Names are looked up rather than stored beside the offer, so renaming an item
+ * or retargeting the promotion changes the email by itself. Anything that fails
+ * to resolve — a product the owner has since retired — is left out instead of
+ * printed as an id, and a rule that targets categories rather than products
+ * returns null: better to send the offer with no small print than small print
+ * that is wrong.
+ */
+async function describeRestriction(ruleJson: string | null): Promise<string | null> {
+  let productIds: string[] = [];
+  try {
+    const rule = JSON.parse(ruleJson || "{}") as { productIds?: unknown };
+    if (Array.isArray(rule.productIds)) {
+      productIds = rule.productIds.filter((id): id is string => typeof id === "string" && Boolean(id));
+    }
+  } catch {
+    return null;
+  }
+  if (!productIds.length) return null;
+  const rows = await getD1()
+    .prepare(`SELECT id, name FROM products WHERE active = 1 AND id IN (${productIds.map(() => "?").join(",")})`)
+    .bind(...productIds)
+    .all<{ id: string; name: string }>()
+    .catch(() => ({ results: [] as Array<{ id: string; name: string }> }));
+  const names = new Map(rows.results.map((row) => [row.id, row.name]));
+  const ordered = productIds.map((id) => names.get(id)).filter((name): name is string => Boolean(name));
+  if (!ordered.length) return null;
+  if (ordered.length === 1) return ordered[0];
+  return `${ordered.slice(0, -1).join(", ")} or ${ordered[ordered.length - 1]}`;
 }
 
 /**

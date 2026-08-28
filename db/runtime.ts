@@ -1,9 +1,12 @@
 import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
+  FEEDBACK_REWARD_PRODUCT_IDS,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
+  PICKUP_SPECIALS_RELEASE_PRODUCT_IDS,
+  PIZZA_BY_SIZE_PRODUCT_IDS,
   TOPPING_SEEDS,
   type ModifierSectionSeed,
 } from "@/lib/menu";
@@ -133,7 +136,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
              (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
               pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
               setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
           .bind(
@@ -144,6 +147,7 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
             product.description,
             product.productType,
             product.basePriceCents,
+            product.taxable === false ? 0 : 1,
             product.pickupEligible === false ? 0 : 1,
             product.deliveryEligible === false ? 0 : 1,
             product.halalCapable ? 1 : 0,
@@ -202,9 +206,13 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
    * it, and "the thank-you email silently stopped going out" is a failure nobody
    * would notice for a month.
    *
-   * Worth C$3.99 — a garlic bread — on a C$15 order. Both numbers, the code, the
-   * name and whether it is active at all are owner-editable in Admin → History &
-   * offers from the moment it exists; this insert only decides where it starts.
+   * Worth C$3.99 — a garlic bread — on a C$15 order, and spendable only on the
+   * garlic breads and drinks in `FEEDBACK_REWARD_PRODUCT_IDS`. The targeting is
+   * the point of the offer, not a detail of it: without it the same C$3.99 comes
+   * off a pizza order, which is a promotion nobody agreed to run. Both numbers,
+   * the code, the targeting, the name and whether it is active at all are
+   * owner-editable in Admin → History & offers from the moment it exists; this
+   * insert only decides where it starts.
    * `ON CONFLICT DO NOTHING` without a target so it yields to an existing row on
    * either the id or the unique code.
    */
@@ -216,10 +224,15 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
           min_subtotal_cents, fulfilment, per_customer_limit, rule_json, display_order,
           created_at, updated_at)
          VALUES ('feedback-thank-you', 'Feedback thank-you', ?, 'fixed', 399, 0, 1, 0, 1,
-                 1500, 'any', 1, '{}', 90, ?, ?)
+                 1500, 'any', 1, ?, 90, ?, ?)
          ON CONFLICT DO NOTHING`,
       )
-      .bind(LAUNCH_SETTINGS.rewards.feedbackRewardCode, now, now),
+      .bind(
+        LAUNCH_SETTINGS.rewards.feedbackRewardCode,
+        JSON.stringify({ productIds: [...FEEDBACK_REWARD_PRODUCT_IDS] }),
+        now,
+        now,
+      ),
   );
   /**
    * What the customer is actually asked.
@@ -559,6 +572,187 @@ const DATA_MIGRATIONS: Array<{
            WHERE id = 'comments' AND display_order = 50`,
         )
         .bind(now),
+    ],
+  },
+  {
+    // The ten size/item pickup pizzas existed in an early database seed and were
+    // later retired because their prices had not been confirmed. The owner has
+    // now supplied the exact products and prices. An insert-only seed cannot
+    // reactivate those old rows, so this one-time migration deliberately restores
+    // this release's products while leaving every unrelated owner edit alone.
+    id: "2026-08-27-confirm-pickup-specials",
+    run: (database, now) => {
+      const releaseIds = new Set<string>(PICKUP_SPECIALS_RELEASE_PRODUCT_IDS);
+      const statements: D1PreparedStatement[] = [];
+      for (const [displayOrder, product] of MENU_PRODUCTS.entries()) {
+        if (!releaseIds.has(product.id)) continue;
+        statements.push(
+          database
+            .prepare(
+              `UPDATE products
+               SET category_id = ?, name = ?, slug = ?, description = ?, product_type = ?,
+                   base_price_cents = ?, taxable = ?, pickup_eligible = ?, delivery_eligible = ?,
+                   halal_capable = ?, promotion_eligible = 1, active = 1, sold_out = 0,
+                   setup_required = 0, kitchen_label = ?, configuration_json = ?,
+                   display_order = ?, updated_at = ?
+               WHERE id = ?`,
+            )
+            .bind(
+              product.categoryId,
+              product.name,
+              product.id,
+              product.description,
+              product.productType,
+              product.basePriceCents,
+              product.taxable === false ? 0 : 1,
+              product.pickupEligible === false ? 0 : 1,
+              product.deliveryEligible === false ? 0 : 1,
+              product.halalCapable ? 1 : 0,
+              product.name.toUpperCase().slice(0, 40),
+              JSON.stringify(product.configuration ?? {}),
+              displayOrder,
+              now,
+              product.id,
+            ),
+        );
+        if (product.productType !== "pizza") continue;
+        statements.push(
+          database
+            .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")
+            .bind(now, product.id),
+        );
+        for (const [variationOrder, variation] of (product.variations ?? []).entries()) {
+          statements.push(
+            database
+              .prepare(
+                `INSERT INTO product_variations
+                 (id, product_id, name, base_price_cents, extra_topping_price_cents,
+                  included_topping_units_bps, active, display_order, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id,
+                   name = excluded.name, base_price_cents = excluded.base_price_cents,
+                   extra_topping_price_cents = excluded.extra_topping_price_cents,
+                   included_topping_units_bps = excluded.included_topping_units_bps,
+                   active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+              )
+              .bind(
+                variation.id,
+                product.id,
+                variation.name,
+                variation.basePriceCents,
+                variation.extraToppingPriceCents,
+                variation.includedToppingUnitsBps ?? 0,
+                variationOrder,
+                now,
+                now,
+              ),
+          );
+        }
+      }
+      return statements;
+    },
+  },
+  {
+    // Pizza by Size became the delivery pizza list: one price per size, any one
+    // to four toppings for that price, and no longer sold on pickup. Pickup
+    // single pizzas are the Pickup Specials, which start below every price here,
+    // so leaving these on a pickup order undercut the special and listed the
+    // same pizza twice.
+    //
+    // The seed is insert-only and these rows already exist, so the price, the
+    // topping allowance and the fulfilment all have to be written here. The two
+    // old options (1 Topping, 3 Toppings) are deactivated rather than deleted:
+    // orders already placed against them still have to render.
+    //
+    // Only the fields this release actually changes are written. The product's
+    // name, image, display order, sold-out flag and every other owner-owned
+    // column are left exactly as the owner has them — a repricing has no
+    // business resetting a photograph or a name the owner rewrote.
+    id: "2026-08-28-delivery-pizza-by-size",
+    run: (database, now) => {
+      const statements: D1PreparedStatement[] = [];
+      for (const productId of PIZZA_BY_SIZE_PRODUCT_IDS) {
+        const product = MENU_PRODUCTS.find((entry) => entry.id === productId);
+        if (!product) continue;
+        statements.push(
+          database
+            .prepare(
+              `UPDATE products
+               SET description = ?, base_price_cents = ?,
+                   pickup_eligible = ?, delivery_eligible = ?, configuration_json = ?,
+                   updated_at = ?
+               WHERE id = ?`,
+            )
+            .bind(
+              product.description,
+              product.basePriceCents,
+              product.pickupEligible === false ? 0 : 1,
+              product.deliveryEligible === false ? 0 : 1,
+              JSON.stringify(product.configuration ?? {}),
+              now,
+              product.id,
+            ),
+        );
+        statements.push(
+          database
+            .prepare("UPDATE product_variations SET active = 0, updated_at = ? WHERE product_id = ?")
+            .bind(now, product.id),
+        );
+        for (const [variationOrder, variation] of (product.variations ?? []).entries()) {
+          statements.push(
+            database
+              .prepare(
+                `INSERT INTO product_variations
+                 (id, product_id, name, base_price_cents, extra_topping_price_cents,
+                  included_topping_units_bps, active, display_order, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id,
+                   name = excluded.name, base_price_cents = excluded.base_price_cents,
+                   extra_topping_price_cents = excluded.extra_topping_price_cents,
+                   included_topping_units_bps = excluded.included_topping_units_bps,
+                   active = 1, display_order = excluded.display_order, updated_at = excluded.updated_at`,
+              )
+              .bind(
+                variation.id,
+                product.id,
+                variation.name,
+                variation.basePriceCents,
+                variation.extraToppingPriceCents,
+                variation.includedToppingUnitsBps ?? 0,
+                variationOrder,
+                now,
+                now,
+              ),
+          );
+        }
+      }
+      return statements;
+    },
+  },
+  {
+    /**
+     * THANKS62 is a garlic bread or a drink, not C$3.99 off anything.
+     *
+     * The row was seeded with an empty `rule_json`, so on every database created
+     * before this release the feedback code comes off whatever is in the cart —
+     * a large pizza included. The offer the customer was emailed has always been
+     * "a free garlic bread or four pops"; this makes the promotion honour the
+     * sentence it was described by.
+     *
+     * Conditional on the targeting still being empty. An owner who has since
+     * pointed the offer at products of their own has made a decision, and a
+     * migration that overwrote it would be a second person editing their
+     * promotion behind their back (C-08).
+     */
+    id: "2026-08-28-thanks62-garlic-bread-and-pop",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE promotions SET rule_json = ?, updated_at = ?
+           WHERE id = 'feedback-thank-you'
+             AND (rule_json IS NULL OR rule_json = '' OR rule_json::jsonb = '{}'::jsonb)`,
+        )
+        .bind(JSON.stringify({ productIds: [...FEEDBACK_REWARD_PRODUCT_IDS] }), now),
     ],
   },
 ];

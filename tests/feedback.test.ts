@@ -107,9 +107,11 @@ const questionIds = async (placed: Placed): Promise<string[]> => {
   return body.questions.map((question) => question.id);
 };
 
+// Every order here is pickup, and Pizza by Size is delivery-only, so the pizza
+// under test is the pickup single — three toppings, all of them included.
 const largePizza = {
-  productId: "large-pizza",
-  variationId: "large-pizza-three-toppings",
+  productId: "pickup-large-three",
+  variationId: "pickup-large-three-size",
   quantity: 1,
   toppings: [
     { toppingId: "pepperoni", placement: "whole" },
