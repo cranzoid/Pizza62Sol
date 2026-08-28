@@ -60,6 +60,12 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   card and online prints explicitly keep the drawer shut; **Cash · open drawer**
   drives the Tera drawer through the printer's DK port without printing another
   receipt. Desktop browsers keep the ordinary print-dialogue fallback.
+- The till takes a promo code — the thank-you email tells customers to read
+  theirs out over the phone — and works out change: the amount handed over is
+  keyed in, and the screen shows the total rounded to the nearest nickel (there
+  is no penny; the bill itself never moves), the change owed, and the notes and
+  coins to count out. It stays on screen after the ticket prints, because that
+  is when the money actually changes hands.
 - Feedback asks about the crust, the sauce and the toppings when the order
   contained pizza, and about the wings when it contained wings. A five-star
   rating is thanked and walked to the Google review page; every other rating is
@@ -68,6 +74,13 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   rated us. The offer is a promotion row (Admin → History & offers) named by
   **Admin → Settings → Feedback thank-you**; the email quotes that row, and no
   live promotion means no email rather than a code the checkout would refuse.
+- THANKS62 is redeemable on garlic bread and drinks only (Garlic Bread, Garlic
+  Bread with Cheese, 1 Pop, 4 Pops, Water Bottle) on orders of C$15 or more. The
+  restriction lives on the promotion row as `rule_json.productIds`, so the email
+  small print, the checkout message and the discount all read the same fact —
+  retarget the row and all three follow. A code that matches but comes off
+  nothing is reported as *not applied*, with the reason and the products named;
+  the order can still be placed at full price.
 - Email credentials, Clover and Twilio are all set from **Admin → Integrations**,
   encrypted at rest. Until they are, orders still work: notifications park
   without spending a retry and go out the moment credentials arrive.

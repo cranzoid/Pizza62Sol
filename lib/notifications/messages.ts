@@ -532,13 +532,18 @@ export async function renderFeedbackReward(
 ): Promise<RenderedMessage> {
   const base = await publicBaseUrl();
   const worth = reward.worth;
+  // The restriction leads the small print. A customer who reads one line reads
+  // the first one, and "only on garlic bread or pop" is the line that decides
+  // what they put in the basket — telling them at checkout instead is telling
+  // them after they have chosen.
   const conditions = [
+    reward.restrictedTo ? `Redeemable on ${reward.restrictedTo} only.` : null,
     reward.minimumCents > 0 ? `On orders of ${money(reward.minimumCents)} or more.` : "On any order.",
     reward.endsAt
       ? `Valid until ${new Date(reward.endsAt).toLocaleDateString("en-CA", { day: "numeric", month: "long", year: "numeric", timeZone: TORONTO })}.`
       : "No expiry date — use it whenever you are next in.",
     "One code per order. Pickup or delivery.",
-  ];
+  ].filter((line): line is string => Boolean(line));
 
   const sections: Section[] = [
     {
@@ -547,7 +552,9 @@ export async function renderFeedbackReward(
     },
     {
       type: "paragraph",
-      text: `Have ${reward.offer} on us next time. Enter this code at checkout, or read it out to whoever answers the phone.`,
+      text: reward.restrictedTo
+        ? `Have ${reward.offer} on us next time — the code comes off ${reward.restrictedTo}. Enter it at checkout, or read it out to whoever answers the phone.`
+        : `Have ${reward.offer} on us next time. Enter this code at checkout, or read it out to whoever answers the phone.`,
     },
     { type: "callout", label: "Your code", value: reward.code, note: worth, tone: "good" },
     { type: "note", title: "The small print", lines: conditions },
@@ -567,6 +574,8 @@ export async function renderFeedbackReward(
     emailSubject: `Thanks for the feedback — have ${reward.offer} on us`,
     emailText,
     emailHtml,
-    smsBody: `Pizza 62: thanks for the feedback. Code ${reward.code} takes ${worth} your next order.`,
+    smsBody: reward.restrictedTo
+      ? `Pizza 62: thanks for the feedback. Code ${reward.code} takes ${worth} ${reward.restrictedTo} on your next order.`
+      : `Pizza 62: thanks for the feedback. Code ${reward.code} takes ${worth} your next order.`,
   };
 }

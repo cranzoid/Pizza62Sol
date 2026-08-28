@@ -4,6 +4,7 @@ import {
   CHEESE_OPTIONS,
   CRUST_OPTIONS,
   HALAL_OPTION,
+  explainPromotionMiss,
   generateOpaqueToken,
   hashOpaqueToken,
   isWithinWeeklyAvailability,
@@ -14,6 +15,7 @@ import {
   pricePizza,
   priceToppingUnits,
   validateDelivery,
+  type AppliedPromotion,
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
@@ -662,6 +664,7 @@ async function activePromotions(
     rules.push({
       id: row.id as string,
       name: row.name as string,
+      code: code || null,
       type: row.type as PromotionRule["type"],
       amount: row.amount as number,
       priority: row.priority as number,
@@ -678,6 +681,76 @@ async function activePromotions(
     throw new OrderValidationError("That promo code isn't valid right now.", 400, "PROMO_CODE_INVALID");
   }
   return rules;
+}
+
+/**
+ * The products a targeted promotion can be spent on, named the way the menu
+ * names them.
+ *
+ * Read from the products table rather than kept beside the rule as a sentence,
+ * because the two would drift the first time the owner renamed an item or
+ * retargeted the offer — and the customer would then be told the code is good
+ * for something the checkout refuses. A name that no longer resolves is dropped
+ * rather than printed as an id.
+ */
+async function eligibleProductNames(promotion: PromotionRule): Promise<string[]> {
+  const ids = promotion.productIds ?? [];
+  if (!ids.length) return [];
+  const rows = await getD1()
+    .prepare(`SELECT id, name FROM products WHERE active = 1 AND id IN (${ids.map(() => "?").join(",")})`)
+    .bind(...ids)
+    .all<{ id: string; name: string }>();
+  const names = new Map(rows.results.map((row) => [row.id, row.name]));
+  // Ordered by the rule, not by the database, so the list reads the way the
+  // offer was written.
+  return ids.map((id) => names.get(id)).filter((name): name is string => Boolean(name));
+}
+
+/** "A, B or C" — an English list, because this ends up in a sentence. */
+function listPhrase(items: string[], conjunction: "or" | "and" = "or"): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} ${conjunction} ${items[items.length - 1]}`;
+}
+
+/**
+ * What to tell a customer whose code did not come off their total.
+ *
+ * The one thing this must never do is stay quiet. A checkout that says
+ * "THANKS62 applied." beside an unchanged total has told the customer something
+ * untrue, and they find out at the counter — which is where a C$3.99 thank-you
+ * turns into an argument. So every way a coupon can fail to apply produces a
+ * sentence naming the reason and, where there is one, the thing to do about it.
+ *
+ * The item wording is built from the promotion's own targeting (see
+ * `eligibleProductNames`), so restricting an offer to different products changes
+ * what the customer is told without anyone editing a string.
+ */
+async function describeCouponMiss(
+  promotion: PromotionRule,
+  lines: CartLinePrice[],
+  fulfilment: Fulfilment,
+  applied: AppliedPromotion[],
+): Promise<string> {
+  const code = promotion.code ?? "That code";
+  const miss = explainPromotionMiss(lines, promotion, fulfilment, applied);
+  if (miss?.reason === "fulfilment") {
+    const only = miss.fulfilments.includes("delivery") ? "delivery" : "pickup";
+    return `${code} is a ${only} offer, and this is a ${fulfilment} order.`;
+  }
+  if (miss?.reason === "minimum") {
+    return `${code} needs an order of ${formatDeliveryMinimum(miss.minimumCents)} before tax. Add ${formatDeliveryMinimum(miss.shortfallCents)} more to use it.`;
+  }
+  if (miss?.reason === "items") {
+    const names = await eligibleProductNames(promotion);
+    return names.length
+      ? `${code} can only be used on ${listPhrase(names)}. Add one to your order to use it.`
+      : `${code} does not apply to anything in this order.`;
+  }
+  if (miss?.reason === "combination") {
+    const other = listPhrase(applied.map((entry) => entry.name), "and");
+    return `${code} cannot be combined with ${other || "another offer already on this order"}.`;
+  }
+  return `${code} did not apply to this order.`;
 }
 
 export class OrderValidationError extends Error {
@@ -871,6 +944,29 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
       deliveryFeeTaxable: delivery.feeTaxable,
       tip: { type: "none" },
     });
+  }
+
+  // A code that matched a live promotion but came off nothing.
+  //
+  // `activePromotions` answers "is this a real code", which is not the question
+  // the customer is asking — they are asking whether it took anything off. A
+  // targeted offer (THANKS62 is only good on garlic bread or a drink) matches
+  // the cart at neither step and is dropped in silence by `applyPromotions`, so
+  // without this the review screen reads "THANKS62 applied." above an unchanged
+  // total. The order is still placeable: the coupon is reported as not applied,
+  // the discount is genuinely zero, and nobody is stopped from buying dinner
+  // over a C$3.99 thank-you they can use next time.
+  const acceptedCoupon = coupon?.accepted ? coupon : null;
+  if (acceptedCoupon) {
+    const couponRule = promotions.find((rule) => rule.code === acceptedCoupon.code);
+    const missed = couponRule && !price.appliedPromotions.some((entry) => entry.id === couponRule.id);
+    if (missed) {
+      coupon = {
+        code: acceptedCoupon.code,
+        accepted: false,
+        message: await describeCouponMiss(couponRule, cartLines, fulfilment, price.appliedPromotions),
+      };
+    }
   }
 
   // The delivery minimum is checked against the pre-tax menu subtotal, so a

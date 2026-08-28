@@ -349,6 +349,59 @@ withDb("a rejected coupon does not stop the cart being priced", async () => {
   assert.ok(quote.totals.totalCents > 0);
 });
 
+/**
+ * The feedback thank-you is a garlic bread or a drink.
+ *
+ * Two failures matter here and only one of them is arithmetic. The first is the
+ * code coming off a pizza order it was never meant for. The second is quieter
+ * and worse: the checkout saying "THANKS62 applied." above a total that has not
+ * moved, so the customer finds out at the counter that their thank-you was
+ * worth nothing. The message has to name the items, because "not eligible"
+ * leaves them with no idea what to do next.
+ */
+withDb("tells a customer THANKS62 is only good on garlic bread or a drink", async () => {
+  const pizzaOnly = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "poutine", quantity: 2 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.equal(pizzaOnly.totals.discountCents, 0, "the code must not come off an ineligible order");
+  assert.ok(pizzaOnly.coupon);
+  assert.equal(pizzaOnly.coupon.accepted, false, "a code that took nothing off has not applied");
+  assert.match(String(pizzaOnly.coupon.message), /Garlic Bread/i);
+  assert.match(String(pizzaOnly.coupon.message), /Pop/i);
+  // Reporting, not refusing: dinner is still orderable at full price.
+  assert.ok(pizzaOnly.totals.totalCents > 0);
+
+  const withGarlicBread = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "poutine", quantity: 2 }, { productId: "garlic-bread", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.ok(withGarlicBread.coupon);
+  assert.equal(withGarlicBread.coupon.accepted, true);
+  assert.equal(withGarlicBread.totals.discountCents, 399, "a garlic bread is what the code is worth");
+});
+
+withDb("says how far short an order is rather than just refusing the code", async () => {
+  const quote = await quoteOrder({
+    fulfilment: "pickup",
+    items: [{ productId: "garlic-bread", quantity: 1 }],
+    paymentMethod: "pay_at_store",
+    couponCode: "THANKS62",
+    tip: { type: "none" },
+  });
+  assert.ok(quote.coupon);
+  assert.equal(quote.coupon.accepted, false);
+  assert.match(String(quote.coupon.message), /\$15\.00/);
+  assert.match(String(quote.coupon.message), /\$11\.01/);
+  assert.equal(quote.totals.discountCents, 0);
+});
+
 withDb("describes every unavailable line at once, not one at a time", async () => {
   const quote = await quoteOrder({
     fulfilment: "pickup",

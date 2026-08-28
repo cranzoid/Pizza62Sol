@@ -48,6 +48,13 @@ export type CartLinePrice = {
 export type PromotionRule = {
   id: string;
   name: string;
+  /**
+   * The code the customer types, when there is one. Carried through pricing so a
+   * caller can find the rule a customer asked for by name and say what happened
+   * to it — `applyPromotions` itself never reads it, because a coded offer that
+   * reached this point has already been matched.
+   */
+  code?: string | null;
   type: "percentage" | "fixed" | "free_delivery";
   amount: number;
   priority: number;
@@ -609,6 +616,158 @@ export function priceCart(input: CartPricingInput): CartPricingResult {
     totalCents:
       discountedMenuSubtotalCents + taxCents + deliveryFeeCents + tipCents,
     appliedPromotions: promotionResult.applied,
+  };
+}
+
+/**
+ * Why a promotion the customer asked for did not come off their bill.
+ *
+ * `applyPromotions` skips an ineligible offer in silence, which is right for the
+ * automatic ones — nobody needs telling that a rule they never heard of did not
+ * fire. It is wrong for a code somebody typed in. "THANKS62 applied." next to an
+ * unchanged total is the checkout telling the customer something that is not
+ * true, and the version that says nothing at all is barely better: they find out
+ * at the counter.
+ *
+ * So this answers the question the customer is actually asking — *why not* — in
+ * the same order `applyPromotions` makes its decisions, and returns the first
+ * test the cart fails. It reports the reason only; the sentence is assembled by
+ * the caller, which is the layer that knows what the eligible products are
+ * called. Returns null when nothing here explains it, so a caller can fall back
+ * to a general apology rather than assert a reason it does not have.
+ *
+ * Only meaningful for a promotion that did *not* appear in `appliedPromotions`.
+ */
+export type PromotionMiss =
+  | { reason: "fulfilment"; fulfilments: Fulfilment[] }
+  | { reason: "minimum"; minimumCents: number; shortfallCents: number }
+  | { reason: "items" }
+  | { reason: "combination" };
+
+export function explainPromotionMiss(
+  lines: CartLinePrice[],
+  promotion: PromotionRule,
+  fulfilment: Fulfilment,
+  applied: AppliedPromotion[] = [],
+): PromotionMiss | null {
+  if (promotion.fulfilments?.length && !promotion.fulfilments.includes(fulfilment)) {
+    return { reason: "fulfilment", fulfilments: [...promotion.fulfilments] };
+  }
+  const subtotal = lines.reduce((sum, line) => sum + line.unitPriceCents * line.quantity, 0);
+  const minimumCents = promotion.minimumCents ?? 0;
+  if (subtotal < minimumCents) {
+    return { reason: "minimum", minimumCents, shortfallCents: minimumCents - subtotal };
+  }
+  // Free delivery is the one type that does not need an eligible line, so an
+  // item test would name the wrong reason for it.
+  if (promotion.type !== "free_delivery" && eligibleLineSubtotal(lines, promotion) <= 0) {
+    return { reason: "items" };
+  }
+  // Everything this offer needs is in the cart, so what stopped it was another
+  // offer already on the order — an exclusive one, or one that is not
+  // combinable. Worth saying plainly: the customer's code is fine and their
+  // cart is fine, and neither is the thing to change.
+  if (applied.length) return { reason: "combination" };
+  return null;
+}
+
+/**
+ * Canadian cash rounding, applied to a total about to be paid with notes and
+ * coins.
+ *
+ * The penny stopped being minted in 2012 and there is no 1¢ or 2¢ to hand back,
+ * so a cash total settles to the nearest five cents — up or down, ties up, and
+ * only ever for cash. **The bill itself does not change.** A C$16.98 order is
+ * C$16.98 on the receipt, in the day's takings and on the HST return whatever
+ * the customer pays with; the rounding is a property of handing over coins, and
+ * treating it as a discount would put the till out against the books by a cent
+ * or two on every cash order.
+ *
+ * Rounding away from zero on a tie is the published convention and the one that
+ * matches every other till in the country: .03 rounds up to .05, .02 down to
+ * .00, so the restaurant and the customer each give up the same fraction of a
+ * cent over a day's orders.
+ */
+export const CASH_ROUNDING_CENTS = 5;
+
+export function roundCashCents(cents: number): number {
+  assertIntegerCents(cents, "Cash total");
+  return Math.round(cents / CASH_ROUNDING_CENTS) * CASH_ROUNDING_CENTS;
+}
+
+/**
+ * The notes and coins in a Canadian till, largest first.
+ *
+ * The C$100 note is included because it is legal tender and people pay with
+ * them; whether the restaurant keeps enough float to break one is a decision for
+ * the person at the counter, not arithmetic. There is no penny, which is exactly
+ * why `roundCashCents` exists.
+ */
+export const CASH_DENOMINATIONS: ReadonlyArray<{ valueCents: number; label: string }> = [
+  { valueCents: 10_000, label: "$100" },
+  { valueCents: 5_000, label: "$50" },
+  { valueCents: 2_000, label: "$20" },
+  { valueCents: 1_000, label: "$10" },
+  { valueCents: 500, label: "$5" },
+  { valueCents: 200, label: "toonie" },
+  { valueCents: 100, label: "loonie" },
+  { valueCents: 25, label: "quarter" },
+  { valueCents: 10, label: "dime" },
+  { valueCents: 5, label: "nickel" },
+];
+
+export type CashChange = {
+  /** What the order costs. Unchanged by any of this. */
+  totalCents: number;
+  /** That total settled to the nearest nickel, which is what cash can pay. */
+  roundedTotalCents: number;
+  /** Rounded total minus the real total: negative when the customer pays less. */
+  roundingCents: number;
+  tenderedCents: number;
+  /** Change owed. Zero when the customer has not yet handed over enough. */
+  changeCents: number;
+  /** How much is still owed, when they have not. */
+  shortCents: number;
+  /** The change counted out into notes and coins. */
+  breakdown: Array<{ label: string; count: number; valueCents: number }>;
+};
+
+/**
+ * What to hand back, and what to count out.
+ *
+ * The breakdown is the part that earns its keep at a busy counter: "C$3.05" is
+ * a number to work out, "a toonie, a loonie and a nickel" is a movement. It is
+ * the greedy decomposition, which is provably minimal for Canadian
+ * denominations, and it always sums to `changeCents` exactly because the change
+ * is a multiple of five cents by construction.
+ *
+ * A short payment is reported rather than turned into negative change — the
+ * counter is mid-transaction while the customer counts out the rest, and a
+ * screen showing "−C$4.00 change" during that is a screen that gets misread.
+ */
+export function cashChange(totalCents: number, tenderedCents: number): CashChange {
+  assertIntegerCents(totalCents, "Order total");
+  assertIntegerCents(tenderedCents, "Cash received");
+  const roundedTotalCents = roundCashCents(totalCents);
+  const difference = tenderedCents - roundedTotalCents;
+  const changeCents = Math.max(0, difference);
+  const breakdown: CashChange["breakdown"] = [];
+  let remaining = changeCents;
+  for (const denomination of CASH_DENOMINATIONS) {
+    const count = Math.floor(remaining / denomination.valueCents);
+    if (count > 0) {
+      breakdown.push({ label: denomination.label, count, valueCents: denomination.valueCents });
+      remaining -= count * denomination.valueCents;
+    }
+  }
+  return {
+    totalCents,
+    roundedTotalCents,
+    roundingCents: roundedTotalCents - totalCents,
+    tenderedCents,
+    changeCents,
+    shortCents: Math.max(0, -difference),
+    breakdown,
   };
 }
 

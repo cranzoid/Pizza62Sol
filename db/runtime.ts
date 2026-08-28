@@ -1,6 +1,7 @@
 import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
+  FEEDBACK_REWARD_PRODUCT_IDS,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
@@ -205,9 +206,13 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
    * it, and "the thank-you email silently stopped going out" is a failure nobody
    * would notice for a month.
    *
-   * Worth C$3.99 — a garlic bread — on a C$15 order. Both numbers, the code, the
-   * name and whether it is active at all are owner-editable in Admin → History &
-   * offers from the moment it exists; this insert only decides where it starts.
+   * Worth C$3.99 — a garlic bread — on a C$15 order, and spendable only on the
+   * garlic breads and drinks in `FEEDBACK_REWARD_PRODUCT_IDS`. The targeting is
+   * the point of the offer, not a detail of it: without it the same C$3.99 comes
+   * off a pizza order, which is a promotion nobody agreed to run. Both numbers,
+   * the code, the targeting, the name and whether it is active at all are
+   * owner-editable in Admin → History & offers from the moment it exists; this
+   * insert only decides where it starts.
    * `ON CONFLICT DO NOTHING` without a target so it yields to an existing row on
    * either the id or the unique code.
    */
@@ -219,10 +224,15 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
           min_subtotal_cents, fulfilment, per_customer_limit, rule_json, display_order,
           created_at, updated_at)
          VALUES ('feedback-thank-you', 'Feedback thank-you', ?, 'fixed', 399, 0, 1, 0, 1,
-                 1500, 'any', 1, '{}', 90, ?, ?)
+                 1500, 'any', 1, ?, 90, ?, ?)
          ON CONFLICT DO NOTHING`,
       )
-      .bind(LAUNCH_SETTINGS.rewards.feedbackRewardCode, now, now),
+      .bind(
+        LAUNCH_SETTINGS.rewards.feedbackRewardCode,
+        JSON.stringify({ productIds: [...FEEDBACK_REWARD_PRODUCT_IDS] }),
+        now,
+        now,
+      ),
   );
   /**
    * What the customer is actually asked.
@@ -718,6 +728,32 @@ const DATA_MIGRATIONS: Array<{
       }
       return statements;
     },
+  },
+  {
+    /**
+     * THANKS62 is a garlic bread or a drink, not C$3.99 off anything.
+     *
+     * The row was seeded with an empty `rule_json`, so on every database created
+     * before this release the feedback code comes off whatever is in the cart —
+     * a large pizza included. The offer the customer was emailed has always been
+     * "a free garlic bread or four pops"; this makes the promotion honour the
+     * sentence it was described by.
+     *
+     * Conditional on the targeting still being empty. An owner who has since
+     * pointed the offer at products of their own has made a decision, and a
+     * migration that overwrote it would be a second person editing their
+     * promotion behind their back (C-08).
+     */
+    id: "2026-08-28-thanks62-garlic-bread-and-pop",
+    run: (database, now) => [
+      database
+        .prepare(
+          `UPDATE promotions SET rule_json = ?, updated_at = ?
+           WHERE id = 'feedback-thank-you'
+             AND (rule_json IS NULL OR rule_json = '' OR rule_json::jsonb = '{}'::jsonb)`,
+        )
+        .bind(JSON.stringify({ productIds: [...FEEDBACK_REWARD_PRODUCT_IDS] }), now),
+    ],
   },
 ];
 

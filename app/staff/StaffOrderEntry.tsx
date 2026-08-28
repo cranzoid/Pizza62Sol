@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { compareMenuPrice, formatMoney } from "@/lib/domain";
+import { cashChange, compareMenuPrice, formatMoney } from "@/lib/domain";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
 import {
@@ -100,11 +100,14 @@ type Quote = {
   ok: boolean;
   totals: { menuSubtotalCents: number; discountCents: number; taxCents: number; deliveryFeeCents: number; totalCents: number };
   issues: Array<{ index: number | null; message: string }>;
+  /** Null until a code is entered. `message` says why one did not come off. */
+  coupon: { code: string; accepted: boolean; message: string | null } | null;
 };
 
 type PlacedOrder = {
   duplicate?: boolean;
   orderNumber?: string;
+  totalCents?: number;
   printOrder?: Record<string, unknown> | null;
   error?: string;
 };
@@ -130,6 +133,24 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
+  // Read out over the phone as often as typed at a keyboard — the thank-you
+  // email tells customers to do exactly that, and until now there was nowhere
+  // at the counter to put it, so a code the website honours was refused by the
+  // one person the customer was talking to.
+  const [couponInput, setCouponInput] = useState("");
+  const [couponCode, setCouponCode] = useState("");
+  // Cash handed over, in dollars as typed. Kept as the raw string so someone
+  // half way through "20" is not shown change for C$2.
+  const [cashGiven, setCashGiven] = useState("");
+  /**
+   * The order the money is still being counted for.
+   *
+   * The till clears itself the moment an order is sent to the kitchen, which is
+   * a beat *before* the cash changes hands — so without this the total to make
+   * change from disappears at the exact moment someone needs it. Held until the
+   * next order is started.
+   */
+  const [settled, setSettled] = useState<{ orderNumber: string; totalCents: number } | null>(null);
 
   /**
    * What is on the menu right now, for this kind of order.
@@ -181,6 +202,10 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       schedule: { type: "asap" as const },
       paymentMethod: "pay_at_store" as const,
       tip: { type: "none" as const },
+      // Priced by the server like everything else here. A code that does not
+      // apply comes back as a message rather than a silent full-price total, so
+      // the counter can say why before the customer hands over money.
+      ...(couponCode ? { couponCode } : {}),
       // City and province are fixed rather than asked for: the delivery area is
       // a radius around one Hamilton store, so any other answer is an address
       // the radius check would reject anyway, and two more fields to mistype
@@ -199,7 +224,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         : {}),
       ...extra,
     }),
-    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines],
+    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines, couponCode],
   );
 
   // Re-priced by the server on every change. Sequenced so a slow earlier reply
@@ -237,6 +262,8 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const add = (item: BuiltItem) => {
     setMessage(null);
     setBuilding(null);
+    setSettled(null);
+    setCashGiven("");
     setLines((current) => {
       const signature = buildSignature(item);
       const existing = current.find((line) => buildSignature(line) === signature);
@@ -327,6 +354,13 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
     const willPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
     setLastPrintOrder(printable);
+    // Kept for the cash panel, from the server's committed total rather than
+    // the quote on screen — the money about to be counted has to be the money
+    // the order was actually created for.
+    setSettled({
+      orderNumber: result.orderNumber ?? "",
+      totalCents: Number(result.totalCents ?? totals.totalCents),
+    });
     setMessage({
       tone: "ok",
       text: willPrint
@@ -334,6 +368,8 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         : `${result.orderNumber} is in. It is on the kitchen board now.`,
     });
     setLines([]);
+    setCouponInput("");
+    setCouponCode("");
     setName("");
     setPhone("");
     setEmail("");
@@ -348,6 +384,38 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     if (printable) printPlacedOrder(printable, printRequestedAt);
     await onPlaced();
   };
+
+  /**
+   * The bill the cash is being counted against.
+   *
+   * The order just placed wins over the one being rung in, because that is the
+   * moment the money actually moves: the till has already cleared its lines and
+   * the customer is holding a twenty. Falls back to the live quote so change can
+   * be worked out before the order is sent, which is how a phone order taken and
+   * paid at the door is handled.
+   */
+  const cashDueCents = settled ? settled.totalCents : totals.totalCents;
+  const tenderedCents = Math.round(Number(cashGiven.replace(/[^0-9.]/g, "")) * 100);
+  const cash =
+    cashDueCents > 0 && cashGiven.trim() && Number.isSafeInteger(tenderedCents) && tenderedCents >= 0
+      ? cashChange(cashDueCents, tenderedCents)
+      : null;
+  // What the total settles to in coins that exist, shown whether or not an
+  // amount has been keyed in — it is the number to ask the customer for.
+  const cashRounded = cashDueCents > 0 ? cashChange(cashDueCents, 0) : null;
+  /**
+   * The notes someone actually hands over, largest first.
+   *
+   * Exact money and then the next few round notes above the bill: four taps that
+   * cover most of what crosses a counter, so the common case needs no typing at
+   * all.
+   */
+  const quickTenders = cashRounded
+    ? [...new Set([cashRounded.roundedTotalCents, 2000, 5000, 10_000])]
+        .filter((amount) => amount >= cashRounded.roundedTotalCents)
+        .sort((left, right) => left - right)
+        .slice(0, 4)
+    : [];
 
   return (
     <div className="admin-stack admin-controls">
@@ -457,6 +525,31 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             {!lines.length ? <div className="staff-empty">Tap the menu to start.</div> : null}
           </div>
 
+          {/* The promo code, entered by whoever is on the phone. The thank-you
+              email tells customers to read their code out, so the counter needs
+              somewhere to put it — and the server decides what it is worth, the
+              same as it does online. */}
+          <div className="coupon-row">
+            <input
+              value={couponInput}
+              onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
+              placeholder="Promo code"
+              aria-label="Promo code"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {couponCode ? (
+              <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
+            ) : (
+              <button type="button" disabled={!couponInput.trim()} onClick={() => setCouponCode(couponInput.trim())}>Apply</button>
+            )}
+          </div>
+          {quote?.coupon ? (
+            <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">
+              {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
+            </p>
+          ) : null}
+
           <div className="checkout-totals">
             <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
             {totals.discountCents > 0 ? <div className="checkout-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
@@ -476,7 +569,75 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
           {lastPrintOrder ? <button className="staff-button" onClick={() => printPlacedOrder(lastPrintOrder, Date.now())}>Print last ticket again</button> : null}
-          <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
+
+          {/*
+            Counting out the change.
+
+            Mental arithmetic under a queue is where a till loses money, in both
+            directions and without anybody noticing for a week. So the amount
+            handed over is keyed in and the change is worked out here — including
+            the nickel rounding, which is a rule about coins rather than about
+            the bill, and the breakdown, because "a toonie, a loonie and a
+            nickel" is something a hand can do and "C$3.05" is something a head
+            has to.
+
+            It stays on screen after the order is sent, keyed to that order's
+            committed total: the money moves *after* the ticket prints, and a
+            panel that cleared itself with the lines would vanish at exactly the
+            wrong moment.
+          */}
+          {cashRounded ? (
+            <div className="till-cash">
+              <div className="till-cash-head">
+                <h3>Cash</h3>
+                <span>{settled ? `${settled.orderNumber || "Last order"} · ${formatMoney(cashDueCents)}` : `This order · ${formatMoney(cashDueCents)}`}</span>
+              </div>
+              {cashRounded.roundingCents !== 0 ? (
+                <p className="till-cash-note">
+                  Cash rounds to {formatMoney(cashRounded.roundedTotalCents)} — there is no penny.
+                  The bill stays {formatMoney(cashDueCents)} on card or online.
+                </p>
+              ) : null}
+              <div className="till-cash-quick">
+                {quickTenders.map((amount) => (
+                  <button type="button" key={amount} onClick={() => setCashGiven((amount / 100).toFixed(2))}>
+                    {amount === cashRounded.roundedTotalCents ? `Exact · ${formatMoney(amount)}` : formatMoney(amount)}
+                  </button>
+                ))}
+              </div>
+              <label className="till-cash-input">
+                Cash received · C$
+                <input
+                  inputMode="decimal"
+                  value={cashGiven}
+                  onChange={(event) => setCashGiven(event.target.value)}
+                  placeholder="0.00"
+                  aria-label="Cash received"
+                />
+              </label>
+              {cash ? (
+                cash.shortCents > 0 ? (
+                  <p className="till-cash-short" role="status">
+                    {formatMoney(cash.shortCents)} still to come.
+                  </p>
+                ) : (
+                  <div className="till-cash-change" role="status">
+                    <div className="till-cash-change-total"><span>Change</span><b>{formatMoney(cash.changeCents)}</b></div>
+                    {cash.breakdown.length ? (
+                      <p className="till-cash-breakdown">
+                        {cash.breakdown.map((part) => `${part.count} × ${part.label}`).join(" · ")}
+                      </p>
+                    ) : (
+                      <p className="till-cash-breakdown">Nothing to hand back.</p>
+                    )}
+                  </div>
+                )
+              ) : null}
+              <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
+            </div>
+          ) : (
+            <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
+          )}
         </aside>
       </div>
 

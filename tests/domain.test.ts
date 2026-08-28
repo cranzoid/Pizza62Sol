@@ -4,6 +4,9 @@ import {
   ONTARIO_WEEKLY_OVERTIME_MINUTES,
   applyPromotions,
   buildTimesheet,
+  cashChange,
+  explainPromotionMiss,
+  roundCashCents,
   buildWorkSessions,
   grossPayCents,
   payPeriodFor,
@@ -32,7 +35,7 @@ import {
   CRUST_OPTIONS,
   compareMenuPrice,
 } from "../lib/domain.ts";
-import { MENU_PRODUCTS, PIZZA_BY_SIZE_PRODUCT_IDS } from "../lib/menu.ts";
+import { FEEDBACK_REWARD_PRODUCT_IDS, MENU_PRODUCTS, PIZZA_BY_SIZE_PRODUCT_IDS } from "../lib/menu.ts";
 import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES, REGULAR_HOURS, LAUNCH_SETTINGS } from "../lib/launch-config.ts";
 import { resolveFsaCentroid } from "../lib/delivery-area.ts";
 
@@ -237,6 +240,143 @@ test("applies stackable discounts deterministically and blocks incompatible ones
   ], "pickup");
   assert.equal(applied.discountCents, 700);
   assert.deepEqual(applied.applied.map((entry) => entry.id), ["ten", "five"]);
+});
+
+/**
+ * THANKS62 is a garlic bread or a drink, and nothing else.
+ *
+ * The failure this guards is quiet and expensive: a fixed C$3.99 with no
+ * product targeting comes off a C$40 pizza order exactly as happily as off the
+ * side it was meant for, and nothing on the receipt says so.
+ */
+test("the feedback thank-you comes off garlic bread and drinks only", () => {
+  const reward = {
+    id: "feedback-thank-you",
+    name: "Feedback thank-you",
+    code: "THANKS62",
+    type: "fixed" as const,
+    amount: 399,
+    priority: 0,
+    combinable: true,
+    exclusive: false,
+    minimumCents: 1500,
+    productIds: [...FEEDBACK_REWARD_PRODUCT_IDS],
+  };
+  const pizzaOnly = [{ id: "1", productId: "large-pizza", categoryId: "build-your-own", quantity: 1, unitPriceCents: 2400, taxable: true, promotionEligible: true }];
+  assert.equal(applyPromotions(pizzaOnly, [reward], "pickup").discountCents, 0);
+
+  const withGarlicBread = [
+    ...pizzaOnly,
+    { id: "2", productId: "garlic-bread", categoryId: "sides", quantity: 1, unitPriceCents: 399, taxable: true, promotionEligible: true },
+  ];
+  assert.equal(applyPromotions(withGarlicBread, [reward], "pickup").discountCents, 399);
+
+  // Never more than the eligible line is worth: a C$1.60 pop is free, not free
+  // with C$2.39 off the pizza beside it.
+  const withOnePop = [
+    ...pizzaOnly,
+    { id: "3", productId: "one-pop", categoryId: "drinks", quantity: 1, unitPriceCents: 160, taxable: true, promotionEligible: true },
+  ];
+  assert.equal(applyPromotions(withOnePop, [reward], "pickup").discountCents, 160);
+});
+
+test("says why a code did not come off, in the order the pricing decides it", () => {
+  const reward = {
+    id: "feedback-thank-you",
+    name: "Feedback thank-you",
+    code: "THANKS62",
+    type: "fixed" as const,
+    amount: 399,
+    priority: 0,
+    combinable: true,
+    exclusive: false,
+    minimumCents: 1500,
+    productIds: [...FEEDBACK_REWARD_PRODUCT_IDS],
+  };
+  const pizza = { id: "1", productId: "large-pizza", categoryId: "build-your-own", quantity: 1, unitPriceCents: 2400, taxable: true, promotionEligible: true };
+  const bread = { id: "2", productId: "garlic-bread", categoryId: "sides", quantity: 1, unitPriceCents: 399, taxable: true, promotionEligible: true };
+
+  // A big enough order with nothing eligible in it: the reason is the items.
+  assert.deepEqual(explainPromotionMiss([pizza], reward, "pickup"), { reason: "items" });
+
+  // The minimum is reported before the items, because it is checked first and
+  // because "add C$11.01 more" is the more useful of the two answers.
+  const miss = explainPromotionMiss([bread], reward, "pickup");
+  assert.deepEqual(miss, { reason: "minimum", minimumCents: 1500, shortfallCents: 1101 });
+
+  // Fulfilment beats both.
+  assert.deepEqual(
+    explainPromotionMiss([pizza], { ...reward, fulfilments: ["pickup"] }, "delivery"),
+    { reason: "fulfilment", fulfilments: ["pickup"] },
+  );
+
+  // Eligible on every count, so what stopped it was the offer already applied.
+  assert.deepEqual(
+    explainPromotionMiss([pizza, bread], reward, "pickup", [{ id: "deal", name: "Two for one", discountCents: 500, reason: "" }]),
+    { reason: "combination" },
+  );
+
+  // And an offer that would have applied has no explanation to give.
+  assert.equal(explainPromotionMiss([pizza, bread], reward, "pickup"), null);
+});
+
+/**
+ * Change at the counter.
+ *
+ * The penny has not been minted since 2012, so a cash total settles to the
+ * nearest nickel while the bill itself does not move — get that backwards and
+ * the till is out against the books by a cent or two on every cash order, which
+ * is the kind of drift nobody finds for a month.
+ */
+test("rounds cash to the nearest nickel without moving the bill", () => {
+  assert.equal(roundCashCents(1698), 1700);
+  assert.equal(roundCashCents(1697), 1695);
+  assert.equal(roundCashCents(1696), 1695);
+  assert.equal(roundCashCents(1_23), 125);
+  assert.equal(roundCashCents(1702), 1700);
+  assert.equal(roundCashCents(0), 0);
+
+  const change = cashChange(1698, 2000);
+  assert.equal(change.totalCents, 1698, "the bill is untouched");
+  assert.equal(change.roundedTotalCents, 1700);
+  assert.equal(change.roundingCents, 2);
+  assert.equal(change.changeCents, 300);
+  assert.equal(change.shortCents, 0);
+  assert.deepEqual(change.breakdown, [
+    { label: "toonie", count: 1, valueCents: 200 },
+    { label: "loonie", count: 1, valueCents: 100 },
+  ]);
+});
+
+test("counts change out into notes and coins that add up", () => {
+  const change = cashChange(1234, 5000);
+  // 12.34 pays as 12.35, so 37.65 back.
+  assert.equal(change.changeCents, 3765);
+  assert.equal(
+    change.breakdown.reduce((sum, part) => sum + part.count * part.valueCents, 0),
+    change.changeCents,
+    "the coins handed back have to equal the change owed",
+  );
+  assert.deepEqual(change.breakdown, [
+    { label: "$20", count: 1, valueCents: 2000 },
+    { label: "$10", count: 1, valueCents: 1000 },
+    { label: "$5", count: 1, valueCents: 500 },
+    { label: "toonie", count: 1, valueCents: 200 },
+    { label: "quarter", count: 2, valueCents: 25 },
+    { label: "dime", count: 1, valueCents: 10 },
+    { label: "nickel", count: 1, valueCents: 5 },
+  ]);
+});
+
+test("reports a short payment rather than negative change", () => {
+  const change = cashChange(2000, 1000);
+  assert.equal(change.changeCents, 0);
+  assert.equal(change.shortCents, 1000);
+  assert.deepEqual(change.breakdown, []);
+  // Exact money is neither short nor owed.
+  const exact = cashChange(2000, 2000);
+  assert.equal(exact.changeCents, 0);
+  assert.equal(exact.shortCents, 0);
 });
 
 // Owner decision, 2026-08-21: HST applies to the delivery fee. The tip basis is

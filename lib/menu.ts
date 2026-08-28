@@ -552,3 +552,24 @@ export const PICKUP_SPECIALS_RELEASE_PRODUCT_IDS = [
  * reprice rows an insert-only seed will not touch.
  */
 export const PIZZA_BY_SIZE_PRODUCT_IDS = standalonePizzas.map((product) => product.id);
+
+/**
+ * What the feedback thank-you code (THANKS62) can be spent on.
+ *
+ * The offer is a garlic bread or a drink, and it has to be *only* that: a
+ * C$3.99 fixed discount with no product targeting comes off a C$30 pizza order
+ * just as happily, which is a different — and much more expensive — promotion
+ * than the one the email describes.
+ *
+ * Product ids rather than the `sides` and `drinks` categories, because those
+ * categories are most of the menu either side of the two items meant here. The
+ * list is what `applyPromotions` matches lines against and what the customer is
+ * told the code is good for, so the two cannot drift apart.
+ */
+export const FEEDBACK_REWARD_PRODUCT_IDS = [
+  "garlic-bread",
+  "garlic-bread-cheese",
+  "one-pop",
+  "four-pops",
+  "water-bottle",
+] as const;

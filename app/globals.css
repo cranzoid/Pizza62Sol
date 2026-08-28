@@ -737,6 +737,52 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .till-button span { font-size: 9px; color: #77807a; }
 .till-button b { margin-top: auto; font-size: 12px; }
 
+/* Making change.
+
+   Set apart from the totals above it with its own border, because it is not
+   part of the bill: the bill is what the customer owes, this is the arithmetic
+   of the notes in their hand. The change itself is the largest thing in the
+   panel — it is read across a counter, sometimes upside down. */
+.till-cash {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d9ded9;
+  border-radius: 10px;
+  background: #fbfcfb;
+}
+.till-cash-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.till-cash-head h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.till-cash-head span { font-size: 10px; color: #77807a; }
+.till-cash-note { margin: 6px 0 0; font-size: 9px; color: #77807a; line-height: 1.5; }
+.till-cash-quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.till-cash-quick button {
+  flex: 1 1 auto;
+  min-height: 34px;
+  border: 1px solid #d9ded9;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.till-cash-quick button:hover { border-color: #b9c2ba; }
+.till-cash-input { display: block; font-size: 10px; color: #77807a; }
+.till-cash-input input {
+  width: 100%;
+  margin-top: 5px;
+  border: 1px solid #d9ded9;
+  border-radius: 7px;
+  padding: 9px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.till-cash-short { margin: 10px 0 0; font-size: 11px; font-weight: 700; color: #b4442f; }
+.till-cash-change { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef1ee; }
+.till-cash-change-total { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.till-cash-change-total span { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.till-cash-change-total b { font-size: 22px; color: #29623e; }
+.till-cash-breakdown { margin: 4px 0 10px; font-size: 10px; color: #4d554e; }
+
 .till-lines { display: grid; gap: 6px; margin-bottom: 14px; }
 .till-line {
   display: flex;
