@@ -33,6 +33,7 @@ import {
   DRINK_OPTIONS,
   EXTRA_CHEESE_OPTION,
   HALAL_OPTION,
+  TWO_LITRE_DRINK_OPTIONS,
   WING_FLAVOURS,
   formatMoney,
   modifierUnitsBps,
@@ -396,11 +397,12 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
     const configured = section.options?.length ? section.options : (
       section.source === "wing_flavours" ? [...WING_FLAVOURS]
         : section.source === "drinks" ? [...DRINK_OPTIONS]
-          : section.source === "cheese" ? [...CHEESE_OPTIONS]
-            : section.source === "crust" ? [...CRUST_OPTIONS]
-              : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
-                : section.source === "halal" ? [HALAL_OPTION]
-                  : LEGACY_BASE_FALLBACK
+          : section.source === "two_litre_drinks" ? [...TWO_LITRE_DRINK_OPTIONS]
+            : section.source === "cheese" ? [...CHEESE_OPTIONS]
+              : section.source === "crust" ? [...CRUST_OPTIONS]
+                : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
+                  : section.source === "halal" ? [HALAL_OPTION]
+                    : LEGACY_BASE_FALLBACK
     );
     return configured.map((entry) => ({ value: entry, label: entry }));
   };

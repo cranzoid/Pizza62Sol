@@ -56,10 +56,10 @@ test("it contains the two pizzas, the wings, the garlic bread and the 2 L pop", 
   assert.equal(garlicBread?.max, 1);
 
   const pop = built.find((section) => section.id === "two-litre-pop");
-  assert.equal(pop?.source, "drinks");
+  assert.equal(pop?.source, "two_litre_drinks", "a 2 L bottle is Coke or Pepsi, not the fifteen canned flavours");
   assert.equal(pop?.min, 1);
   assert.equal(pop?.max, 1);
-  assert.equal(pop?.options, undefined, "pop flavours must stay connected to the canonical live list");
+  assert.equal(pop?.options, undefined, "bottle flavours must stay connected to the canonical live list");
 });
 
 test("it leads the offers strip and is drawn in its own colour", () => {

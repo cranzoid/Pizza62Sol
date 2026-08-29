@@ -2,6 +2,7 @@ import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
+  GAME_DAY_SPECIAL_PRODUCT_ID,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
@@ -754,6 +755,50 @@ const DATA_MIGRATIONS: Array<{
         )
         .bind(JSON.stringify({ productIds: [...FEEDBACK_REWARD_PRODUCT_IDS] }), now),
     ],
+  },
+  {
+    /**
+     * The 2 L pop comes in Coke and Pepsi, not in all fifteen canned flavours.
+     *
+     * The Game Day Special shipped with its bottle pointed at the canned-pop
+     * list, which offered thirteen bottles the fridge does not hold. The seed is
+     * insert-only and the product row already exists, so the corrected `source`
+     * has to be written here or the live offer keeps the wrong list.
+     *
+     * Surgical on purpose: it rewrites the `source` of the one section whose id
+     * is `two-litre-pop` and whose source is still the seeded `drinks`, and
+     * leaves every other key of the configuration — and every other product —
+     * exactly as it is. An owner who has already repointed it has made a
+     * decision, and this must not be a second person editing behind them (C-08).
+     */
+    id: "2026-08-29-two-litre-pop-source",
+    run: async (database, now) => {
+      const row = await database
+        .prepare("SELECT configuration_json FROM products WHERE id = ?")
+        .bind(GAME_DAY_SPECIAL_PRODUCT_ID)
+        .first<{ configuration_json: string | null }>();
+      if (!row) return [];
+      const configuration = safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {});
+      const sections = Array.isArray(configuration.sections)
+        ? (configuration.sections as ModifierSectionSeed[])
+        : [];
+      if (!sections.some((section) => section.id === "two-litre-pop" && section.source === "drinks")) {
+        return [];
+      }
+      const next = {
+        ...configuration,
+        sections: sections.map((section) =>
+          section.id === "two-litre-pop" && section.source === "drinks"
+            ? { ...section, source: "two_litre_drinks" as const }
+            : section,
+        ),
+      };
+      return [
+        database
+          .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
+          .bind(JSON.stringify(next), now, GAME_DAY_SPECIAL_PRODUCT_ID),
+      ];
+    },
   },
 ];
 

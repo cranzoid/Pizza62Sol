@@ -5,7 +5,7 @@ import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSe
 // group, never its options, so both sides resolve the live list at render and at
 // validation time. They live in lib/domain.ts, which the browser already
 // imports, and are re-exported here so the seed reads in one place.
-export { DRINK_OPTIONS, WING_FLAVOURS } from "@/lib/domain";
+export { DRINK_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS } from "@/lib/domain";
 
 export type ModifierSectionSeed = ModifierSection;
 
@@ -30,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-08-29-game-day-special-r1";
+export const MENU_SEED_VERSION = "2026-08-29-game-day-special-r2";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -534,11 +534,11 @@ const gameDaySections: ModifierSectionSeed[] = [
     max: 1,
     included: 1,
   },
-  // The live pop list, same as every other drink choice on the menu — the offer
-  // changes the size of the bottle, not which flavours are in the fridge. Sits in
-  // the same group as the garlic bread so the two included extras are asked for
-  // together, after the pizzas and the wings.
-  { id: "two-litre-pop", label: "2 L pop", group: "Included with your combo", source: "drinks", min: 1, max: 1 },
+  // `two_litre_drinks`, not `drinks`: the bottles come in Coke and Pepsi only,
+  // and offering the full fifteen-flavour can list would sell a bottle that has
+  // to be phoned about. Sits in the same group as the garlic bread so the two
+  // included extras are asked for together, after the pizzas and the wings.
+  { id: "two-litre-pop", label: "2 L pop", group: "Included with your combo", source: "two_litre_drinks", min: 1, max: 1 },
 ];
 
 const gameDaySpecial: MenuProductSeed = {

@@ -22,7 +22,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { DRINK_OPTIONS, WING_FLAVOURS } = await import("@/lib/domain");
+const { DRINK_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS } = await import("@/lib/domain");
 const menu = await import("@/lib/menu");
 const { MENU_PRODUCTS } = menu;
 
@@ -55,6 +55,14 @@ test("the menu seed and the browser read the same list object", () => {
   // before they drifted.
   assert.equal(menu.DRINK_OPTIONS, DRINK_OPTIONS, "lib/menu must re-export the list, not restate it");
   assert.equal(menu.WING_FLAVOURS, WING_FLAVOURS, "lib/menu must re-export the wing sauces, not restate them");
+  assert.equal(menu.TWO_LITRE_DRINK_OPTIONS, TWO_LITRE_DRINK_OPTIONS, "lib/menu must re-export the bottles, not restate them");
+});
+
+test("a 2 L bottle is offered in the two flavours that exist, not the fifteen that do not", () => {
+  assert.deepEqual([...TWO_LITRE_DRINK_OPTIONS], ["Coke", "Pepsi"]);
+  // The whole point of a separate list. If the bottles ever become the cans,
+  // that is a decision someone makes here, not a drift nobody notices.
+  assert.notDeepEqual([...TWO_LITRE_DRINK_OPTIONS], [...DRINK_OPTIONS]);
 });
 
 test("a retired flavour is gone rather than quietly still accepted", () => {
@@ -74,7 +82,7 @@ test("every product that promises pops can have them chosen, one drink at a time
     const bottle = product.description.match(bottled);
     const promised = bottle ? null : product.description.match(written);
     const sections = (product.configuration?.sections ?? []) as Array<{ source?: string; min?: number; max?: number }>;
-    const choosers = sections.filter((section) => section.source === "drinks");
+    const choosers = sections.filter((section) => section.source === "drinks" || section.source === "two_litre_drinks");
     if (!bottle && !promised && !choosers.length) continue;
     checked += 1;
     assert.ok(bottle ?? promised, `${product.id} offers a pop chooser but never says so in its description`);
@@ -100,7 +108,7 @@ test("pop groups carry no options of their own, so the list stays live", () => {
   // than an edit to one constant.
   for (const product of MENU_PRODUCTS) {
     const sections = (product.configuration?.sections ?? []) as Array<{ source?: string; options?: string[] }>;
-    for (const section of sections.filter((entry) => entry.source === "drinks")) {
+    for (const section of sections.filter((entry) => entry.source === "drinks" || entry.source === "two_litre_drinks")) {
       assert.equal(section.options, undefined, `${product.id} pins its own pop list instead of using the live one`);
     }
   }
