@@ -35,7 +35,7 @@ import {
 import { applyPaymentApproved } from "@/lib/payment-completion";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
-import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
+import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
 
 export type OrderRequest = {
   idempotencyKey?: string;
@@ -266,12 +266,13 @@ function modifierOptions(
   const options = section.options ?? (
     section.source === "wing_flavours" ? [...WING_FLAVOURS]
       : section.source === "drinks" ? [...DRINK_OPTIONS]
-        : section.source === "pizza_base" ? [...PIZZA_BASE_OPTIONS]
-          : section.source === "crust" ? [...CRUST_OPTIONS]
-            : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
-              : section.source === "cheese" ? [...CHEESE_OPTIONS]
-                : section.source === "halal" ? [HALAL_OPTION]
-                  : []
+        : section.source === "two_litre_drinks" ? [...TWO_LITRE_DRINK_OPTIONS]
+          : section.source === "pizza_base" ? [...PIZZA_BASE_OPTIONS]
+            : section.source === "crust" ? [...CRUST_OPTIONS]
+              : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
+                : section.source === "cheese" ? [...CHEESE_OPTIONS]
+                  : section.source === "halal" ? [HALAL_OPTION]
+                    : []
   );
   return new Map(options.map((value) => [value, value]));
 }

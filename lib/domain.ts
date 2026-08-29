@@ -321,6 +321,17 @@ export const DRINK_OPTIONS = [
   "Dr Pepper",
 ] as const;
 
+/**
+ * What a 2 L bottle comes in, which is not what a can comes in.
+ *
+ * The fridge holds fifteen canned flavours and exactly two bottles. Pointing a
+ * 2 L choice at `DRINK_OPTIONS` would offer a customer thirteen bottles that do
+ * not exist and leave the counter to phone them back — so the bottles get their
+ * own list and their own `two_litre_drinks` source, resolved live at render and
+ * at validation the same way the cans are.
+ */
+export const TWO_LITRE_DRINK_OPTIONS = ["Coke", "Pepsi"] as const;
+
 export const WING_FLAVOURS = [
   "Mild",
   "Medium",
@@ -337,6 +348,7 @@ export type ModifierSource =
   | "toppings"
   | "wing_flavours"
   | "drinks"
+  | "two_litre_drinks"
   | "pizza_base"
   | "crust"
   | "bake_sauce"
@@ -375,6 +387,7 @@ const SECTION_RANK: Record<string, number> = {
   toppings: 5,
   wing_flavours: 6,
   drinks: 7,
+  two_litre_drinks: 7,
 };
 const TOPPINGS_FIRST_RANK: Record<string, number> = { ...SECTION_RANK, toppings: 3, crust: 4, bake_sauce: 5, pizza_base: 5 };
 
