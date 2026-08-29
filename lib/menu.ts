@@ -1,5 +1,5 @@
 import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES } from "@/lib/launch-config";
-import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection } from "@/lib/domain";
+import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection, type WeeklyAvailability } from "@/lib/domain";
 
 // The pop and wing-sauce lists are not seed data: an option group stores the
 // group, never its options, so both sides resolve the live list at render and at
@@ -30,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-08-28-delivery-pizza-by-size-r1";
+export const MENU_SEED_VERSION = "2026-08-29-game-day-special-r1";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -485,6 +485,81 @@ const pickupSpecials: MenuProductSeed[] = [
   ], true),
 ];
 
+/**
+ * The Game Day Special: two large 3-topping pizzas, 2 lb wings, garlic bread and
+ * a 2 L pop for C$49.99 plus tax, on 29 and 30 August 2026 only.
+ *
+ * A product of its own rather than a coupon on an existing deal, deliberately.
+ * The nearest thing on the menu — "2 Large Pizzas & 3 lb Wings" at C$53.99 —
+ * is a different meal (3 lb of wings, four pops, veggie sticks, blue cheese, a
+ * dip; no garlic bread, no 2 L bottle), so discounting it to C$49.99 would sell
+ * the wrong food at the game-day price and, worse, would change what someone
+ * standing at the counter gets when they ask for the regular deal. A separate
+ * product leaves every existing price exactly where it is.
+ *
+ * The two dates are enforced by `availability`, which the storefront reads to
+ * decide what to show and `validateItems` re-checks on the server — so the offer
+ * cannot be ordered on the 31st by anyone holding a stale page, at the till
+ * included.
+ */
+export const GAME_DAY_SPECIAL_PRODUCT_ID = "game-day-special";
+
+export const GAME_DAY_AVAILABILITY: WeeklyAvailability = {
+  // Bounded by the dates, not the weekdays: all seven are allowed so the window
+  // has exactly one definition and moving it is a matter of changing the dates.
+  weekdays: [0, 1, 2, 3, 4, 5, 6],
+  startMinute: 0,
+  endMinute: 1440,
+  timeZone: "America/Toronto",
+  startDate: "2026-08-29",
+  endDate: "2026-08-30",
+  label: "Game day · Aug 29–30",
+};
+
+// Large-pizza rates, because both pizzas in the offer are large: a fourth
+// topping is charged at C$2.30 the same as it is anywhere else on the menu.
+const gameDaySections: ModifierSectionSeed[] = [
+  ...pizzaSections(1, 3, 230),
+  ...pizzaSections(2, 3, 230),
+  wingFlavours(2),
+  // Named on the ticket for the same reason the slice combo names its dip: the
+  // kitchen builds from the modifier list, and an included item that appears
+  // nowhere on it is an included item that does not get made.
+  {
+    id: "included-garlic-bread",
+    label: "Garlic bread",
+    group: "Included with your combo",
+    options: ["Garlic Bread"],
+    min: 1,
+    max: 1,
+    included: 1,
+  },
+  // The live pop list, same as every other drink choice on the menu — the offer
+  // changes the size of the bottle, not which flavours are in the fridge. Sits in
+  // the same group as the garlic bread so the two included extras are asked for
+  // together, after the pizzas and the wings.
+  { id: "two-litre-pop", label: "2 L pop", group: "Included with your combo", source: "drinks", min: 1, max: 1 },
+];
+
+const gameDaySpecial: MenuProductSeed = {
+  ...bundle(
+    GAME_DAY_SPECIAL_PRODUCT_ID,
+    "deals",
+    "Game Day Special",
+    4999,
+    "Two large 3-topping pizzas, 2 lb wings, garlic bread and a 2 L pop.",
+    gameDaySections,
+  ),
+  configuration: {
+    sections: orderModifierSections(gameDaySections),
+    specialInstructionsEnabled: true,
+    availability: GAME_DAY_AVAILABILITY,
+    // Leads the homepage offers strip and is drawn in its own colour while it is
+    // running. Read by the storefront only; it changes nothing about pricing.
+    featured: true,
+  },
+};
+
 const heroSections: ModifierSectionSeed[] = [
   ...pizzaSections(null, 3, 230, { toppingLabel: "Choose up to 3 toppings" }),
   { id: "dipping-sauce", label: "Dipping sauce", options: ["Add dipping sauce"], min: 0, max: 1, included: 0, extraPriceCents: 120 },
@@ -504,6 +579,7 @@ const heroes: MenuProductSeed[] = [
 ];
 
 export const MENU_PRODUCTS: MenuProductSeed[] = [
+  gameDaySpecial,
   ...standalonePizzas,
   ...specialtyPizzas,
   ...deals,

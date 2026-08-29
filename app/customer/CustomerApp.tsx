@@ -426,12 +426,22 @@ export default function CustomerApp() {
     .filter((product) => HOMEPAGE_OFFER_CATEGORY_IDS.has(product.category_id))
     .map((product) => {
       const availability = product.configuration.availability as WeeklyAvailability | undefined;
-      return { product, availability, availableNow: isWithinWeeklyAvailability(availability, new Date(now)) };
+      return {
+        product,
+        availability,
+        availableNow: isWithinWeeklyAvailability(availability, new Date(now)),
+        featured: Boolean(product.configuration.featured),
+      };
     })
     .sort((left, right) => {
+      // A featured offer leads the strip — but only while it is actually running.
+      // One whose window has closed falls back to the same last place as every
+      // other closed offer, rather than holding first position on a card the
+      // customer cannot buy.
       const priority = (offer: typeof left) => offer.availability
-        ? (offer.availableNow ? 0 : 3)
-        : offer.product.category_id === "pickup-specials" ? 1 : 2;
+        ? (offer.availableNow ? (offer.featured ? -1 : 0) : 3)
+        : offer.featured ? -1
+          : offer.product.category_id === "pickup-specials" ? 1 : 2;
       return priority(left) - priority(right) || compareMenuPrice(left.product, right.product);
     });
   const cartItemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
@@ -648,15 +658,21 @@ export default function CustomerApp() {
           {loadingError ? <div className="error-banner" role="alert">Offers are temporarily unavailable. The rest of the site is still available below.</div> : null}
           {catalog && homepageOffers.length ? (
             <div className="offers-track" aria-label="Current offers">
-              {homepageOffers.map(({ product, availability, availableNow }) => {
+              {homepageOffers.map(({ product, availability, availableNow, featured }) => {
                 const pickupOnly = Boolean(product.pickup_eligible && !product.delivery_eligible);
                 const categoryName = categories.find((category) => category.id === product.category_id)?.name ?? "Offer";
                 const unavailable = Boolean(product.setup_required || product.sold_out || (availability && !availableNow));
-                const badge = availability
-                  ? (availableNow ? "Available today" : String(availability.label ?? "Limited hours"))
-                  : pickupOnly ? "Pickup special" : categoryName;
+                // A featured offer that is running says what it is — "Game day ·
+                // Aug 29–30" is the reason to look at the card, and "Available
+                // today" throws that away on the one card where it matters.
+                const highlighted = featured && !unavailable;
+                const badge = highlighted
+                  ? String(availability?.label ?? "Featured offer")
+                  : availability
+                    ? (availableNow ? "Available today" : String(availability.label ?? "Limited hours"))
+                    : pickupOnly ? "Pickup special" : categoryName;
                 return (
-                  <article className={`offer-card ${availability && availableNow ? "offer-card--today" : ""}`} key={product.id}>
+                  <article className={`offer-card ${highlighted ? "offer-card--featured" : availability && availableNow ? "offer-card--today" : ""}`} key={product.id}>
                     <div className="offer-card__meta"><span>{badge}</span><small>{pickupOnly ? "Pickup only" : "Pickup or delivery"}</small></div>
                     <h3>{product.name}</h3>
                     <p>{product.description}</p>

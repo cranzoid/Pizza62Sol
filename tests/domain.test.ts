@@ -144,6 +144,28 @@ test("limits Hamilton Heroes to the flyer window in Toronto", () => {
   assert.equal(isWithinWeeklyAvailability(offer, new Date("2026-07-19T22:00:00Z")), false);
 });
 
+test("calendar bounds close a one-off offer instead of repeating it weekly", () => {
+  const weekend = {
+    weekdays: [0, 1, 2, 3, 4, 5, 6],
+    startMinute: 0,
+    endMinute: 1440,
+    timeZone: "America/Toronto",
+    startDate: "2026-08-29",
+    endDate: "2026-08-30",
+  };
+  assert.equal(isWithinWeeklyAvailability(weekend, new Date("2026-08-29T04:00:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability(weekend, new Date("2026-08-31T03:59:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability(weekend, new Date("2026-08-29T03:59:00Z")), false);
+  assert.equal(isWithinWeeklyAvailability(weekend, new Date("2026-08-31T04:00:00Z")), false);
+  assert.equal(isWithinWeeklyAvailability(weekend, new Date("2026-09-05T18:00:00Z")), false);
+
+  // One bound on its own is honoured; a malformed one closes the offer rather
+  // than being ignored and letting it run forever.
+  assert.equal(isWithinWeeklyAvailability({ ...weekend, endDate: undefined }, new Date("2027-01-01T18:00:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability({ ...weekend, startDate: undefined }, new Date("2020-01-01T18:00:00Z")), true);
+  assert.equal(isWithinWeeklyAvailability({ ...weekend, endDate: "30/08/2026" }, new Date("2026-08-29T18:00:00Z")), false);
+});
+
 test("normalizes the same topping on both halves and prevents triple charging", () => {
   assert.deepEqual(
     normalizeToppings([
