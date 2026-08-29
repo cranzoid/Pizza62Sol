@@ -63,20 +63,26 @@ test("a retired flavour is gone rather than quietly still accepted", () => {
   }
 });
 
-test("every product that promises pops can have them chosen, one can at a time", () => {
+test("every product that promises pops can have them chosen, one drink at a time", () => {
+  // A bottle is matched before the can pattern, and deliberately: "2 L pop" is
+  // one bottle in one flavour, and reading its size as a quantity would demand
+  // two choosers for a single drink.
+  const bottled = /(\d+(?:\.\d+)?)\s*L\s+pop\b/i;
   const written = /(\d+)\s+(?:canned\s+)?pops?\b/i;
   let checked = 0;
   for (const product of MENU_PRODUCTS) {
-    const promised = product.description.match(written);
+    const bottle = product.description.match(bottled);
+    const promised = bottle ? null : product.description.match(written);
     const sections = (product.configuration?.sections ?? []) as Array<{ source?: string; min?: number; max?: number }>;
     const choosers = sections.filter((section) => section.source === "drinks");
-    if (!promised && !choosers.length) continue;
+    if (!bottle && !promised && !choosers.length) continue;
     checked += 1;
-    assert.ok(promised, `${product.id} offers a pop chooser but never says so in its description`);
+    assert.ok(bottle ?? promised, `${product.id} offers a pop chooser but never says so in its description`);
+    const expected = bottle ? 1 : Number(promised![1]);
     assert.equal(
       choosers.length,
-      Number(promised[1]),
-      `${product.id} promises "${promised[0]}" but offers ${choosers.length} to choose`,
+      expected,
+      `${product.id} promises "${(bottle ?? promised)![0]}" but offers ${choosers.length} to choose`,
     );
     // One selector per can, so four pops are four separate flavours rather than
     // one choice quietly multiplied by four.

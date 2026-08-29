@@ -136,7 +136,23 @@ export type WeeklyAvailability = {
   endMinute: number;
   timeZone: string;
   label?: string;
+  /**
+   * Inclusive calendar bounds, `YYYY-MM-DD`, read in `timeZone`.
+   *
+   * The weekly fields answer "which days of the week and between what hours";
+   * these answer "and only between these two dates". A one-weekend offer is not
+   * expressible without them — weekdays alone would bring a game-day special
+   * back every Saturday and Sunday for the rest of the year, which is a
+   * promotion nobody agreed to run.
+   *
+   * Both are optional and independent: a start with no end runs from that date
+   * onwards, an end with no start runs until it.
+   */
+  startDate?: string;
+  endDate?: string;
 };
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isWithinWeeklyAvailability(
   availability: WeeklyAvailability | null | undefined,
@@ -153,19 +169,32 @@ export function isWithinWeeklyAvailability(
     availability.endMinute > 1440 ||
     availability.startMinute >= availability.endMinute
   ) return false;
+  // A malformed date bound closes the offer rather than being ignored. An offer
+  // that quietly runs forever because someone typed "29/08/2026" is the failure
+  // this whole function exists to prevent.
+  if (
+    (availability.startDate !== undefined && !ISO_DATE.test(availability.startDate)) ||
+    (availability.endDate !== undefined && !ISO_DATE.test(availability.endDate))
+  ) return false;
   try {
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: availability.timeZone,
       weekday: "short",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       hourCycle: "h23",
     }).formatToParts(date);
-    const weekdayName = parts.find((part) => part.type === "weekday")?.value;
-    const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(weekdayName ?? "");
-    const hour = Number(parts.find((part) => part.type === "hour")?.value);
-    const minute = Number(parts.find((part) => part.type === "minute")?.value);
-    const minuteOfDay = hour * 60 + minute;
+    const partOf = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(partOf("weekday"));
+    // Zero-padded ISO dates compare correctly as strings, so the bounds need no
+    // date arithmetic — and no second timezone conversion to get wrong.
+    const localDate = `${partOf("year")}-${partOf("month")}-${partOf("day")}`;
+    if (availability.startDate && localDate < availability.startDate) return false;
+    if (availability.endDate && localDate > availability.endDate) return false;
+    const minuteOfDay = Number(partOf("hour")) * 60 + Number(partOf("minute"));
     return availability.weekdays.includes(weekday) && minuteOfDay >= availability.startMinute && minuteOfDay <= availability.endMinute;
   } catch {
     return false;

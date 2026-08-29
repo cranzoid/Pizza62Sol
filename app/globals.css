@@ -118,6 +118,14 @@ img { max-width: 100%; }
 .offer-card { min-width: 0; min-height: 292px; padding: 24px; border: 2px solid var(--ink); background: var(--paper); box-shadow: 7px 7px 0 var(--ink); display: flex; flex-direction: column; scroll-snap-align: start; position: relative; overflow: hidden; }
 .offer-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 7px; background: var(--red); }
 .offer-card--today::before { background: var(--green); }
+/* A featured offer is drawn in the brand red rather than the standard black-on-
+   yellow, so a one-weekend special is visibly not the same thing as the pickup
+   deals that sit beside it every day of the year. */
+.offer-card--featured { border-color: var(--red); box-shadow: 7px 7px 0 var(--red-dark); }
+.offer-card--featured::before { height: 10px; background: repeating-linear-gradient(135deg, var(--red) 0 14px, var(--yellow) 14px 28px); }
+.offer-card--featured .offer-card__meta span { background: var(--red); color: white; }
+.offer-card--featured .offer-card__footer button { background: var(--red); }
+.offer-card--featured .offer-card__footer button:not(:disabled):hover { background: var(--red-dark); }
 .offer-card__meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 5px 0 20px; }
 .offer-card__meta span { min-width: 0; padding: 7px 9px; background: var(--yellow); font-size: 9px; font-weight: 900; letter-spacing: .7px; line-height: 1.2; text-transform: uppercase; }
 .offer-card--today .offer-card__meta span { background: var(--green); color: white; }
