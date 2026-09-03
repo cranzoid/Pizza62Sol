@@ -11,10 +11,8 @@ import {
   placementSuffix,
   toOrderItems,
   type BuiltItem,
-  type CustomizerProduct,
-  type CustomizerTopping,
-  type CustomizerVariation,
 } from "@/app/menu/ItemCustomizer";
+import type { Product, PublicCatalog as Catalog } from "@/lib/catalog-types";
 import {
   compareMenuPrice,
   formatMoney,
@@ -24,44 +22,11 @@ import {
   zonedParts,
   type StoreStatus,
   type WeeklyHours,
-  type StoreClosure,
   type WeeklyAvailability,
 } from "@/lib/domain";
+import { openCookieChoices, trackEvent, type CommerceItem } from "@/lib/marketing";
 
-type Category = { id: string; name: string; slug: string; description?: string | null };
-/**
- * The catalogue rows the storefront reads, on top of what a customizer needs.
- *
- * `image_url` and the two eligibility flags are the menu page's business —
- * whether to show a picture, and whether an item survives switching to delivery.
- * The customizer neither knows nor cares, so its own types stay narrower and the
- * staff dashboard's rows satisfy them too.
- */
-type Product = CustomizerProduct & {
-  image_url?: string | null;
-  pickup_eligible: number;
-  delivery_eligible: number;
-};
-type Variation = CustomizerVariation;
-type Topping = CustomizerTopping;
-type Catalog = {
-  categories: Category[];
-  products: Product[];
-  variations: Variation[];
-  toppings: Topping[];
-  settings: Record<string, { value: Record<string, unknown>; version: number }>;
-  closures: StoreClosure[];
-  integrations: {
-    clover: boolean;
-    email: boolean;
-    /**
-     * Present and enabled once Clover is configured for inline card entry. The
-     * public token is safe to ship to the browser — it identifies the merchant to
-     * Clover's SDK and cannot move money on its own.
-     */
-    cloverIframe?: { enabled: boolean; publicToken?: string; merchantId?: string; sandbox?: boolean };
-  };
-};
+export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
 type CartLine = BuiltItem;
 
@@ -245,25 +210,14 @@ function rememberedCart(): CartLine[] {
   }
 }
 
-function analytics(eventName: string, context: Record<string, unknown> = {}) {
-  const sessionId = getSessionId();
-  void fetch("/api/analytics", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ eventName, sessionId, context }),
-    keepalive: true,
-  });
-}
-
-function getSessionId() {
-  if (typeof window === "undefined") return "";
-  const key = "p62_analytics_session";
-  let value = sessionStorage.getItem(key);
-  if (!value) {
-    value = crypto.randomUUID();
-    sessionStorage.setItem(key, value);
-  }
-  return value;
+function commerceItems(lines: CartLine[]): CommerceItem[] {
+  return lines.map((line) => ({
+    itemId: line.productId,
+    itemName: line.name,
+    category: line.categoryId,
+    price: line.unitPriceCents / 100,
+    quantity: line.quantity,
+  }));
 }
 
 function PizzaMark({ large = false }: { large?: boolean }) {
@@ -281,8 +235,8 @@ function ArrowIcon() {
   return <span aria-hidden="true">↗</span>;
 }
 
-export default function CustomerApp() {
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
+export default function CustomerApp({ initialCatalog = null }: { initialCatalog?: Catalog | null }) {
+  const [catalog, setCatalog] = useState<Catalog | null>(initialCatalog);
   const [loadingError, setLoadingError] = useState("");
   const [chosenFulfilment, setFulfilment] = useState<"pickup" | "delivery">(rememberedFulfilment);
   const [deliveryGate, setDeliveryGate] = useState(false);
@@ -296,15 +250,31 @@ export default function CustomerApp() {
   const menuRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    fetch("/api/catalog")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Menu unavailable");
-        return response.json() as Promise<Catalog>;
-      })
-      .then(setCatalog)
-      .catch(() => setLoadingError("We couldn't load the live menu. Please try again or call the store."));
-    analytics("website_visit");
-  }, []);
+    if (!initialCatalog) {
+      fetch("/api/catalog")
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Menu unavailable");
+          return response.json() as Promise<Catalog>;
+        })
+        .then(setCatalog)
+        .catch(() => setLoadingError("We couldn't load the live menu. Please try again or call the store."));
+    }
+    trackEvent("website_visit");
+  }, [initialCatalog]);
+
+  useEffect(() => {
+    if (!catalog || !menuRef.current) return;
+    if (!("IntersectionObserver" in window)) return;
+    let sent = false;
+    const observer = new IntersectionObserver((entries) => {
+      if (sent || !entries.some((entry) => entry.isIntersecting)) return;
+      sent = true;
+      trackEvent("menu_viewed", { visibleProducts: catalog.products.length });
+      observer.disconnect();
+    }, { threshold: 0.15 });
+    observer.observe(menuRef.current);
+    return () => observer.disconnect();
+  }, [catalog]);
 
   const business = catalog?.settings.business?.value ?? {};
   const phone = (business.phone as string | undefined) ?? FALLBACK_PHONE;
@@ -453,11 +423,29 @@ export default function CustomerApp() {
   // agreed to. There is now one implementation, and it lives on the server.
   const { quote: cartQuote, loading: cartQuoteLoading } = useOrderQuote({ cart, fulfilment });
 
+  const completeOrder = (result: Record<string, unknown>) => {
+    setCheckoutOpen(false);
+    setConfirmation(result);
+    if (result.duplicate !== true) {
+      const price = result.price && typeof result.price === "object"
+        ? result.price as Record<string, unknown>
+        : {};
+      trackEvent("purchase_completed", {
+        orderNumber: result.orderNumber,
+        transactionId: String(result.orderNumber ?? ""),
+        currency: "CAD",
+        value: Number(price.totalCents ?? 0) / 100,
+        items: commerceItems(cart),
+      });
+    }
+    setCart([]);
+  };
+
   const chooseFulfilment = (next: "pickup" | "delivery") => {
     setFulfilment(next);
     setDeliveryGate(next === "delivery");
     setGateMessage("");
-    analytics("fulfilment_selected", { fulfilment: next });
+    trackEvent("fulfilment_selected", { fulfilment: next });
     if (next === "pickup") {
       window.setTimeout(() => menuRef.current?.scrollIntoView({ behavior: "smooth" }), 80);
     }
@@ -485,7 +473,7 @@ export default function CustomerApp() {
       return;
     }
     setGateMessage("Thanks. Enter your full Hamilton address at checkout; the restaurant confirms delivery coverage when your order is received.");
-    analytics("delivery_eligibility_checked", { result: "potential" });
+    trackEvent("delivery_eligibility_checked", { result: "potential" });
     window.setTimeout(() => {
       setDeliveryGate(false);
       menuRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -495,7 +483,13 @@ export default function CustomerApp() {
   const addLine = (line: CartLine) => {
     setCart((current) => [...current, line]);
     setCartOpen(true);
-    analytics("add_to_cart", { productId: line.productId, quantity: line.quantity });
+    trackEvent("add_to_cart", {
+      productId: line.productId,
+      quantity: line.quantity,
+      currency: "CAD",
+      value: (line.unitPriceCents * line.quantity) / 100,
+      items: commerceItems([line]),
+    });
   };
 
   const addSimple = (product: Product) => {
@@ -513,7 +507,12 @@ export default function CustomerApp() {
   };
 
   const openProduct = (product: Product) => {
-    analytics("product_viewed", { productId: product.id });
+    trackEvent("product_viewed", {
+      productId: product.id,
+      currency: "CAD",
+      value: product.base_price_cents / 100,
+      items: [{ itemId: product.id, itemName: product.name, category: product.category_id, price: product.base_price_cents / 100, quantity: 1 }],
+    });
     const sections = product.configuration.sections;
     if (product.product_type === "pizza" || (Array.isArray(sections) && sections.length)) {
       setSelectedProduct(product);
@@ -595,7 +594,7 @@ export default function CustomerApp() {
     </>,
     hours: <>
         <section className="hours-section" id="hours">
-          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at {businessAddress} or choose delivery and enter your Hamilton address at checkout.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone} <ArrowIcon /></a></div>
+          <div><p className="eyebrow dark"><span /> Hamilton&apos;s neighbourhood pizza</p><h2>Hot, local,<br /><em>ready when you are.</em></h2><p>Pickup at {businessAddress} or choose delivery and enter your Hamilton address at checkout.</p><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "hours" })}>Call {phone} <ArrowIcon /></a></div>
           <div className="hours-card"><div className="hours-card-title"><span>Weekly hours</span><i>Hamilton time</i></div>
             {hours.map((entry) => <div className="hours-row" key={entry.weekday}><span>{entry.label}</span><b>{formatMinuteTime(entry.openMinute)} – {formatMinuteTime(entry.closeMinute)}</b></div>)}
             <small>Online orders are accepted until the configured closing time.</small>
@@ -638,8 +637,8 @@ export default function CustomerApp() {
             <a href="#menu">Menu</a>
             <Link href="/track">Track</Link>
           </nav>
-          <a className="phone-link" href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a>
-          <button className="cart-pill" onClick={() => setCartOpen(true)} aria-label={`Open cart with ${cartItemCount} item${cartItemCount === 1 ? "" : "s"}`}>
+          <a className="phone-link" href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "header" })}>{phone}</a>
+          <button className="cart-pill" onClick={() => { setCartOpen(true); trackEvent("cart_viewed", { currency: "CAD", value: (cartQuote?.totals.totalCents ?? 0) / 100, items: commerceItems(cart) }); }} aria-label={`Open cart with ${cartItemCount} item${cartItemCount === 1 ? "" : "s"}`}>
             <span>Bag</span><b>{cartItemCount}</b>
           </button>
         </div>
@@ -742,7 +741,7 @@ export default function CustomerApp() {
         <div className="footer-brand"><BrandLogo src={logoUrl} name={businessName} chip /><p>{String(content.footerTagline ?? "Hamilton pizza made for real life.")}</p></div>
         <div><b>Order</b><a href="#offers">Offers</a><a href="#menu">Menu</a><Link href="/track">Track an order</Link></div>
         <div><b>Information</b><a href="#hours">Hours & delivery</a><Link href="/privacy">Privacy</Link><Link href="/accessibility">Accessibility</Link></div>
-        <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<Link href="/admin">Staff portal</Link></div>
+        <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "footer" })}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<button type="button" className="footer-text-button" onClick={openCookieChoices}>Cookie choices</button><Link href="/admin">Staff portal</Link></div>
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
       </footer>
 
@@ -794,7 +793,7 @@ export default function CustomerApp() {
             {store.changesAt ? <p>{businessName} opens <strong>{opensAtLabel}</strong> — that&apos;s in {opensIn}. Build your order now and schedule it for any time we&apos;re open; we&apos;ll start it then.</p> : <p>Opening hours have not been set yet. Please call {phone} to order.</p>}
             <div className="hours-preview">{hours.map((entry) => <div key={entry.weekday} className={entry.weekday === zonedParts(now, timeZone).weekday ? "today" : ""}><span>{entry.label}</span><b>{formatMinuteTime(entry.openMinute)} – {formatMinuteTime(entry.closeMinute)}</b></div>)}</div>
             <button className="primary-button" onClick={() => { setClosedNoticeDismissed(true); menuRef.current?.scrollIntoView({ behavior: "smooth" }); }}>Schedule an order <ArrowIcon /></button>
-            <a className="text-button" href={`tel:${phone.replace(/[^0-9+]/g, "")}`}>Call {phone}</a>
+            <a className="text-button" href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "closed_notice" })}>Call {phone}</a>
           </div>
         </div>
       ) : null}
@@ -825,8 +824,8 @@ export default function CustomerApp() {
           loading={cartQuoteLoading}
           fulfilment={fulfilment}
           onClose={() => setCartOpen(false)}
-          onRemove={(key) => { setCart((current) => current.filter((line) => line.key !== key)); analytics("remove_from_cart"); }}
-          onCheckout={() => { setCartOpen(false); setCheckoutOpen(true); analytics("checkout_started"); }}
+          onRemove={(key) => { setCart((current) => current.filter((line) => line.key !== key)); trackEvent("remove_from_cart"); }}
+          onCheckout={() => { setCartOpen(false); setCheckoutOpen(true); trackEvent("checkout_started", { currency: "CAD", value: (cartQuote?.totals.totalCents ?? 0) / 100, items: commerceItems(cart) }); }}
         />
       ) : null}
 
@@ -849,9 +848,9 @@ export default function CustomerApp() {
               if (!next.length) setCheckoutOpen(false);
               return next;
             });
-            analytics("remove_from_cart");
+            trackEvent("remove_from_cart");
           }}
-          onConfirmed={(result) => { setCheckoutOpen(false); setCart([]); setConfirmation(result); if (result.duplicate !== true) analytics("purchase_completed", { orderNumber: result.orderNumber }); }}
+          onConfirmed={completeOrder}
         />
       ) : null}
 
@@ -966,7 +965,7 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
   const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
 
   const submit = async () => {
-    setSubmitting(true); setError(""); analytics("payment_attempted", { paymentMethod });
+    setSubmitting(true); setError(""); trackEvent("payment_attempted", { paymentMethod });
     try {
       // The card is turned into a single-use token before the order is sent, so
       // a card the customer mistyped fails here — with the form still in front of
@@ -1001,6 +1000,8 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         window.localStorage.setItem("p62_pending_order", JSON.stringify({
           orderNumber: result.orderNumber, trackingToken: result.trackingToken,
           feedbackToken: result.feedbackToken, estimateAt: result.estimateAt, startedAt: Date.now(),
+          value: Number((result.price as Record<string, unknown> | undefined)?.totalCents ?? 0) / 100,
+          items: commerceItems(cart),
         }));
         window.location.assign(result.checkoutUrl);
         return;
@@ -1040,7 +1041,7 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
               // checkout simply "taking over", which is exactly how a blocked
               // reCAPTCHA looked from the outside. This is the breadcrumb.
               console.error("[checkout] inline card form unavailable, falling back to Clover:", reason);
-              analytics("card_form_unavailable", { reason });
+              trackEvent("card_form_unavailable", { reason });
               setCardFormBlocked(true);
               setCardForm(null);
             }}
@@ -1068,7 +1069,7 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
           {couponCode ? (
             <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
           ) : (
-            <button type="button" disabled={!couponInput.trim()} onClick={() => { setCouponCode(couponInput.trim()); analytics("coupon_used", { code: couponInput.trim() }); }}>Apply</button>
+            <button type="button" disabled={!couponInput.trim()} onClick={() => { setCouponCode(couponInput.trim()); trackEvent("coupon_used", { code: couponInput.trim() }); }}>Apply</button>
           )}
         </div>
         {quote?.coupon ? (

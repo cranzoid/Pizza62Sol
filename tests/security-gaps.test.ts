@@ -359,7 +359,16 @@ test("lets Clover's card form run on the storefront, and nowhere else", () => {
   // cannot reach the payment origins.
   const elsewhere = securityHeadersFor("/track")["Content-Security-Policy"];
   assert.doesNotMatch(elsewhere, /clover\.com/);
-  assert.match(elsewhere, /connect-src 'self';/);
+  assert.match(elsewhere, /connect-src 'self' [^;]*google-analytics\.com/);
+});
+
+test("permits the consent-gated Meta and Google measurement endpoints", () => {
+  const policy = securityHeadersFor("/")["Content-Security-Policy"];
+  assert.match(policy, /script-src [^;]*connect\.facebook\.net/);
+  assert.match(policy, /script-src [^;]*www\.googletagmanager\.com/);
+  assert.match(policy, /connect-src [^;]*www\.facebook\.com/);
+  assert.match(policy, /connect-src [^;]*www\.google-analytics\.com/);
+  assert.match(policy, /connect-src [^;]*googleads\.g\.doubleclick\.net/);
 });
 
 test("keeps the rest of the payment-page policy locked down", () => {

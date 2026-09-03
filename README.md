@@ -23,6 +23,23 @@ generated from `db/schema.ts`.
 - `CLOVER_WEBHOOK_SECRET` — signing secret for `/api/payments/clover/webhook`
 - `CLOVER_ENVIRONMENT` — `sandbox` (default) or `production`
 - `EMAIL_PROVIDER`, `EMAIL_API_KEY`, `EMAIL_FROM` — provider-neutral email settings to add after a provider is selected
+- `PUBLIC_BASE_URL` and `SEO_INDEXABLE=true` — canonical public origin and the production-only indexing gate
+- `GOOGLE_SITE_VERIFICATION` — optional Search Console verification token
+- `META_PIXEL_ID` — optional numeric Meta Pixel ID
+- `GA4_MEASUREMENT_ID` — optional GA4 web stream ID (`G-...`)
+- `GOOGLE_ADS_ID` and `GOOGLE_ADS_CONVERSION_LABEL` — optional direct Google Ads purchase conversion identifiers
+
+The marketing IDs are public identifiers, not credentials. Empty values disable
+their integrations. When configured, Meta and Google load only after the visitor
+allows optional measurement. Product views, bag additions, checkout starts,
+phone-link clicks, and confirmed purchases are mapped to commerce events. Purchase
+events use the server-generated order number as the transaction ID and CAD order
+value, including after the customer returns from Clover Hosted Checkout.
+
+The home page server-renders the live menu and emits `Restaurant`, `WebSite`, and
+`Menu` JSON-LD. Production exposes a canonical sitemap and crawler policy; Azure
+staging remains `noindex` and has all marketing IDs blank so tests cannot pollute
+campaign reports.
 
 Point a Clover webhook at `/api/payments/clover/webhook` for `PAYMENT` events. Clover sends no expiry event and its sessions last 15 minutes, so abandoned checkouts are cancelled by the `payment-reaper` job (`scripts/reap-payments.ts`) rather than by a webhook. Clover's return URL is set once in the Clover dashboard and should point at `/order/return`. Pickup can use pay-at-store without Clover; delivery requires hosted online payment. Card numbers never touch this application.
 

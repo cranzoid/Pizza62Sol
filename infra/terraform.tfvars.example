@@ -32,6 +32,13 @@ email_provider = "resend"
 # Sandbox until a test order has been through end to end.
 clover_environment = "sandbox"
 
+# Public IDs. Leave blank until the related account/tag has been reviewed.
+google_site_verification      = ""
+meta_pixel_id                 = "1387087780276705"
+ga4_measurement_id            = ""
+google_ads_id                 = ""
+google_ads_conversion_label   = ""
+
 # ---------------------------------------------------------------------------
 # The deploy pipeline
 #

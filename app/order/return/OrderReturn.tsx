@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UtilityHeader } from "@/app/UtilityHeader";
+import { trackEvent, type CommerceItem } from "@/lib/marketing";
 
 /**
  * Where Clover sends the customer back to after a hosted checkout.
@@ -25,7 +26,13 @@ import { UtilityHeader } from "@/app/UtilityHeader";
  * and says plainly what it is waiting for.
  */
 
-type Pending = { orderNumber?: string; trackingToken?: string; feedbackToken?: string };
+type Pending = {
+  orderNumber?: string;
+  trackingToken?: string;
+  feedbackToken?: string;
+  value?: number;
+  items?: CommerceItem[];
+};
 
 /**
  * Clover's `redirectUrls.failure` target carries `?status=failed`, so a customer
@@ -60,6 +67,7 @@ export default function OrderReturn() {
   // Seeded in the effect rather than at render: reading the clock during render
   // is impure, and the deadline only has to start when polling does.
   const startedAt = useRef<number | null>(null);
+  const purchaseSent = useRef(false);
 
   const trackingUrl = pending
     ? `/track?order=${encodeURIComponent(pending.orderNumber ?? "")}&token=${encodeURIComponent(pending.trackingToken ?? "")}`
@@ -72,11 +80,21 @@ export default function OrderReturn() {
         `/api/orders/track?order=${encodeURIComponent(pending.orderNumber)}&token=${encodeURIComponent(pending.trackingToken)}`,
       );
       if (!response.ok) return false;
-      const body = await response.json() as { order?: { status?: string; paymentStatus?: string } };
+      const body = await response.json() as { order?: { status?: string; paymentStatus?: string; totalCents?: number } };
       const status = body.order?.status;
       if (status === "cancelled") { setState("cancelled"); return true; }
       if (status && status !== "awaiting_payment") {
         setState("paid");
+        if (!purchaseSent.current) {
+          purchaseSent.current = true;
+          trackEvent("purchase_completed", {
+            orderNumber: pending.orderNumber,
+            transactionId: pending.orderNumber,
+            currency: "CAD",
+            value: pending.value ?? Number(body.order?.totalCents ?? 0) / 100,
+            items: pending.items ?? [],
+          });
+        }
         // Only cleared on a settled outcome. Clearing on arrival would lose the
         // customer's own route back to their order if this tab is closed mid-poll.
         window.localStorage.removeItem("p62_pending_order");

@@ -7,8 +7,17 @@ export default function robots(): MetadataRoute.Robots {
   }
   return {
     rules: [
-      { userAgent: "*", allow: "/", disallow: ["/admin", "/kitchen", "/employee", "/track", "/feedback", "/api/"] },
+      { userAgent: "*", allow: "/", disallow: ["/admin", "/kitchen", "/employee", "/kiosk", "/track", "/feedback", "/order/", "/api/"] },
     ],
-    sitemap: "https://pizza62.ca/sitemap.xml",
+    sitemap: `${safeBaseUrl()}/sitemap.xml`,
+    host: safeBaseUrl(),
   };
+}
+
+function safeBaseUrl(): string {
+  try {
+    return new URL(process.env.PUBLIC_BASE_URL || "https://pizza62.ca").origin;
+  } catch {
+    return "https://pizza62.ca";
+  }
 }

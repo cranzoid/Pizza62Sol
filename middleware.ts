@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { canonicalRedirectUrl } from "@/lib/canonical-host";
+import { canonicalRedirectUrl, legacyRedirectUrl } from "@/lib/canonical-host";
 import { securityHeadersFor } from "@/lib/security-headers";
 
 /**
@@ -14,11 +14,12 @@ import { securityHeadersFor } from "@/lib/security-headers";
  */
 export function middleware(request: Request) {
   const requestUrl = new URL(request.url);
-  const redirectUrl = canonicalRedirectUrl({
+  const redirectInput = {
     requestUrl: request.url,
     forwardedHost: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),
     publicBaseUrl: process.env.PUBLIC_BASE_URL,
-  });
+  };
+  const redirectUrl = legacyRedirectUrl(redirectInput) ?? canonicalRedirectUrl(redirectInput);
   const response = redirectUrl ? NextResponse.redirect(redirectUrl, 308) : NextResponse.next();
   for (const [name, value] of Object.entries(securityHeadersFor(requestUrl.pathname))) {
     response.headers.set(name, value);

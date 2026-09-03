@@ -48,6 +48,21 @@ const CLOVER_FRAME_ORIGINS =
 const CLOVER_CONNECT_ORIGINS =
   `https://scl.clover.com https://scl-sandbox.dev.clover.com https://checkout.clover.com https://checkout.sandbox.dev.clover.com https://*.clover.com ${RECAPTCHA_ORIGINS}`;
 
+// Loaded only after the visitor grants marketing measurement consent. They
+// still have to be named in CSP up front: a CSP is a static permission boundary
+// and cannot be widened after the response has reached the browser.
+const MARKETING_SCRIPT_ORIGINS = "https://connect.facebook.net https://www.googletagmanager.com";
+const MARKETING_CONNECT_ORIGINS = [
+  "https://connect.facebook.net",
+  "https://www.facebook.com",
+  "https://www.google-analytics.com",
+  "https://analytics.google.com",
+  "https://region1.google-analytics.com",
+  "https://www.googletagmanager.com",
+  "https://www.googleadservices.com",
+  "https://googleads.g.doubleclick.net",
+].join(" ");
+
 export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
   "X-Content-Type-Options": "nosniff",
@@ -59,13 +74,13 @@ export const BASE_SECURITY_HEADERS: Record<string, string> = {
     "base-uri 'self'",
     "img-src 'self' https: data: blob:",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self' 'unsafe-inline'",
+    `script-src 'self' 'unsafe-inline' ${MARKETING_SCRIPT_ORIGINS}`,
     // Clover Hosted Checkout is never called from the browser — the session is
     // created server-side and the customer is sent to Clover's own page by a
     // top-level navigation, which no directive here restricts. So unlike the
     // Stripe setup this replaces, neither connect-src nor form-action needs a
     // payment-provider origin.
-    "connect-src 'self'",
+    `connect-src 'self' ${MARKETING_CONNECT_ORIGINS}`,
     "font-src 'self' data:",
     "form-action 'self'",
     "frame-ancestors 'none'",
@@ -146,8 +161,8 @@ function paymentHeaders(): Record<string, string> {
   return {
     ...BASE_SECURITY_HEADERS,
     "Content-Security-Policy": BASE_SECURITY_HEADERS["Content-Security-Policy"]
-      .replace("script-src 'self' 'unsafe-inline'", `script-src 'self' 'unsafe-inline' ${CLOVER_SCRIPT_ORIGINS}`)
-      .replace("connect-src 'self'", `connect-src 'self' ${CLOVER_CONNECT_ORIGINS}`)
+      .replace(MARKETING_SCRIPT_ORIGINS, `${MARKETING_SCRIPT_ORIGINS} ${CLOVER_SCRIPT_ORIGINS}`)
+      .replace(MARKETING_CONNECT_ORIGINS, `${MARKETING_CONNECT_ORIGINS} ${CLOVER_CONNECT_ORIGINS}`)
       // No frame-src in the baseline, so it falls back to default-src 'self' and
       // Clover's iframes are blocked. It has to be added, not rewritten.
       .replace("object-src 'none'", `frame-src ${CLOVER_FRAME_ORIGINS}; object-src 'none'`),
