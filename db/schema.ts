@@ -352,6 +352,12 @@ export const orders = pgTable(
     estimatedFor: bigint("estimated_for", { mode: "number" }).notNull(),
     addressJson: text("address_json"),
     instructions: text("instructions"),
+    // Which ad, campaign or referrer this order came from. JSON rather than
+    // columns because the shape is a marketing vocabulary, not a business rule:
+    // it grows a `ttclid` when a new platform is tried and the database should
+    // not need a migration for that. Nullable, because a walk-in order taken at
+    // the counter has no campaign and never will. See lib/attribution.ts.
+    attributionJson: text("attribution_json"),
     pricingJson: text("pricing_json").notNull(),
     subtotalCents: integer("subtotal_cents").notNull(),
     discountCents: integer("discount_cents").notNull(),

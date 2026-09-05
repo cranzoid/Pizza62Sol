@@ -78,6 +78,7 @@ async function seedOrder(overrides: {
   nonTaxableSalesCents?: number;
   taxCents?: number;
   totalCents?: number;
+  attribution?: unknown;
 } = {}): Promise<string> {
   const id = crypto.randomUUID();
   const orderNumber = `P62-X${RUN}-${(counter += 1)}`;
@@ -99,9 +100,10 @@ async function seedOrder(overrides: {
   await getPool().query(
     `INSERT INTO orders (id,order_number,tracking_token_hash,feedback_token_hash,customer_name,customer_phone,
        customer_email,fulfilment,channel,status,payment_status,payment_method,schedule_type,estimated_for,pricing_json,
-       subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,address_json,created_at,updated_at)
+       subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,address_json,
+       attribution_json,created_at,updated_at)
      VALUES ($1,$2,$3,$4,$5,'9055550142','ada@example.test',$6,$7,'completed','paid','online','asap',
-       $8,$9,$10,0,$11,0,0,$12,$13,$8,$8)`,
+       $8,$9,$10,0,$11,0,0,$12,$13,$14,$8,$8)`,
     [
       id,
       orderNumber,
@@ -116,6 +118,7 @@ async function seedOrder(overrides: {
       tax,
       total,
       fulfilment === "delivery" ? JSON.stringify({ line1: "1 Test St" }) : null,
+      overrides.attribution ? JSON.stringify(overrides.attribution) : null,
     ],
   );
   return orderNumber;
@@ -166,6 +169,43 @@ withDb("exports the persisted tax-exempt sales separately from HST", async () =>
   assert.equal(values[columns.indexOf("Tax-exempt food sales")], "4.50");
   assert.equal(values[columns.indexOf("HST collected")], "0.00");
   assert.equal(values[columns.indexOf("Final order total")], "4.50");
+});
+
+/**
+ * The export is where marketing spend is checked against takings.
+ *
+ * Campaign labels are split into their own columns rather than exported as a
+ * JSON blob: this file is opened in a spreadsheet and pivoted by campaign, and
+ * a blob in a cell cannot be pivoted at all.
+ */
+withDb("exports the campaign each order came from, in its own columns", async () => {
+  const cookie = await signedInAs("owner");
+  const orderNumber = await seedOrder({
+    attribution: {
+      first: { utm_source: "google", utm_medium: "cpc" },
+      last: { utm_source: "facebook", utm_medium: "paid_social", utm_campaign: "game-day-2026", fbclid: "IwAR-export" },
+    },
+  });
+  const csv = await (await records(cookie, { format: "csv", query: orderNumber })).text();
+  const [header, line] = csv.split("\r\n");
+  const columns = header.split(",").map((value) => value.replace(/^\uFEFF?"|"$/g, ""));
+  const values = line.match(/"(?:[^"]|"")*"/g)?.map((value) => value.slice(1, -1)) ?? [];
+  assert.equal(values[columns.indexOf("Source")], "Meta Ads · game-day-2026");
+  assert.equal(values[columns.indexOf("Campaign name")], "game-day-2026");
+  assert.equal(values[columns.indexOf("Campaign medium")], "paid_social");
+  assert.equal(values[columns.indexOf("Click id")], "IwAR-export");
+  assert.equal(values[columns.indexOf("First seen source")], "Google Ads");
+});
+
+withDb("names a staff-taken order as one rather than as direct traffic", async () => {
+  const cookie = await signedInAs("owner");
+  const orderNumber = await seedOrder({ channel: "phone" });
+  const csv = await (await records(cookie, { format: "csv", query: orderNumber })).text();
+  const [header, line] = csv.split("\r\n");
+  const columns = header.split(",").map((value) => value.replace(/^\uFEFF?"|"$/g, ""));
+  const values = line.match(/"(?:[^"]|"")*"/g)?.map((value) => value.slice(1, -1)) ?? [];
+  assert.equal(values[columns.indexOf("Source")], "Phone order");
+  assert.equal(values[columns.indexOf("Campaign name")], "");
 });
 
 withDb("neutralises a spreadsheet formula in customer data", async () => {

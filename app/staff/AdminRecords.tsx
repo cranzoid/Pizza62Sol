@@ -150,12 +150,16 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
       </div> : null}
 
       <div className="table-scroll" role="region" aria-label="Order history" tabIndex={0}><table className="viz-table">
-        <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Where from</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
+        <thead><tr><th scope="col">Order</th><th scope="col">When</th><th scope="col">Where from</th><th scope="col">Marketing source</th><th scope="col">Status</th><th scope="col">Payment</th><th scope="col">Total</th></tr></thead>
         <tbody>
           {orders.map((order) => <tr key={String(order.id)} className="order-history-row" onClick={() => setOpenOrderId(String(order.id))}>
             <th scope="row">{String(order.order_number)}<small>{String(order.customer_name)}{order.customer_phone ? ` · ${String(order.customer_phone)}` : ""}</small></th>
             <td>{when(order.created_at)}{order.schedule_type === "scheduled" ? ` (for ${when(order.scheduled_for)})` : ""}</td>
             <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
+            {/* Which ad, campaign or referrer produced this order. Computed
+                server-side so the table, the CSV export and the order drawer
+                all name a source the same way — see lib/attribution.ts. */}
+            <td>{String(order.source ?? "—")}</td>
             <td>{String(order.status).replaceAll("_", " ")}</td>
             <td>{String(order.payment_method).replaceAll("_", " ")} · {String(order.payment_status).replaceAll("_", " ")}</td>
             <td>{formatMoney(Number(order.total_cents))}
@@ -168,7 +172,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
                 : null}
             </td>
           </tr>)}
-          {!orders.length ? <tr><td colSpan={6} className="staff-empty">No orders match that search.</td></tr> : null}
+          {!orders.length ? <tr><td colSpan={7} className="staff-empty">No orders match that search.</td></tr> : null}
         </tbody>
       </table></div>
 

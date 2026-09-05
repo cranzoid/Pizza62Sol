@@ -31,7 +31,7 @@ import {
   withoutDeepLinkParams,
   type DeepLinkRequest,
 } from "@/lib/deep-link";
-import { openCookieChoices, trackEvent, type CommerceItem } from "@/lib/marketing";
+import { openCookieChoices, orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -312,6 +312,14 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     observer.observe(menuRef.current);
     return () => observer.disconnect();
   }, [catalog]);
+
+  // Topping ids resolved once, so the bag and the review screen can name a
+  // topping the customer asked us to leave off without either of them carrying
+  // the catalog around.
+  const toppingNames = useMemo(
+    () => new Map((catalog?.toppings ?? []).map((topping) => [topping.id, topping.name] as const)),
+    [catalog],
+  );
 
   const business = catalog?.settings.business?.value ?? {};
   const phone = (business.phone as string | undefined) ?? FALLBACK_PHONE;
@@ -929,6 +937,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           quote={cartQuote}
           loading={cartQuoteLoading}
           fulfilment={fulfilment}
+          toppingNames={toppingNames}
           onClose={() => setCartOpen(false)}
           onRemove={(key) => { setCart((current) => current.filter((line) => line.key !== key)); trackEvent("remove_from_cart"); }}
           onCheckout={() => { setCartOpen(false); setCheckoutOpen(true); trackEvent("checkout_started", { currency: "CAD", value: (cartQuote?.totals.totalCents ?? 0) / 100, items: commerceItems(cart) }); }}
@@ -939,6 +948,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         <Checkout
           cart={cart}
           fulfilment={fulfilment}
+          toppingNames={toppingNames}
           settings={catalog?.settings ?? {}}
           integrations={catalog?.integrations ?? { clover: false, email: false }}
           store={store}
@@ -967,6 +977,34 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   );
 }
 
+/**
+ * One cart line, described the way the customer built it.
+ *
+ * Shared by the bag and the review screen so the two cannot describe the same
+ * pizza differently — the review screen used to show `1 x Large Pizza` and
+ * nothing else, which is exactly the point at which someone stops to check
+ * whether the half-and-half they spent two minutes building survived.
+ *
+ * `omitToppings` holds topping ids, so the names come from the catalog map the
+ * storefront already has; an id that no longer resolves is dropped rather than
+ * printed raw.
+ */
+function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[] {
+  const options: string[] = [];
+  if (line.variationName) options.push(line.variationName);
+  if (line.halal) options.push("Halal meat toppings");
+  if (line.extraCheese) options.push("Extra cheese");
+  for (const topping of line.toppings ?? []) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  for (const modifier of line.modifiers ?? []) {
+    options.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
+  }
+  for (const omitted of line.omitToppings ?? []) {
+    const name = toppingNames.get(omitted);
+    if (name) options.push(`No ${name.toLowerCase()}`);
+  }
+  return options;
+}
+
 // Half-and-half selection, the way pizzapizza.ca does it: pick the topping, then
 // place it on the left, the whole pizza, or the right. A half consumes only the
 // owner-configured share of the included allowance, so the price follows.
@@ -979,14 +1017,14 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
  * problems by cart position, so an item that cannot be ordered says so *here*,
  * next to a button that removes it, rather than at the payment screen.
  */
-function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onCheckout }: { cart: CartLine[]; quote: Quote | null; loading: boolean; fulfilment: string; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
+function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, onClose, onRemove, onCheckout }: { cart: CartLine[]; quote: Quote | null; loading: boolean; fulfilment: string; toppingNames: Map<string, string>; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const totals = quote?.totals ?? EMPTY_TOTALS;
   const lineIssue = (index: number) => quote?.issues.find((issue) => issue.index === index) ?? null;
   const orderIssues = quote?.issues.filter((issue) => issue.index === null) ?? [];
   const blocked = Boolean(quote && !quote.ok);
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside ref={dialogRef} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2 id="cart-title">Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
-    <div className="cart-lines">{cart.length ? cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{line.variationName ? <p>{line.variationName}</p> : null}{line.extraCheese ? <small>Extra cheese</small> : null}{line.halal ? <small>Halal meat toppings</small> : null}{line.toppings?.map((entry) => <small key={entry.toppingId}>{entry.name}{placementSuffix(entry.placement)}</small>)}{line.modifiers?.map((modifier) => <small key={modifier.id}>{modifier.label}: {modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}</small>)}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; }) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
+    <div className="cart-lines">{cart.length ? cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{lineOptions(line, toppingNames).map((option, position) => <small key={`${position}-${option}`}>{option}</small>)}{line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; }) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
     <div className="cart-summary">
       <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
       {totals.discountCents > 0 ? <div className="cart-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
@@ -1000,7 +1038,7 @@ function CartDrawer({ cart, quote, loading, fulfilment, onClose, onRemove, onChe
   </aside></div>;
 }
 
-function Checkout({ cart, fulfilment, settings, integrations, store, hours, timeZone, now, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
+function Checkout({ cart, fulfilment, toppingNames, settings, integrations, store, hours, timeZone, now, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; toppingNames: Map<string, string>; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
@@ -1070,6 +1108,34 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
   const contactComplete = name.trim().length > 1 && phone.trim().length >= 10 && /\S+@\S+\.\S+/.test(email);
   const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
 
+  /**
+   * The order restated as three plain facts: where it is going, when it will be
+   * there, and how it is being paid for.
+   *
+   * Before this, none of them appeared in the summary at all — the destination
+   * was three fields in a fieldset, the time was a radio group, and the payment
+   * method was a third fieldset below both. A customer checking their order
+   * before paying had to re-read the form they had just filled in and assemble
+   * the answer themselves, which is exactly the moment people abandon a
+   * checkout, and exactly the moment a pickup order gets placed as a delivery.
+   *
+   * An incomplete answer renders as the thing still to do rather than as blank
+   * space, so the summary never quietly omits a decision.
+   */
+  const storeAddress = String(settings.business?.value.address ?? "55 Parkdale Ave N, Hamilton, ON L8H 5W7");
+  const itemCount = cart.reduce((count, line) => count + line.quantity, 0);
+  const destination = fulfilment === "delivery"
+    ? addressComplete
+      ? [line1.trim(), unit.trim() ? `Unit ${unit.trim()}` : "", "Hamilton", postalCode.trim().toUpperCase()].filter(Boolean).join(", ")
+      : ""
+    : storeAddress;
+  const readyAt = scheduleType === "scheduled"
+    ? scheduledFor ? slotLabel(Number(scheduledFor)) : ""
+    : `As soon as possible · about ${String(estimate)} min`;
+  const payingWith = paymentMethod === "online"
+    ? inlineCardAvailable ? "Card, entered on this page" : "Card, on Clover's secure page"
+    : "Cash, debit or card at the store";
+
   const submit = async () => {
     setSubmitting(true); setError(""); trackEvent("payment_attempted", { paymentMethod });
     try {
@@ -1088,6 +1154,11 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
       }
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
         idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, paymentToken, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        // Which ad, if any, brought this customer here. Sent with the order
+        // rather than only on an analytics event, because "did the Meta
+        // campaign pay for itself" is a question about orders, and an analytics
+        // event has no order to join to. Sanitised again server-side.
+        attribution: orderAttribution(),
       }) });
       const result = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
@@ -1154,56 +1225,96 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
           />
         : null}</div>
       <aside className="checkout-summary">
-        <h3>Order summary</h3>
-        {/* Removable here as well as in the bag. The review screen is where a
+        <div className="summary-head">
+          <h3>Your order</h3>
+          <span>{itemCount} item{itemCount === 1 ? "" : "s"}</span>
+        </div>
+
+        {/* The three decisions, answered. See the note on `destination` above. */}
+        <dl className="summary-plan">
+          <div>
+            <dt>{fulfilment === "delivery" ? "Deliver to" : "Pick up at"}</dt>
+            <dd>{destination || <em>Add your address on the left</em>}</dd>
+          </div>
+          <div>
+            <dt>{fulfilment === "delivery" ? "Arriving" : "Ready"}</dt>
+            <dd>{readyAt || <em>Choose a time on the left</em>}</dd>
+          </div>
+          <div>
+            <dt>Paying with</dt>
+            <dd>{payingWith}</dd>
+          </div>
+        </dl>
+
+        {/* Every choice the customer made, not just the product name — and
+            removable here as well as in the bag. The review screen is where a
             customer actually re-reads what they are about to pay for, and being
             sent back to the bag to take one thing out is the point people
             abandon a checkout rather than fix it. */}
-        {cart.map((line) => <div key={line.key}><span>{line.quantity} × {line.name}</span><b>{formatMoney(line.unitPriceCents * line.quantity)}</b><button type="button" className="summary-remove" onClick={() => onRemove(line.key)} aria-label={`Remove ${line.name} from your order`}>Remove</button></div>)}
+        <ul className="summary-items">
+          {cart.map((line) => {
+            const options = lineOptions(line, toppingNames);
+            return <li key={line.key}>
+              <span className="summary-qty">{line.quantity}</span>
+              <div>
+                <b>{line.name}</b>
+                {options.length ? <small>{options.join(" · ")}</small> : null}
+                {line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}
+                <button type="button" className="summary-remove" onClick={() => onRemove(line.key)} aria-label={`Remove ${line.name} from your order`}>Remove</button>
+              </div>
+              <b className="summary-price">{formatMoney(line.unitPriceCents * line.quantity)}</b>
+            </li>;
+          })}
+        </ul>
 
-        <hr />
-        <p>Promo code</p>
-        <div className="coupon-row">
-          <input
-            value={couponInput}
-            onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
-            placeholder="Have a code?"
-            aria-label="Promo code"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {couponCode ? (
-            <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
-          ) : (
-            <button type="button" disabled={!couponInput.trim()} onClick={() => { setCouponCode(couponInput.trim()); trackEvent("coupon_used", { code: couponInput.trim() }); }}>Apply</button>
-          )}
-        </div>
-        {quote?.coupon ? (
-          <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">
-            {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
-          </p>
-        ) : null}
+        {/* Folded away by default: a promo code is a thing a minority of
+            customers have, and an empty box next to the total invites everyone
+            else to go looking for one. Opens by itself once a code is applied,
+            so an applied discount is never hidden behind a summary row. */}
+        <details className="summary-extra" open={Boolean(couponCode)}>
+          <summary>Promo code</summary>
+          <div className="coupon-row">
+            <input
+              value={couponInput}
+              onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
+              placeholder="Have a code?"
+              aria-label="Promo code"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {couponCode ? (
+              <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
+            ) : (
+              <button type="button" disabled={!couponInput.trim()} onClick={() => { setCouponCode(couponInput.trim()); trackEvent("coupon_used", { code: couponInput.trim() }); }}>Apply</button>
+            )}
+          </div>
+          {quote?.coupon ? (
+            <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">
+              {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
+            </p>
+          ) : null}
+        </details>
 
-        <hr />
-        <p>Tip</p>
-        <div className="tip-grid">
-          <button type="button" className={tipMode === "preset" && tip === 0 ? "active" : ""} onClick={() => { setTipMode("preset"); setTip(0); }}>None</button>
-          {tipPresets.map((preset) => <button type="button" className={tipMode === "preset" && tip === preset ? "active" : ""} key={preset} onClick={() => { setTipMode("preset"); setTip(preset); }}>{preset / 100}%</button>)}
-          <button type="button" className={tipMode === "custom" ? "active" : ""} onClick={() => setTipMode("custom")}>Other</button>
+        <div className="summary-tip">
+          <p className="summary-label">Tip {fulfilment === "delivery" ? "the driver" : "the kitchen"} <span>optional</span></p>
+          <div className="tip-grid">
+            <button type="button" className={tipMode === "preset" && tip === 0 ? "active" : ""} onClick={() => { setTipMode("preset"); setTip(0); }}>None</button>
+            {tipPresets.map((preset) => <button type="button" className={tipMode === "preset" && tip === preset ? "active" : ""} key={preset} onClick={() => { setTipMode("preset"); setTip(preset); }}>{preset / 100}%</button>)}
+            <button type="button" className={tipMode === "custom" ? "active" : ""} onClick={() => setTipMode("custom")}>Other</button>
+          </div>
+          {tipMode === "custom" ? (
+            <label className="custom-tip">Tip amount · C$
+              <input inputMode="decimal" value={customTip} onChange={(event) => setCustomTip(event.target.value)} placeholder="0.00" />
+            </label>
+          ) : null}
+          <small className="tip-note">Percentage tips are calculated on the food total after any discount, before HST, and exclude delivery.</small>
         </div>
-        {tipMode === "custom" ? (
-          <label className="custom-tip">Tip amount · C$
-            <input inputMode="decimal" value={customTip} onChange={(event) => setCustomTip(event.target.value)} placeholder="0.00" />
-          </label>
-        ) : null}
-        <p className="tip-note">Percentage tips are calculated on the food total after any discount, before HST, and exclude delivery.</p>
 
         {/*
           H-24: the complete breakdown, every line of it, priced by the server.
           The customer cannot give informed consent to a number they were shown
           only as a single "estimated total".
         */}
-        <hr />
         <div className="checkout-totals">
           <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
           {totals.discountCents > 0 ? (
@@ -1218,8 +1329,12 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
             <b>{formatMoney(totals.taxCents)}</b>
           </div>
           {totals.tipCents > 0 ? <div><span>Tip</span><b>{formatMoney(totals.tipCents)}</b></div> : null}
+          {/* Named for what happens next rather than "Total to pay": on a pickup
+              order paid at the counter, nothing is charged when this button is
+              pressed, and a customer expecting a card charge is a customer
+              phoning to ask whether the order went through. */}
           <div className="checkout-grand-total">
-            <span>Total to pay{quoting ? <small>Updating…</small> : null}</span>
+            <span>{paymentMethod === "online" ? "Total charged now" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
             <b>{formatMoney(totals.totalCents)}</b>
           </div>
         </div>
@@ -1253,7 +1368,8 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
         </button>
         {!contactComplete ? <small className="checkout-hint">Add your name, phone and email above to continue.</small> : null}
         {contactComplete && !addressComplete ? <small className="checkout-hint">Add your delivery address above to continue.</small> : null}
-        <small>This total is calculated by Pizza 62 and is what you will be charged. {paymentMethod === "online" && inlineCardAvailable
+        {contactComplete && addressComplete && scheduleType === "scheduled" && !scheduledFor ? <small className="checkout-hint">Choose a {fulfilment === "delivery" ? "delivery" : "pickup"} time above to continue.</small> : null}
+        <small className="summary-note">This total is calculated by Pizza 62 and is what you will be charged. {paymentMethod === "online" && inlineCardAvailable
           ? "Card details go straight to Clover and never reach this site."
           : "Card details are entered on Clover\u2019s secure page and never reach this site."}</small>
       </aside></div>

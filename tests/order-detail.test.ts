@@ -69,10 +69,21 @@ async function seedFullOrder(): Promise<{ orderId: string }> {
   await getPool().query(
     `INSERT INTO orders (id,order_number,tracking_token_hash,feedback_token_hash,customer_name,customer_phone,
        customer_email,fulfilment,channel,status,payment_status,payment_method,schedule_type,estimated_for,pricing_json,
-       subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,created_at,updated_at)
+       attribution_json,subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,
+       created_at,updated_at)
      VALUES ($1,$2,$3,$4,'Ada Lovelace','9055550142','ada@example.test','pickup','online','completed','paid','online',
-       'asap',$5,'{}',899,0,117,0,0,1016,$5,$5)`,
-    [orderId, orderNumber, `h${orderId}`, `f${orderId}`, now],
+       'asap',$5,'{}',$6,899,0,117,0,0,1016,$5,$5)`,
+    [
+      orderId,
+      orderNumber,
+      `h${orderId}`,
+      `f${orderId}`,
+      now,
+      JSON.stringify({
+        first: { utm_source: "google", utm_medium: "cpc" },
+        last: { utm_source: "facebook", utm_medium: "paid_social", utm_campaign: "game-day-2026", fbclid: "IwAR-detail" },
+      }),
+    ],
   );
   const topping = await getPool().query<{ id: string; name: string }>("SELECT id, name FROM toppings LIMIT 1");
   const toppingId = topping.rows[0]?.id;
@@ -139,6 +150,18 @@ withDb("returns items, timeline, refunds and feedback in one read", async () => 
   const feedback = order.feedback as Record<string, unknown>;
   assert.equal(feedback.overall_rating, 4);
   assert.equal(feedback.written_feedback, "Pretty good, a bit cold");
+
+  // The payment row is what ties this order to a line on a Clover settlement
+  // report, so the drawer reads it rather than only the totals.
+  const payments = order.payments as Array<Record<string, unknown>>;
+  assert.equal(payments.length, 1);
+  assert.equal(payments[0].status, "captured");
+
+  // Which ad produced this order — parsed, not handed over as raw JSON.
+  const attribution = order.attribution as { first?: Record<string, string>; last?: Record<string, string> };
+  assert.equal(attribution.last?.utm_campaign, "game-day-2026");
+  assert.equal(attribution.first?.utm_source, "google");
+  assert.equal(order.attribution_json, undefined);
 });
 
 withDb("redacts contact for a viewer without view_customer_contact, but not the rest of the order", async () => {

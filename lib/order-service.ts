@@ -23,6 +23,7 @@ import {
   type ToppingSelection,
   type WeeklyAvailability,
 } from "@/lib/domain";
+import { normalizeAttribution } from "@/lib/attribution";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
 import { closureFor, closureMessage, loadActiveClosures } from "@/lib/closures";
 import {
@@ -74,6 +75,13 @@ export type OrderRequest = {
     postalCode?: string;
     instructions?: string;
   };
+  /**
+   * The campaign labels the browser was carrying — which ad, if any, this order
+   * came from. Typed as `unknown` on purpose: it arrives from localStorage on a
+   * device we do not control, so it is sanitised by `normalizeAttribution`
+   * rather than trusted into the database. Absent for a staff-entered order.
+   */
+  attribution?: unknown;
 };
 
 type DbProduct = {
@@ -1363,6 +1371,10 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // Only a trusted caller can say this is anything but a website order — see
     // CreateOrderContext on why it is not reachable from the request body.
     const channel = context.channel ?? "online";
+    // Where the order came from, as opposed to where it was taken. A phone or
+    // counter order has nothing to attribute and the till sends nothing; a
+    // website order carries whatever campaign brought the customer here.
+    const attribution = context.staffEntry ? null : normalizeAttribution(body.attribution);
     const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
     const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
     const paymentProvider = paymentMethod === "online" ? "clover" : "store";
@@ -1385,10 +1397,10 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           `INSERT INTO orders
            (id, order_number, tracking_token_hash, feedback_token_hash, customer_name, customer_phone,
             customer_email, fulfilment, channel, status, payment_status, payment_method, schedule_type,
-            scheduled_for, estimated_for, address_json, instructions, pricing_json, subtotal_cents,
-            discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, acknowledged_at,
-            created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            scheduled_for, estimated_for, address_json, instructions, attribution_json, pricing_json,
+            subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents,
+            acknowledged_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -1408,6 +1420,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           schedule.estimatedFor,
           deliveryAddress ? JSON.stringify(deliveryAddress) : null,
           cleanInstructions(body.address?.instructions),
+          attribution ? JSON.stringify(attribution) : null,
           JSON.stringify(price),
           price.menuSubtotalCents,
           price.discountCents,
