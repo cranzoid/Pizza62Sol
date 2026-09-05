@@ -38,6 +38,37 @@ of the steps below should be performed on the staging slot.
   and `utm_content` values. Google and Meta click IDs are also retained for the
   first-party funnel report.
 
+## Advertising destination URLs
+
+An ad may land on the offer it promised instead of near it. Two parameters do
+this, and an ad URL carries both:
+
+| Ad | Destination |
+|----|-------------|
+| $11.99 large pizza, 1 item | `https://pizza62.ca/?fulfilment=pickup&product=pickup-large-one` |
+| $27.99 two large, 6 toppings | `https://pizza62.ca/?fulfilment=pickup&product=pickup-two-large-six` |
+| Delivery | `https://pizza62.ca/?fulfilment=delivery` |
+
+Add the campaign parameters as usual — they sit alongside these and are read
+before the two above are cleared from the address bar.
+
+`product` is any live product ID, so a new offer needs no website change; take
+the ID from the product in **Admin → Menu**. Rules worth knowing before writing
+a URL:
+
+- **Always include `fulfilment`.** `product` on its own lands on the menu with
+  the delivery-or-pickup prompt still showing, deliberately: nothing else on the
+  site decides a customer's ordering method for them, and an ad should not either.
+- **The pair has to agree.** A pickup-only special behind `fulfilment=delivery`
+  lands on the menu rather than opening an item the cart would refuse to quote.
+  Every `pickup-specials` product is pickup-only.
+- **A link never adds to the cart.** It opens the item's customizer; anything
+  sold without one lands on the menu instead.
+- **Sold-out, owner-setup and out-of-window offers fall back to the menu**, so an
+  ad still circulating after a dated promotion ends is untidy, not broken.
+- The landing URL stays `https://pizza62.ca/`, and the home page still declares
+  itself canonical, so these variants do not fragment indexing.
+
 ## Conversion definitions
 
 Treat a confirmed `purchase` as the primary sales conversion. Bag additions,

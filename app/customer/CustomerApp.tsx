@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { CloverCardForm, type CloverCardFormHandle } from "@/app/customer/CloverCardForm";
@@ -24,6 +24,13 @@ import {
   type WeeklyHours,
   type WeeklyAvailability,
 } from "@/lib/domain";
+import {
+  hasCustomizer,
+  parseDeepLink,
+  resolveDeepLink,
+  withoutDeepLinkParams,
+  type DeepLinkRequest,
+} from "@/lib/deep-link";
 import { openCookieChoices, trackEvent, type CommerceItem } from "@/lib/marketing";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
@@ -191,6 +198,28 @@ function alreadyAskedMethod(): boolean {
   return window.sessionStorage.getItem(METHOD_ASKED_KEY) === "1";
 }
 
+/**
+ * The advertising deep link, read once per page load.
+ *
+ * Captured outside React, for the reason `readLinkCredentials` is: React reads
+ * more than once. It re-renders from scratch when the server and browser
+ * markups disagree, and double-invokes state initialisers under StrictMode. The
+ * URL is also about to be rewritten to drop these parameters, so a later read
+ * would find nothing and be indistinguishable from a visitor who arrived
+ * without a link at all. One answer is captured here and handed to every caller.
+ *
+ * Server-side there is no URL to read, so the storefront renders as though no
+ * link were present and the browser fills it in on hydration — the same
+ * arrangement `alreadyAskedMethod` and `rememberedCart` already rely on.
+ */
+let capturedDeepLink: DeepLinkRequest | null = null;
+
+function deepLink(): DeepLinkRequest {
+  if (typeof window === "undefined") return { fulfilment: null, productId: null };
+  capturedDeepLink ??= parseDeepLink(window.location.search);
+  return capturedDeepLink;
+}
+
 function rememberedFulfilment(): "pickup" | "delivery" {
   if (typeof window === "undefined") return "pickup";
   return window.localStorage.getItem("p62_fulfilment") === "delivery"
@@ -238,12 +267,20 @@ function ArrowIcon() {
 export default function CustomerApp({ initialCatalog = null }: { initialCatalog?: Catalog | null }) {
   const [catalog, setCatalog] = useState<Catalog | null>(initialCatalog);
   const [loadingError, setLoadingError] = useState("");
-  const [chosenFulfilment, setFulfilment] = useState<"pickup" | "delivery">(rememberedFulfilment);
+  // An ad that said which way it meant outranks whatever the browser remembers
+  // from last week. Set here rather than from an effect so the first render is
+  // already the right one and the cart is never quoted against a stale method.
+  const [chosenFulfilment, setFulfilment] = useState<"pickup" | "delivery">(
+    () => deepLink().fulfilment ?? rememberedFulfilment(),
+  );
   const [deliveryGate, setDeliveryGate] = useState(false);
   const [postalCode, setPostalCode] = useState("");
   const [gateMessage, setGateMessage] = useState("");
   const [cart, setCart] = useState<CartLine[]>(rememberedCart);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  // Set once the deep-linked customizer has been closed or added, so that
+  // closing it lands on the menu rather than reopening the same offer forever.
+  const [deepLinkSpent, setDeepLinkSpent] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Record<string, unknown> | null>(null);
@@ -365,7 +402,9 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // who meant to order delivery could reach the payment step before the
   // difference showed up as an address form and a fee. Ask instead, so the
   // method is chosen rather than assumed.
-  const [methodAsked, setMethodAsked] = useState(alreadyAskedMethod);
+  const [methodAsked, setMethodAsked] = useState(
+    () => deepLink().fulfilment !== null || alreadyAskedMethod(),
+  );
 
   // Behind the closed notice: a customer who arrives after hours needs to be
   // told the kitchen is shut before being asked how they want the food.
@@ -422,6 +461,35 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // of tax drift, and when they do the customer is charged something they never
   // agreed to. There is now one implementation, and it lives on the server.
   const { quote: cartQuote, loading: cartQuoteLoading } = useOrderQuote({ cart, fulfilment });
+
+  /**
+   * The offer an ad click asked for, if it is one this page can honour.
+   *
+   * Derived rather than pushed into state from an effect: the catalogue arrives
+   * either with the server render or from `/api/catalog` moments later, and
+   * "which customizer is open" is a function of that catalogue and the URL, not
+   * a second copy of it that has to be kept in step. `lib/deep-link` decides
+   * whether the link is honourable at all — the product has to exist, be
+   * orderable today, and be sold the way the link said.
+   */
+  const deepLinkProduct = useMemo(() => {
+    if (deepLinkSpent || !catalog) return null;
+    return resolveDeepLink({
+      request: deepLink(),
+      products: catalog.products,
+      pickupEnabled,
+      deliveryEnabled,
+    }).product;
+  }, [catalog, deepLinkSpent, pickupEnabled, deliveryEnabled]);
+
+  // Behind the closed notice, for the same reason the method prompt is: a
+  // customizer opened under that modal is one the customer cannot see.
+  // Dismissing the notice re-renders and the offer is there waiting.
+  const openCustomizerFor = selectedProduct ?? (showClosedNotice ? null : deepLinkProduct);
+  const closeCustomizer = () => {
+    setSelectedProduct(null);
+    setDeepLinkSpent(true);
+  };
 
   const completeOrder = (result: Record<string, unknown>) => {
     setCheckoutOpen(false);
@@ -506,17 +574,25 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     });
   };
 
-  const openProduct = (product: Product) => {
+  // Stable, because the ad-landing effect below depends on it and a fresh
+  // closure every render would have that effect reconsidering itself forever.
+  const trackProductViewed = useCallback((product: Product) => {
     trackEvent("product_viewed", {
       productId: product.id,
       currency: "CAD",
       value: product.base_price_cents / 100,
       items: [{ itemId: product.id, itemName: product.name, category: product.category_id, price: product.base_price_cents / 100, quantity: 1 }],
     });
-    const sections = product.configuration.sections;
-    if (product.product_type === "pizza" || (Array.isArray(sections) && sections.length)) {
-      setSelectedProduct(product);
-    } else addSimple(product);
+  }, []);
+
+  const openProduct = (product: Product) => {
+    trackProductViewed(product);
+    // The same predicate a deep link uses to decide whether it may open this
+    // product at all. Shared rather than repeated, because the promise that an
+    // ad click never adds to the cart holds only while there is one answer to
+    // "does this product have a customizer".
+    if (hasCustomizer(product)) setSelectedProduct(product);
+    else addSimple(product);
   };
 
   const openOffer = (product: Product) => {
@@ -526,6 +602,36 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     if (product.pickup_eligible && !product.delivery_eligible) setFulfilment("pickup");
     openProduct(product);
   };
+
+  useEffect(() => {
+    // The deep-link parameters are dropped from the address bar so the URL a
+    // customer can bookmark, share or reload is the plain homepage rather than
+    // one that reopens a customizer every time. Only those two: the campaign
+    // parameters beside them are read by `MarketingConsent`, which the root
+    // layout mounts after this component and whose effect therefore runs
+    // second. Clearing the whole query string here would delete the attribution
+    // belonging to the click that paid to arrive.
+    const cleaned = withoutDeepLinkParams(window.location.href);
+    if (cleaned) window.history.replaceState(null, "", cleaned);
+  }, []);
+
+  /**
+   * What an ad landing does once, after the catalogue has arrived.
+   *
+   * A landing that opens a customizer sends the same view event a tap on the
+   * offer card would, so the funnel counts it like any other look at the item.
+   * One that cannot — an unknown, sold-out or withdrawn product, or a link that
+   * only named a method — scrolls to the menu instead, which is the honest
+   * landing for a click that was promised food.
+   */
+  const deepLinkLanded = useRef(false);
+  useEffect(() => {
+    if (deepLinkLanded.current || !catalog || showClosedNotice) return;
+    if (!deepLink().fulfilment) return;
+    deepLinkLanded.current = true;
+    if (deepLinkProduct) trackProductViewed(deepLinkProduct);
+    else menuRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [catalog, showClosedNotice, deepLinkProduct, trackProductViewed]);
 
   const siteSections: Record<string, React.ReactNode> = {
     promises: <>
@@ -798,22 +904,22 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         </div>
       ) : null}
 
-      {selectedProduct && catalog ? (
-        selectedProduct.product_type === "pizza" ? <PizzaCustomizer
-          product={selectedProduct}
-          variations={catalog.variations.filter((variation) => variation.product_id === selectedProduct.id)}
+      {openCustomizerFor && catalog ? (
+        openCustomizerFor.product_type === "pizza" ? <PizzaCustomizer
+          product={openCustomizerFor}
+          variations={catalog.variations.filter((variation) => variation.product_id === openCustomizerFor.id)}
           toppings={catalog.toppings}
           halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
-          onClose={() => setSelectedProduct(null)}
-          onAdd={(line) => { addLine(line); setSelectedProduct(null); }}
+          onClose={closeCustomizer}
+          onAdd={(line) => { addLine(line); closeCustomizer(); }}
         /> : <GenericCustomizer
-          product={selectedProduct}
+          product={openCustomizerFor}
           toppings={catalog.toppings}
           halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
-          onClose={() => setSelectedProduct(null)}
-          onAdd={(line) => { addLine(line); setSelectedProduct(null); }}
+          onClose={closeCustomizer}
+          onAdd={(line) => { addLine(line); closeCustomizer(); }}
         />
       ) : null}
 
