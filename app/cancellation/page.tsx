@@ -1,6 +1,6 @@
 import PolicyPage from "@/app/policy/PolicyPage";
 
-export const metadata = { title: "Cancellation & Refund Policy" };
+export const metadata = { title: "Cancellation & Refund Policy", description: "Pizza 62 cancellation, refund, delivery, and order support policy.", alternates: { canonical: "/cancellation" } };
 
 /**
  * The policy the checkout acknowledgement links to.

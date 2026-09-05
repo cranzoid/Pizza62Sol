@@ -22,6 +22,7 @@ const ALLOWED_EVENTS = new Set([
   // customer, which also makes it invisible to us — this is how a broken card
   // form gets noticed without someone happening to have the console open.
   "card_form_unavailable",
+  "phone_clicked",
 ]);
 
 export async function POST(request: Request) {

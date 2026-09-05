@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalRedirectUrl } from "@/lib/canonical-host";
+import { canonicalRedirectUrl, legacyRedirectUrl } from "@/lib/canonical-host";
 
 test("redirects the www alias to the configured apex and preserves the request", () => {
   assert.equal(
@@ -39,6 +39,23 @@ test("does not redirect an arbitrary forwarded host", () => {
       forwardedHost: "www.pizza62.ca.example.test",
       publicBaseUrl: "https://pizza62.ca",
     }),
+    null,
+  );
+});
+
+test("preserves the indexed Wix menu and ordering URLs after the Azure move", () => {
+  for (const source of ["/menu?menu=menu", "/online-ordering", "/cart-page"]) {
+    assert.equal(
+      legacyRedirectUrl({ requestUrl: `https://www.pizza62.ca${source}`, publicBaseUrl: "https://pizza62.ca" }),
+      "https://pizza62.ca/#menu",
+    );
+  }
+  assert.equal(
+    legacyRedirectUrl({ requestUrl: "https://www.pizza62.ca/my-orders", publicBaseUrl: "https://pizza62.ca" }),
+    "https://pizza62.ca/track",
+  );
+  assert.equal(
+    legacyRedirectUrl({ requestUrl: "https://www.pizza62.ca/not-a-legacy-page", publicBaseUrl: "https://pizza62.ca" }),
     null,
   );
 });

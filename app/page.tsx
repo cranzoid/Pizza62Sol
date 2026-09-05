@@ -1,8 +1,21 @@
+import type { Metadata } from "next";
 import CustomerApp from "./customer/CustomerApp";
+import { loadPublicCatalog } from "@/lib/public-catalog";
+import { restaurantStructuredData, serializeJsonLd } from "@/lib/seo";
 
-// The home page deliberately has no metadata of its own: the title and
-// description come from the owner's website editor through the root layout, and
-// a page-level title here would override whatever they wrote there.
-export default function Home() {
-  return <CustomerApp />;
+export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
+
+// The title and description still come from the owner's website editor through
+// the root layout. This page adds only its self-referencing canonical URL.
+export default async function Home() {
+  const catalog = await loadPublicCatalog().catch(() => null);
+  const structuredData = restaurantStructuredData(catalog ?? {}, process.env.PUBLIC_BASE_URL);
+  return <>
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }} />
+    <CustomerApp initialCatalog={catalog} />
+  </>;
 }

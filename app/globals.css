@@ -1445,3 +1445,56 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .menu-item-thumb { width:48px; height:48px; }
   .product-admin-card > summary > .menu-edit-label { grid-column:1/-1; grid-row:auto; justify-self:end; }
 }
+/* Optional ad measurement is offered without obscuring the menu or checkout. */
+.cookie-panel {
+  position: fixed;
+  z-index: 1200;
+  right: 1rem;
+  bottom: 1rem;
+  left: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem 1.15rem;
+  color: #fffaf0;
+  background: #173b2c;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 1rem;
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, .28);
+}
+.cookie-panel strong { display: block; font-size: 1.05rem; }
+.cookie-panel p { max-width: 50rem; margin: .3rem 0 0; line-height: 1.45; }
+.cookie-panel small { display: block; margin-top: .35rem; opacity: .8; }
+.cookie-actions { display: flex; flex: 0 0 auto; gap: .65rem; }
+.cookie-actions .primary-button { white-space: nowrap; }
+.cookie-decline {
+  padding: .75rem 1rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .5);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+.footer-text-button {
+  width: fit-content;
+  min-height: 28px;
+  padding: 0;
+  color: rgba(255, 255, 255, .7);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.footer-text-button:hover, .footer-text-button:focus-visible { text-decoration: underline; }
+@media (max-width: 720px) {
+  .cookie-panel { align-items: stretch; flex-direction: column; }
+  .cookie-actions { width: 100%; }
+  .cookie-actions > * { flex: 1; justify-content: center; }
+}

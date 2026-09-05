@@ -83,6 +83,14 @@ locals {
       PUBLIC_BASE_URL = var.custom_domain != "" ? "https://${var.custom_domain}" : "https://${local.default_hostname}"
       SEO_INDEXABLE   = var.custom_domain != "" ? "true" : "false"
 
+      # Public identifiers, not secrets. Empty values make each integration a
+      # no-op; the browser still requires explicit consent before loading one.
+      GOOGLE_SITE_VERIFICATION    = var.google_site_verification
+      META_PIXEL_ID               = var.meta_pixel_id
+      GA4_MEASUREMENT_ID          = var.ga4_measurement_id
+      GOOGLE_ADS_ID               = var.google_ads_id
+      GOOGLE_ADS_CONVERSION_LABEL = var.google_ads_conversion_label
+
       # Not secrets, and useful to read at a glance. The API key beside them
       # is a Key Vault reference; these two are just configuration.
       EMAIL_FROM     = var.email_from
@@ -148,7 +156,14 @@ resource "azurerm_linux_web_app" "main" {
   # with each slot during a swap so staging can never inherit production SEO or
   # callback URLs (and production cannot inherit staging's no-index setting).
   sticky_settings {
-    app_setting_names = ["PUBLIC_BASE_URL", "SEO_INDEXABLE"]
+    app_setting_names = [
+      "PUBLIC_BASE_URL",
+      "SEO_INDEXABLE",
+      "META_PIXEL_ID",
+      "GA4_MEASUREMENT_ID",
+      "GOOGLE_ADS_ID",
+      "GOOGLE_ADS_CONVERSION_LABEL",
+    ]
   }
 
   logs {
@@ -232,8 +247,12 @@ resource "azurerm_linux_web_app_slot" "staging" {
   app_settings = merge(local.app_settings, {
     # Except this: a slot that is about to become production must not be
     # indexed, and must not be the URL in a customer's notification email.
-    PUBLIC_BASE_URL = "https://${azurerm_linux_web_app.main.name}-staging.azurewebsites.net"
-    SEO_INDEXABLE   = "false"
+    PUBLIC_BASE_URL             = "https://${azurerm_linux_web_app.main.name}-staging.azurewebsites.net"
+    SEO_INDEXABLE               = "false"
+    META_PIXEL_ID               = ""
+    GA4_MEASUREMENT_ID          = ""
+    GOOGLE_ADS_ID               = ""
+    GOOGLE_ADS_CONVERSION_LABEL = ""
   })
 
   lifecycle {

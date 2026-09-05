@@ -4,6 +4,27 @@ type CanonicalRedirectInput = {
   publicBaseUrl?: string | null;
 };
 
+const LEGACY_PUBLIC_PATHS: Record<string, string> = {
+  "/menu": "/#menu",
+  "/online-ordering": "/#menu",
+  "/cart-page": "/#menu",
+  "/my-orders": "/track",
+  "/my-subscriptions": "/",
+};
+
+/** Preserves useful Wix-era entry points when the custom domain moves to Azure. */
+export function legacyRedirectUrl({ requestUrl, publicBaseUrl }: CanonicalRedirectInput): string | null {
+  try {
+    const request = new URL(requestUrl);
+    const targetPath = LEGACY_PUBLIC_PATHS[request.pathname.replace(/\/$/, "") || "/"];
+    if (!targetPath) return null;
+    const base = new URL(publicBaseUrl || request.origin);
+    return new URL(targetPath, base.origin).toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Redirect only the www alias to the configured apex hostname.
  *

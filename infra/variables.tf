@@ -116,6 +116,51 @@ variable "email_from" {
   default     = "orders@pizza62.ca"
 }
 
+variable "google_site_verification" {
+  description = "Public Google Search Console HTML verification token. Blank omits the tag."
+  type        = string
+  default     = ""
+}
+
+variable "meta_pixel_id" {
+  description = "Public Meta Pixel numeric ID. Blank keeps Meta measurement disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.meta_pixel_id == "" || can(regex("^[0-9]{5,30}$", var.meta_pixel_id))
+    error_message = "meta_pixel_id must be blank or a numeric Meta Pixel ID."
+  }
+}
+
+variable "ga4_measurement_id" {
+  description = "Public GA4 measurement ID (G-...). Blank keeps GA4 disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.ga4_measurement_id == "" || can(regex("^G-[A-Za-z0-9]+$", var.ga4_measurement_id))
+    error_message = "ga4_measurement_id must be blank or start with G-."
+  }
+}
+
+variable "google_ads_id" {
+  description = "Public Google Ads tag ID (AW-...). Blank keeps direct Ads tracking disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.google_ads_id == "" || can(regex("^AW-[0-9]+$", var.google_ads_id))
+    error_message = "google_ads_id must be blank or use the AW-123456789 format."
+  }
+}
+
+variable "google_ads_conversion_label" {
+  description = "Public purchase conversion label paired with google_ads_id."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)
