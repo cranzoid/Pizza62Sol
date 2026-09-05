@@ -62,6 +62,20 @@ const allowedEventNames = new Set([
   "phone_clicked",
 ]);
 
+/**
+ * Fail closed when the hosted-checkout return page decides whether an online
+ * order is a Purchase. `paymentStatus` is the server's authoritative result;
+ * the operational order status alone is not proof that Clover was paid.
+ */
+export function isConfirmedOnlinePurchase(order?: { status?: string; paymentStatus?: string }): boolean {
+  return Boolean(
+    order?.status
+      && order.status !== "awaiting_payment"
+      && order.status !== "cancelled"
+      && order.paymentStatus === "paid",
+  );
+}
+
 function clean(value: string | null, maximum = 160): string | undefined {
   const normalized = value?.trim().slice(0, maximum);
   return normalized || undefined;

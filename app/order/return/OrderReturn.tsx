@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UtilityHeader } from "@/app/UtilityHeader";
-import { trackEvent, type CommerceItem } from "@/lib/marketing";
+import { isConfirmedOnlinePurchase, trackEvent, type CommerceItem } from "@/lib/marketing";
 
 /**
  * Where Clover sends the customer back to after a hosted checkout.
@@ -22,8 +22,8 @@ import { trackEvent, type CommerceItem } from "@/lib/marketing";
  * asynchronous.** The customer returns from Clover the moment the card clears,
  * which may be before Clover's webhook has reached us. Showing "we have no
  * record of your payment" in that window would be alarming and wrong, so the
- * page polls the tracking endpoint until the order leaves `awaiting_payment`,
- * and says plainly what it is waiting for.
+ * page polls the tracking endpoint until the server explicitly reports the
+ * payment as `paid`, and says plainly what it is waiting for.
  */
 
 type Pending = {
@@ -83,7 +83,7 @@ export default function OrderReturn() {
       const body = await response.json() as { order?: { status?: string; paymentStatus?: string; totalCents?: number } };
       const status = body.order?.status;
       if (status === "cancelled") { setState("cancelled"); return true; }
-      if (status && status !== "awaiting_payment") {
+      if (isConfirmedOnlinePurchase(body.order)) {
         setState("paid");
         if (!purchaseSent.current) {
           purchaseSent.current = true;
