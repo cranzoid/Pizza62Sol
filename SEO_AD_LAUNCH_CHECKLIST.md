@@ -37,6 +37,13 @@ of the steps below should be performed on the staging slot.
 - Use campaign URLs with consistent `utm_source`, `utm_medium`, `utm_campaign`,
   and `utm_content` values. Google and Meta click IDs are also retained for the
   first-party funnel report.
+- Those labels are now stored on the order itself, so every website order names
+  the campaign that produced it. Read one order in **Admin → History & offers →
+  (any order) → Where it came from**, filter or scan the **Marketing source**
+  column in order history, or take the campaign columns out of the CSV export
+  and pivot spend against takings. Phone and walk-in orders show as such rather
+  than as direct traffic, and an order placed without campaign parameters shows
+  as Direct — that is a real answer, not a tracking failure.
 
 ## Advertising destination URLs
 

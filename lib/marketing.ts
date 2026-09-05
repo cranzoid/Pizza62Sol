@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  normalizeAttribution,
+  type AttributionTouch,
+  type OrderAttribution,
+} from "@/lib/attribution";
+
 export type CommerceItem = {
   itemId: string;
   itemName: string;
@@ -29,7 +35,12 @@ declare global {
 
 export const MARKETING_CONSENT_KEY = "p62_marketing_consent_v1";
 export const OPEN_CONSENT_EVENT = "p62:open-consent";
-const ATTRIBUTION_KEY = "p62_campaign_attribution_v1";
+/**
+ * v2 keeps two touches rather than one — see lib/attribution.ts on why first and
+ * last contact are both worth having. The v1 key is deliberately not migrated:
+ * it held a single flat touch with no way to tell which of the two it was.
+ */
+const ATTRIBUTION_KEY = "p62_campaign_attribution_v2";
 const PURCHASE_KEY_PREFIX = "p62_marketing_purchase_";
 const pendingExternal: Array<{ eventName: string; context: EventContext }> = [];
 const externalEventNames = new Set([
@@ -109,37 +120,74 @@ export function hasMarketingConsent(): boolean {
   return window.localStorage.getItem(MARKETING_CONSENT_KEY) === "granted";
 }
 
-function attribution(): Record<string, string> {
-  if (typeof window === "undefined") return {};
+/**
+ * The campaign record this browser is carrying: where this visitor first came
+ * from, and where they came from this time.
+ *
+ * Exported because checkout sends it with the order — that is the whole point
+ * of capturing it. `normalizeAttribution` runs on the way out as well as on the
+ * server, so a corrupted or hand-edited localStorage value cannot put arbitrary
+ * keys into an order row.
+ */
+export function orderAttribution(): OrderAttribution | null {
+  if (typeof window === "undefined") return null;
   try {
-    return JSON.parse(window.localStorage.getItem(ATTRIBUTION_KEY) ?? "{}") as Record<string, string>;
+    return normalizeAttribution(JSON.parse(window.localStorage.getItem(ATTRIBUTION_KEY) ?? "null"));
   } catch {
-    return {};
+    return null;
   }
 }
 
-/** Captures only campaign labels—never contact, address, or checkout form data. */
-export function captureCampaignAttribution(): void {
-  if (typeof window === "undefined") return;
+/** The current visit's labels, flattened, for a first-party analytics event. */
+function attribution(): Record<string, string> {
+  const stored = orderAttribution();
+  return { ...(stored?.last ?? stored?.first ?? {}) };
+}
+
+/** This visit, read off the URL and the referrer. Nothing else is looked at. */
+function currentTouch(): AttributionTouch {
   const query = new URLSearchParams(window.location.search);
-  const keys = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "gbraid", "wbraid", "fbclid"];
+  const keys = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "ttclid"];
   const found = Object.fromEntries(keys.flatMap((key) => {
     const value = clean(query.get(key));
     return value ? [[key, value]] : [];
   }));
-  if (!Object.keys(found).length) return;
   let referrerOrigin: string | undefined;
   try {
-    referrerOrigin = document.referrer ? new URL(document.referrer).origin : undefined;
+    // The origin only. A referrer's full URL can carry the search terms someone
+    // typed, or a private page they came from; the host is what says "Instagram
+    // sent them" and is the most this needs.
+    const origin = document.referrer ? new URL(document.referrer).origin : "";
+    referrerOrigin = origin && origin !== window.location.origin ? origin : undefined;
   } catch {
     referrerOrigin = undefined;
   }
-  window.localStorage.setItem(ATTRIBUTION_KEY, JSON.stringify({
+  return {
     ...found,
     landing_path: window.location.pathname.slice(0, 300),
     ...(referrerOrigin ? { referrer_origin: referrerOrigin } : {}),
     captured_at: new Date().toISOString(),
-  }));
+  };
+}
+
+/**
+ * Captures only campaign labels—never contact, address, or checkout form data.
+ *
+ * The first visit is always recorded, campaign parameters or not, so a direct
+ * customer still has a first touch to show rather than an empty panel. After
+ * that the last touch is only replaced when this visit actually says something
+ * new — an ad click or an external referrer. Without that guard, a customer who
+ * clicked a Meta ad and then reloaded the page would have Meta overwritten by a
+ * visit from nowhere, and the ad would lose the order it paid for.
+ */
+export function captureCampaignAttribution(): void {
+  if (typeof window === "undefined") return;
+  const touch = currentTouch();
+  const campaignSignal = Object.keys(touch).some((key) => key !== "landing_path" && key !== "captured_at");
+  const stored = orderAttribution();
+  if (stored && !campaignSignal) return;
+  const next: OrderAttribution = { first: stored?.first ?? touch, last: touch };
+  window.localStorage.setItem(ATTRIBUTION_KEY, JSON.stringify(next));
 }
 
 function loadScript(id: string, src: string): void {

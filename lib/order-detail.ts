@@ -17,12 +17,13 @@
  * exactly the same words.
  */
 import { getD1, safeJson } from "@/db/runtime";
+import { parseAttribution } from "@/lib/attribution";
 import { snapshotDetails, snapshotFlags, type ItemSnapshot } from "@/lib/order-presentation";
 
 const ORDER_COLUMNS = `id, order_number, customer_id, customer_name, customer_phone, customer_email,
    fulfilment, channel, status, payment_status, payment_method, schedule_type, scheduled_for,
-   estimated_for, address_json, instructions, subtotal_cents, discount_cents, tax_cents,
-   delivery_fee_cents, tip_cents, total_cents, created_at, updated_at, acknowledged_at`;
+   estimated_for, address_json, instructions, attribution_json, subtotal_cents, discount_cents,
+   tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at, acknowledged_at`;
 
 async function toppingNameMap(): Promise<Map<string, string>> {
   const rows = await getD1().prepare("SELECT id, name FROM toppings").all<{ id: string; name: string }>();
@@ -73,20 +74,31 @@ export async function loadOrderCore(orderId: string): Promise<Record<string, unk
     ...order,
     address: safeJson(String(order.address_json ?? "null"), null),
     address_json: undefined,
+    // Parsed here rather than in the browser: the same sanitiser that wrote it
+    // reads it back, so a row hand-edited in the database cannot put unexpected
+    // keys onto a staff screen. See lib/attribution.ts.
+    attribution: parseAttribution(order.attribution_json),
+    attribution_json: undefined,
     items: await loadOrderItems(orderId, toppingNames),
   };
 }
 
 /**
  * The full record of one order: the core order above, plus its status
- * timeline, any refunds recorded against it, the feedback response it
- * received (if any), and — for a phone or walk-in order — who took it.
+ * timeline, the payment attempts made against it, any refunds recorded, the
+ * feedback response it received (if any), and — for a phone or walk-in order —
+ * who took it.
+ *
+ * Payments are here because the drawer is the one place someone reconciling a
+ * card statement can look. `payments.provider_reference` is the Clover charge
+ * or checkout-session id, and it is the only value that ties a line on a Clover
+ * settlement report back to an order number.
  */
 export async function loadOrderDetail(orderId: string): Promise<Record<string, unknown> | null> {
   const core = await loadOrderCore(orderId);
   if (!core) return null;
 
-  const [events, refunds, feedback, staffEntry] = await Promise.all([
+  const [events, refunds, feedback, staffEntry, payments] = await Promise.all([
     // Actor name only resolves for 'staff' events — 'system', 'clover' and
     // 'restaurant' events carry no staff_users row, and a cancellation by the
     // customer's own tracking token isn't a staff id either.
@@ -126,6 +138,14 @@ export async function loadOrderDetail(orderId: string): Promise<Record<string, u
       )
       .bind(orderId)
       .first<Record<string, unknown>>(),
+    getD1()
+      .prepare(
+        `SELECT id, provider, provider_reference, method, status, amount_cents, currency,
+                failure_reason, created_at, updated_at
+         FROM payments WHERE order_id = ? ORDER BY created_at ASC`,
+      )
+      .bind(orderId)
+      .all<Record<string, unknown>>(),
   ]);
 
   const refundedCents = refunds.results
@@ -135,6 +155,7 @@ export async function loadOrderDetail(orderId: string): Promise<Record<string, u
   return {
     ...core,
     events: events.results,
+    payments: payments.results,
     refunds: refunds.results,
     refundedCents,
     feedback: feedback

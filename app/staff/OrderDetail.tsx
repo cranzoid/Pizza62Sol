@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Full inspection of one order — the read that used to only exist as a
- * printed ticket at the moment an order was rung in.
+ * Full inspection of one order — everything the restaurant knows about it, on
+ * one screen.
  *
  * Once an order left the live board its detail was gone: history showed six
  * columns and a total, and nothing else the order actually carried (items,
@@ -12,12 +12,26 @@
  * `GET /api/admin/orders?id=`, and renders the same shape the printed ticket
  * and the confirmation email already agree on — item choices arrive from the
  * server pre-resolved to display text (see `lib/order-detail.ts`), so this
- * component never has to carry the topping table around just to show what
- * was ordered.
+ * component never has to carry the topping table around just to show what was
+ * ordered.
+ *
+ * **Where the order came from is now part of the record.** The restaurant is
+ * paying Meta and Google for clicks, and the question that spend has to answer
+ * is not "how much traffic" but "which orders". Every website order carries the
+ * campaign that brought the customer (see `lib/attribution.ts`), and it is read
+ * here beside the money it produced — one order, one screen, with the marketing
+ * facts next to the takings rather than in a separate analytics tool that
+ * cannot name a single order.
+ *
+ * The layout is deliberately front-loaded: the four things someone opening an
+ * order almost always wants (when it was placed, when it is wanted for, what it
+ * came to, and whether anyone has acknowledged it) are a grid at the top, and
+ * the long-form sections follow in the order they are asked about.
  */
 import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { totalRows } from "@/lib/order-presentation";
+import { orderSourceLabel, touchRows, touchesDiffer, type OrderAttribution } from "@/lib/attribution";
 
 type OrderItem = {
   id: string;
@@ -53,6 +67,18 @@ type Refund = {
   created_at: number;
 };
 
+type Payment = {
+  id: string;
+  provider: string;
+  provider_reference: string | null;
+  method: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  failure_reason: string | null;
+  created_at: number;
+};
+
 type OrderDetail = {
   id: string;
   order_number: string;
@@ -67,9 +93,12 @@ type OrderDetail = {
   payment_method: string;
   schedule_type: string;
   scheduled_for: number | null;
+  estimated_for: number | null;
+  acknowledged_at: number | null;
   created_at: number;
   address: { line1: string; unit?: string; city: string; postalCode: string } | null;
   instructions: string | null;
+  attribution: OrderAttribution | null;
   subtotal_cents: number;
   discount_cents: number;
   tax_cents: number;
@@ -78,6 +107,7 @@ type OrderDetail = {
   total_cents: number;
   items: OrderItem[];
   events: OrderEvent[];
+  payments: Payment[];
   refunds: Refund[];
   refundedCents: number;
   takenBy: { name: string | null; at: number } | null;
@@ -89,7 +119,94 @@ const when = (value: unknown) =>
     ? new Date(Number(value)).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })
     : "";
 
+const time = (value: unknown) =>
+  value ? new Date(Number(value)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" }) : "";
+
+const words = (value: unknown) => String(value ?? "").replaceAll("_", " ");
+
 const CHANNEL_LABELS: Record<string, string> = { online: "Website", phone: "Phone", walk_in: "Walk-in" };
+
+/**
+ * Green for an order still moving, grey for one that is finished, red for one
+ * that is not going to happen. Status words alone all look alike in a list.
+ */
+const STATUS_TONE: Record<string, string> = {
+  awaiting_payment: "warn",
+  received: "live",
+  preparing: "live",
+  ready_for_pickup: "live",
+  out_for_delivery: "live",
+  completed: "done",
+  cancelled: "bad",
+};
+
+const PAYMENT_TONE: Record<string, string> = {
+  paid: "done",
+  pending_at_store: "warn",
+  awaiting_checkout: "warn",
+  failed: "bad",
+  expired: "bad",
+  cancelled: "bad",
+  refunded: "bad",
+  partially_refunded: "warn",
+};
+
+function Fact({ label, value, note }: { label: string; value: string; note?: string | null }) {
+  return <div className="od-fact">
+    <span>{label}</span>
+    <b>{value}</b>
+    {note ? <small>{note}</small> : null}
+  </div>;
+}
+
+function Section({ title, aside, children }: { title: string; aside?: string | null; children: React.ReactNode }) {
+  return <section className="od-section">
+    <div className="od-section-head"><h3>{title}</h3>{aside ? <span>{aside}</span> : null}</div>
+    {children}
+  </section>;
+}
+
+/**
+ * Where this order came from.
+ *
+ * A staff-entered order is answered by saying so rather than by an empty panel:
+ * a phone order has no campaign, and rendering "Direct" for it would put it in
+ * the same bucket as a website visitor who typed the address in.
+ *
+ * When first and last contact differ, both are shown. The pair is the honest
+ * answer — an ad that introduced the customer in February and a direct visit
+ * that placed the order in March are two different facts, and collapsing them
+ * either flatters the campaign or erases it.
+ */
+function MarketingSection({ order }: { order: OrderDetail }) {
+  const staffEntered = order.channel === "phone" || order.channel === "walk_in";
+  const attribution = order.attribution;
+  const last = attribution?.last ?? attribution?.first ?? null;
+  const showFirst = touchesDiffer(attribution);
+  return <Section title="Where it came from" aside={CHANNEL_LABELS[order.channel] ?? order.channel}>
+    <p className="od-source">{orderSourceLabel(attribution, order.channel)}</p>
+    {staffEntered ? (
+      <p className="od-muted">Taken by the restaurant, so there is no campaign to attribute.</p>
+    ) : !last ? (
+      <p className="od-muted">
+        No campaign parameters were on the link this customer arrived by. That is a direct visit, a bookmark,
+        or a browser that did not keep them — not a tracking failure.
+      </p>
+    ) : (
+      <>
+        <dl className="od-pairs">
+          {touchRows(last).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
+        </dl>
+        {showFirst ? <>
+          <p className="od-subhead">First contact · {orderSourceLabel({ last: attribution?.first }, order.channel)}</p>
+          <dl className="od-pairs od-pairs--quiet">
+            {touchRows(attribution?.first).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
+          </dl>
+        </> : null}
+      </>
+    )}
+  </Section>;
+}
 
 export function OrderDetailDrawer({ orderId, onClose }: { orderId: string | null; onClose: () => void }) {
   const [order, setOrder] = useState<OrderDetail | null>(null);
@@ -123,11 +240,18 @@ export function OrderDetailDrawer({ orderId, onClose }: { orderId: string | null
 
   if (!orderId) return null;
 
+  const wantedFor = order
+    ? order.schedule_type === "scheduled" && order.scheduled_for
+      ? when(order.scheduled_for)
+      : `ASAP${order.estimated_for ? ` · promised ${time(order.estimated_for)}` : ""}`
+    : "";
+  const paidLabel = order ? `${words(order.payment_method)} · ${words(order.payment_status)}` : "";
+
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
     <aside className="order-drawer" role="dialog" aria-modal="true" aria-labelledby="order-drawer-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="drawer-head">
         <div>
-          <small>Order detail</small>
+          <small>{order ? `${CHANNEL_LABELS[order.channel] ?? order.channel} · ${order.fulfilment}` : "Order detail"}</small>
           <h2 id="order-drawer-title">{order ? order.order_number.replace("P62-", "#") : "…"}</h2>
         </div>
         <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
@@ -136,77 +260,96 @@ export function OrderDetailDrawer({ orderId, onClose }: { orderId: string | null
         {loading ? <p className="staff-empty">Loading order…</p> : null}
         {error ? <div className="form-error" role="alert">{error}</div> : null}
         {order ? <>
-          <div className="order-drawer-summary">
-            <span className="status-pill">{order.status.replaceAll("_", " ")}</span>
-            <span>{CHANNEL_LABELS[order.channel] ?? order.channel} · {order.fulfilment}</span>
-            <span>{order.schedule_type === "scheduled" && order.scheduled_for ? `Scheduled ${when(order.scheduled_for)}` : `Placed ${when(order.created_at)}`}</span>
+          <div className="od-tags">
+            <span className={`od-pill od-pill--${STATUS_TONE[order.status] ?? "live"}`}>{words(order.status)}</span>
+            <span className={`od-pill od-pill--${PAYMENT_TONE[order.payment_status] ?? "warn"}`}>{words(order.payment_status)}</span>
+            {order.refundedCents > 0 ? <span className="od-pill od-pill--bad">{formatMoney(order.refundedCents)} refunded</span> : null}
+            <span className="od-pill od-pill--quiet">{orderSourceLabel(order.attribution, order.channel)}</span>
           </div>
 
-          <section className="order-drawer-section">
-            <h3>Customer</h3>
-            <p><strong>{order.customer_name}</strong></p>
-            {order.customer_phone ? <p>{order.customer_phone}</p> : null}
-            {order.customer_email ? <p>{order.customer_email}</p> : null}
-            {order.contactRedacted ? <p className="order-drawer-muted">Contact hidden — you do not have permission to view customer contact.</p> : null}
-            {order.takenBy ? <p className="order-drawer-muted">Taken by {order.takenBy.name ?? "a staff member"} · {when(order.takenBy.at)}</p> : null}
-          </section>
+          {/* The four questions someone opens an order to answer. */}
+          <div className="od-facts">
+            <Fact label="Placed" value={when(order.created_at)} />
+            <Fact label={order.fulfilment === "delivery" ? "Deliver" : "Pickup"} value={wantedFor} />
+            <Fact label="Order total" value={formatMoney(order.total_cents)} note={paidLabel} />
+            <Fact
+              label="Acknowledged"
+              value={order.acknowledged_at ? time(order.acknowledged_at) : "Not yet"}
+              note={order.takenBy ? `Taken by ${order.takenBy.name ?? "a staff member"}` : null}
+            />
+          </div>
 
-          {order.address ? <section className="order-drawer-section">
-            <h3>Deliver to</h3>
-            <p>{order.address.line1}{order.address.unit ? `, Unit ${order.address.unit}` : ""}</p>
-            <p>{order.address.city} {order.address.postalCode}</p>
-            {order.instructions ? <p className="order-drawer-muted">{order.instructions}</p> : null}
-          </section> : order.instructions ? <section className="order-drawer-section">
-            <h3>Order note</h3>
-            <p>{order.instructions}</p>
-          </section> : null}
+          <Section title="Customer">
+            <p className="od-name">{order.customer_name}</p>
+            <div className="od-contact">
+              {order.customer_phone ? <a href={`tel:${order.customer_phone.replace(/[^0-9+]/g, "")}`}>{order.customer_phone}</a> : null}
+              {order.customer_email ? <a href={`mailto:${order.customer_email}`}>{order.customer_email}</a> : null}
+            </div>
+            {order.contactRedacted ? <p className="od-muted">Contact hidden — you do not have permission to view customer contact.</p> : null}
+          </Section>
 
-          <section className="order-drawer-section">
-            <h3>Items</h3>
-            <div className="order-drawer-items">
-              {order.items.map((item) => <div className="order-drawer-item" key={item.id}>
-                <div className="order-drawer-item-head">
-                  <span>{item.quantity}&times; {item.productName}{item.variationName ? ` · ${item.variationName}` : ""}</span>
-                  <span>{formatMoney(item.lineTotalCents)}</span>
+          <Section title={order.fulfilment === "delivery" ? "Deliver to" : "Collection"}>
+            {order.address ? <>
+              <p className="od-address">{order.address.line1}{order.address.unit ? `, Unit ${order.address.unit}` : ""}<br />{order.address.city} {order.address.postalCode}</p>
+            </> : <p className="od-address">Collected at the counter.</p>}
+            {/* `orders.instructions` is the buzzer note on a delivery and the
+                order note on a pickup — the same column, so it is shown with
+                whichever of the two this order is rather than adrift below. */}
+            {order.instructions ? <p className="od-note">{order.instructions}</p> : null}
+          </Section>
+
+          <Section title="Items" aside={`${order.items.reduce((count, item) => count + item.quantity, 0)} item${order.items.reduce((count, item) => count + item.quantity, 0) === 1 ? "" : "s"}`}>
+            <div className="od-items">
+              {order.items.map((item) => <div className="od-item" key={item.id}>
+                <span className="od-qty">{item.quantity}</span>
+                <div>
+                  <b>{item.productName}{item.variationName ? ` · ${item.variationName}` : ""}</b>
+                  {item.flags.length ? <div className="od-flags">{item.flags.map((flag) => <span key={flag}>{flag}</span>)}</div> : null}
+                  {item.details.map((detail) => <div className="od-detail" key={detail.label}><b>{detail.label}:</b> {detail.value}</div>)}
+                  {item.instructions ? <div className="od-note">Note: {item.instructions}</div> : null}
                 </div>
-                {item.flags.map((flag) => <div className="order-drawer-flag" key={flag}>{flag.toUpperCase()}</div>)}
-                {item.details.map((detail) => <div className="order-drawer-detail" key={detail.label}><b>{detail.label}:</b> {detail.value}</div>)}
-                {item.instructions ? <div className="order-drawer-muted">Note: {item.instructions}</div> : null}
+                <b className="od-money">{formatMoney(item.lineTotalCents)}</b>
               </div>)}
             </div>
-          </section>
+          </Section>
 
-          <section className="order-drawer-section">
-            <h3>Payment</h3>
-            <div className="order-drawer-money">
-              {totalRows(order).map((row) => <div className={row.strong ? "order-drawer-money-total" : ""} key={row.label}><span>{row.label}</span><span>{row.value}</span></div>)}
+          <Section title="Money" aside={paidLabel}>
+            <div className="od-totals">
+              {totalRows(order).map((row) => <div className={row.strong ? "od-total-strong" : ""} key={row.label}><span>{row.label}</span><span>{row.value}</span></div>)}
             </div>
-            <p className="order-drawer-muted">{order.payment_method.replaceAll("_", " ")} · {order.payment_status.replaceAll("_", " ")}</p>
-            {order.refunds.length ? <div className="order-drawer-refunds">
-              {order.refunds.map((refund) => <div className="order-drawer-refund" key={refund.id}>
+            {/* The provider reference is the only value that ties a line on a
+                Clover settlement report back to this order number. */}
+            {order.payments.length ? <div className="od-rows">
+              {order.payments.map((payment) => <div className="od-row" key={payment.id}>
+                <span>{formatMoney(payment.amount_cents)} · {payment.provider} {words(payment.status)}</span>
+                <small>{payment.provider_reference ?? "no provider reference"} · {when(payment.created_at)}{payment.failure_reason ? ` · ${payment.failure_reason}` : ""}</small>
+              </div>)}
+            </div> : null}
+            {order.refunds.length ? <div className="od-rows od-rows--bad">
+              {order.refunds.map((refund) => <div className="od-row" key={refund.id}>
                 <span>{formatMoney(refund.amount_cents)} {refund.status === "voided" ? "(voided)" : "refunded"}</span>
                 <small>{refund.reason} · {refund.actor_name ?? "staff"} · {when(refund.created_at)}</small>
+                {refund.customer_note ? <small>{refund.customer_note}</small> : null}
               </div>)}
-              <p className="order-drawer-muted">{formatMoney(order.refundedCents)} refunded total</p>
             </div> : null}
-          </section>
+          </Section>
 
-          {order.feedback ? <section className="order-drawer-section">
-            <h3>Feedback</h3>
-            <p>{"★".repeat(order.feedback.overall_rating)}{"☆".repeat(5 - order.feedback.overall_rating)}</p>
-            {order.feedback.written_feedback ? <p>{order.feedback.written_feedback}</p> : null}
-            <p className="order-drawer-muted">{order.feedback.reviewed_at ? "Reviewed" : "Not yet reviewed"} · {when(order.feedback.submitted_at)}</p>
-          </section> : null}
+          <MarketingSection order={order} />
 
-          <section className="order-drawer-section">
-            <h3>Timeline</h3>
-            <div className="order-drawer-timeline">
-              {order.events.map((event) => <div className="order-drawer-event" key={event.id}>
-                <span>{event.next_status.replaceAll("_", " ")}</span>
+          {order.feedback ? <Section title="Feedback" aside={order.feedback.reviewed_at ? "Reviewed" : "Not yet reviewed"}>
+            <p className="od-stars">{"★".repeat(order.feedback.overall_rating)}{"☆".repeat(5 - order.feedback.overall_rating)}</p>
+            {order.feedback.written_feedback ? <p className="od-quote">{order.feedback.written_feedback}</p> : null}
+            <p className="od-muted">{when(order.feedback.submitted_at)}</p>
+          </Section> : null}
+
+          <Section title="Timeline">
+            <div className="od-rows">
+              {order.events.map((event) => <div className="od-row" key={event.id}>
+                <span>{words(event.next_status)}</span>
                 <small>{event.actor_type === "staff" ? (event.actor_name ?? "Staff") : event.actor_type} · {when(event.created_at)}{event.note ? ` · ${event.note}` : ""}</small>
               </div>)}
             </div>
-          </section>
+          </Section>
         </> : null}
       </div>
     </aside>

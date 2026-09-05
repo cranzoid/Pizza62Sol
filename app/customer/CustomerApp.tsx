@@ -31,7 +31,7 @@ import {
   withoutDeepLinkParams,
   type DeepLinkRequest,
 } from "@/lib/deep-link";
-import { openCookieChoices, trackEvent, type CommerceItem } from "@/lib/marketing";
+import { openCookieChoices, orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -1088,6 +1088,11 @@ function Checkout({ cart, fulfilment, settings, integrations, store, hours, time
       }
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
         idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, paymentToken, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        // Which ad, if any, brought this customer here. Sent with the order
+        // rather than only on an analytics event, because "did the Meta
+        // campaign pay for itself" is a question about orders, and an analytics
+        // event has no order to join to. Sanitised again server-side.
+        attribution: orderAttribution(),
       }) });
       const result = await response.json() as Record<string, unknown>;
       if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));

@@ -139,6 +139,61 @@ withDb("lands every side effect of an accepted order", async () => {
   assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: 3 });
 });
 
+/**
+ * The order has to carry the campaign that produced it.
+ *
+ * The restaurant is buying Meta and Google clicks, and an ad platform's own
+ * reporting is the only place that spend can currently be checked against —
+ * which is a claim, not evidence. This is the evidence: the campaign labels on
+ * the link the customer arrived by, stored on the order they placed.
+ *
+ * The second half of this test is the part that matters more. The value comes
+ * from localStorage on a stranger's device and is written into a row that staff
+ * read and export, so it is sanitised rather than trusted: known campaign fields
+ * survive, everything else is dropped.
+ */
+withDb("stores the campaign that produced the order, and only campaign labels", async () => {
+  const result = await json(await post(await orderBody({
+    attribution: {
+      first: { utm_source: "google", utm_medium: "cpc", utm_campaign: "always-on", gclid: "Cj0KCQ" },
+      last: {
+        utm_source: "facebook",
+        utm_medium: "paid_social",
+        utm_campaign: "game-day-2026",
+        fbclid: "IwAR-test",
+        landing_path: "/",
+        captured_at: "2026-09-05T18:00:00.000Z",
+        // Not campaign labels. None of these may reach the row.
+        customer_email: "someone@example.test",
+        note: "<script>alert(1)</script>",
+      },
+    },
+  })));
+  const stored = await getPool().query<{ attribution_json: string | null }>(
+    "SELECT attribution_json FROM orders WHERE id = $1",
+    [String(result.orderId)],
+  );
+  const attribution = JSON.parse(String(stored.rows[0].attribution_json));
+  assert.equal(attribution.last.utm_campaign, "game-day-2026");
+  assert.equal(attribution.last.fbclid, "IwAR-test");
+  assert.equal(attribution.first.utm_source, "google");
+  assert.deepEqual(
+    Object.keys(attribution.last).sort(),
+    ["captured_at", "fbclid", "landing_path", "utm_campaign", "utm_medium", "utm_source"],
+  );
+});
+
+withDb("leaves attribution null when the customer arrived without a campaign", async () => {
+  const result = await json(await post(await orderBody()));
+  const stored = await getPool().query<{ attribution_json: string | null }>(
+    "SELECT attribution_json FROM orders WHERE id = $1",
+    [String(result.orderId)],
+  );
+  // Null rather than an empty object: a direct order has no campaign, and a row
+  // that reads as "{}" invites a report to count it as one.
+  assert.equal(stored.rows[0].attribution_json, null);
+});
+
 withDb("persists mixed taxable and tax-exempt lines with the exact payment total", async () => {
   const response = await post(await orderBody({
     items: [

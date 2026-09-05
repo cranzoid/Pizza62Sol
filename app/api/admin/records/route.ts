@@ -22,6 +22,7 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, safeJson, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { ORDER_CHANNELS } from "@/db/schema";
+import { orderSourceLabel, parseAttribution, type OrderAttribution } from "@/lib/attribution";
 import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
 import { orderSalesBreakdown } from "@/lib/reporting";
 
@@ -90,7 +91,8 @@ function buildFilters(url: URL): Filters {
 
 const ORDER_COLUMNS = `id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,
    status, payment_status, payment_method, schedule_type, scheduled_for, created_at,
-   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, pricing_json`;
+   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, pricing_json,
+   attribution_json`;
 
 export async function GET(request: Request) {
   try {
@@ -186,14 +188,22 @@ export async function GET(request: Request) {
     ]);
 
     return Response.json({
-      orders: rows.results.map((order) => ({
-        ...order,
-        ...orderSalesBreakdown(order),
-        pricing_json: undefined,
-        customer_phone: canViewContact ? order.customer_phone : undefined,
-        customer_email: canViewContact ? order.customer_email : undefined,
-        contactRedacted: !canViewContact,
-      })),
+      orders: rows.results.map((order) => {
+        // The history table shows the campaign, not the raw JSON — but the
+        // parsed record travels too, so the drawer opens without a second read.
+        const attribution = parseAttribution(order.attribution_json);
+        return {
+          ...order,
+          ...orderSalesBreakdown(order),
+          attribution,
+          source: orderSourceLabel(attribution, String(order.channel ?? "")),
+          attribution_json: undefined,
+          pricing_json: undefined,
+          customer_phone: canViewContact ? order.customer_phone : undefined,
+          customer_email: canViewContact ? order.customer_email : undefined,
+          contactRedacted: !canViewContact,
+        };
+      }),
       page,
       pageSize: PAGE_SIZE,
       total: Number(totals?.count ?? 0),
@@ -223,6 +233,19 @@ const CSV_HEADERS = [
   "Customer",
   "Phone",
   "Email",
+  // Marketing attribution. Split into columns rather than exported as JSON:
+  // this file is opened in a spreadsheet and pivoted by campaign, and a JSON
+  // blob in a cell cannot be pivoted at all.
+  "Source",
+  "Campaign source",
+  "Campaign medium",
+  "Campaign name",
+  "Campaign content",
+  "Campaign keyword",
+  "Click id",
+  "First seen source",
+  "Landing page",
+  "Referrer",
   "Gross food sales",
   "Discount",
   "Taxable food sales",
@@ -245,6 +268,31 @@ function csvField(value: unknown): string {
   const text = value === null || value === undefined ? "" : String(value);
   const guarded = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
   return `"${guarded.replaceAll('"', '""')}"`;
+}
+
+/**
+ * The ten attribution cells, in the header order above.
+ *
+ * The click id is collapsed to one column because an order has at most one:
+ * they come from different platforms and a row never carries two.
+ */
+function attributionColumns(attribution: OrderAttribution | null, channel: string): string[] {
+  const last = attribution?.last ?? attribution?.first ?? null;
+  const clickId = last?.gclid ?? last?.gbraid ?? last?.wbraid ?? last?.fbclid ?? last?.msclkid ?? last?.ttclid ?? "";
+  return [
+    orderSourceLabel(attribution, channel),
+    last?.utm_source ?? "",
+    last?.utm_medium ?? "",
+    last?.utm_campaign ?? "",
+    last?.utm_content ?? "",
+    last?.utm_term ?? "",
+    clickId,
+    // Where this customer first arrived from, which is often a different
+    // campaign to the one they ordered on — see lib/attribution.ts.
+    attribution?.first ? orderSourceLabel({ last: attribution.first }, channel) : "",
+    last?.landing_path ?? "",
+    last?.referrer_origin ?? "",
+  ];
 }
 
 /** Cents to plain decimal dollars — the export lands in a spreadsheet. */
@@ -272,6 +320,7 @@ function toCsv(rows: Array<Record<string, unknown>>, canViewContact: boolean): s
         // otherwise the export is the way around the permission.
         canViewContact ? row.customer_phone : "redacted",
         canViewContact ? row.customer_email : "redacted",
+        ...attributionColumns(parseAttribution(row.attribution_json), String(row.channel ?? "")),
         money(row.subtotal_cents),
         money(row.discount_cents),
         money(sales.taxableSalesCents),

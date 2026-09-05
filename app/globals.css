@@ -664,32 +664,82 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 
 /* --- Order detail drawer -----------------------------------------------------
    Everything an order carries, reachable once it has left the live board —
-   opened from a row in order history or from a customer's order list. */
-.order-drawer { width: min(560px, 100vw); height: 100%; background: var(--paper); display: grid; grid-template-rows: auto 1fr; }
+   opened from a row in order history or from a customer's order list.
+
+   Read top to bottom: the state of the order as pills, the four facts someone
+   opened it to check, then the long-form sections. The `od-` prefix is short on
+   purpose — this drawer has a lot of small parts and a lot of them nest. */
+.order-drawer { width: min(600px, 100vw); height: 100%; background: var(--paper); display: grid; grid-template-rows: auto 1fr; }
 .order-drawer .drawer-head { background: white; }
 .order-drawer .drawer-head small { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .7px; color: #77807a; font-weight: 900; margin-bottom: 4px; }
 .order-drawer .drawer-head h2 { font-family: Georgia, serif; font-size: 30px; margin: 0; }
-.order-drawer-body { overflow: auto; padding: 22px 28px 40px; }
-.order-drawer-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 18px; font-size: 10px; color: #556056; }
-.order-drawer-section { padding: 16px 0; border-top: 1px solid #e6e9e5; }
-.order-drawer-section:first-of-type { border-top: 0; padding-top: 0; }
-.order-drawer-section h3 { font-family: Georgia, serif; font-size: 15px; margin: 0 0 10px; }
-.order-drawer-section p { font-size: 11px; margin: 3px 0; line-height: 1.5; }
-.order-drawer-muted { color: #77807a; font-size: 9px !important; }
-.order-drawer-items { display: grid; gap: 12px; }
-.order-drawer-item { border: 1px solid #e6e9e5; border-radius: 9px; padding: 12px 14px; }
-.order-drawer-item-head { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 800; }
-.order-drawer-flag { display: inline-block; margin: 5px 5px 0 0; padding: 3px 7px; border-radius: 999px; background: #fff0ec; color: #a72518; font-size: 8px; font-weight: 900; text-transform: uppercase; }
-.order-drawer-detail { font-size: 9px; color: #556056; margin-top: 4px; }
-.order-drawer-money { display: grid; gap: 4px; font-size: 10px; margin-bottom: 8px; }
-.order-drawer-money > div { display: flex; justify-content: space-between; }
-.order-drawer-money-total { font-weight: 900; border-top: 1px solid #e6e9e5; margin-top: 4px; padding-top: 6px; }
-.order-drawer-refunds { margin-top: 10px; display: grid; gap: 7px; }
-.order-drawer-refund { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; background: #fff0ec; border-radius: 8px; font-size: 10px; }
-.order-drawer-refund small { color: #8d291e; font-size: 9px; }
-.order-drawer-timeline { display: grid; gap: 9px; }
-.order-drawer-event { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; background: #f6f7f5; border-radius: 8px; font-size: 10px; text-transform: capitalize; }
-.order-drawer-event small { color: #77807a; font-size: 9px; text-transform: none; }
+.order-drawer-body { overflow: auto; padding: 20px 26px 44px; }
+
+.od-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.od-pill { padding: 5px 10px; border-radius: 999px; font-size: 9px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; }
+.od-pill--live { background: #e6f2ea; color: #1f5937; }
+.od-pill--done { background: #eef1ee; color: #4a544c; }
+.od-pill--warn { background: #fdf0d6; color: #7d5606; }
+.od-pill--bad { background: #fdeae6; color: #8d291e; }
+.od-pill--quiet { background: #eef2f7; color: #3d5165; }
+
+/* When it was placed, when it is wanted, what it came to, whether anyone has
+   seen it. Four cells rather than a paragraph, because these are the ones read
+   at a glance while a phone is ringing. */
+.od-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 16px 0 4px; background: #e6e9e5; border: 1px solid #e6e9e5; border-radius: 11px; overflow: hidden; }
+.od-fact { display: grid; gap: 3px; padding: 12px 14px; background: white; }
+.od-fact span { font-size: 8px; font-weight: 900; letter-spacing: .9px; text-transform: uppercase; color: #77807a; }
+.od-fact b { font-size: 13px; line-height: 1.35; }
+.od-fact small { font-size: 9px; color: #77807a; text-transform: capitalize; }
+
+.od-section { padding: 18px 0 4px; border-top: 1px solid #e6e9e5; margin-top: 14px; }
+.od-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.od-section-head h3 { font-family: Georgia, serif; font-size: 16px; margin: 0; }
+.od-section-head span { font-size: 9px; font-weight: 900; letter-spacing: .7px; text-transform: uppercase; color: #77807a; }
+.od-muted { font-size: 10px; color: #77807a; line-height: 1.6; margin: 6px 0 0; }
+.od-note { font-size: 10px; color: #5b493a; background: #fdf6e8; border-radius: 7px; padding: 8px 10px; margin: 8px 0 0; line-height: 1.5; }
+.od-subhead { font-size: 9px; font-weight: 900; letter-spacing: .7px; text-transform: uppercase; color: #77807a; margin: 14px 0 6px; }
+
+.od-name { font-size: 15px; font-weight: 800; margin: 0; }
+.od-contact { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; }
+.od-contact a { font-size: 11px; color: #24603d; text-decoration: underline; min-height: 24px; }
+.od-address { font-size: 12px; line-height: 1.6; margin: 0; }
+
+.od-items { display: grid; gap: 10px; }
+.od-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: start; border: 1px solid #e6e9e5; border-radius: 10px; padding: 12px 14px; background: white; }
+.od-item > div { display: grid; gap: 4px; min-width: 0; }
+.od-item b { font-size: 12px; line-height: 1.35; }
+.od-qty { display: grid; place-items: center; min-width: 26px; height: 26px; border-radius: 7px; background: #f5ead3; font-family: Georgia, serif; font-size: 12px; font-weight: 900; }
+.od-money { font-family: Georgia, serif; font-size: 14px; white-space: nowrap; }
+/* Preparation-critical, called out rather than blended into the option list —
+   the same rule the printed ticket follows (H-03). */
+.od-flags { display: flex; flex-wrap: wrap; gap: 5px; }
+.od-flags span { padding: 3px 7px; border-radius: 999px; background: #fff0ec; color: #a72518; font-size: 8px; font-weight: 900; letter-spacing: .4px; text-transform: uppercase; }
+.od-detail { font-size: 10px; color: #556056; line-height: 1.5; }
+.od-detail b { font-size: 10px; }
+
+.od-totals { display: grid; gap: 5px; font-size: 11px; }
+.od-totals > div { display: flex; justify-content: space-between; gap: 12px; }
+.od-total-strong { font-weight: 900; border-top: 1px solid #e6e9e5; margin-top: 4px; padding-top: 7px; font-size: 13px; }
+
+.od-rows { display: grid; gap: 7px; margin-top: 12px; }
+.od-row { display: grid; gap: 2px; padding: 9px 11px; border-radius: 8px; background: #f6f7f5; font-size: 11px; }
+.od-row > span { text-transform: capitalize; font-weight: 700; }
+.od-row small { font-size: 9px; color: #77807a; line-height: 1.5; }
+.od-rows--bad .od-row { background: #fff0ec; }
+.od-rows--bad .od-row small { color: #8d291e; }
+
+/* Marketing attribution. Deliberately as legible as the money above it: this is
+   the panel that answers whether an ad paid for itself. */
+.od-source { font-family: Georgia, serif; font-size: 19px; margin: 0; }
+.od-pairs { display: grid; gap: 1px; margin: 10px 0 0; background: #e6e9e5; border: 1px solid #e6e9e5; border-radius: 10px; overflow: hidden; }
+.od-pairs > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 9px 12px; background: white; }
+.od-pairs dt { font-size: 9px; font-weight: 900; letter-spacing: .7px; text-transform: uppercase; color: #77807a; flex: none; }
+.od-pairs dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
+.od-pairs--quiet > div { background: #fbfcfb; }
+
+.od-stars { font-size: 15px; color: #d9a327; margin: 0; letter-spacing: 2px; }
+.od-quote { font-size: 12px; line-height: 1.6; margin: 8px 0 0; font-family: Georgia, serif; }
 .order-history-row { cursor: pointer; }
 .order-history-row:hover { background: #f6f7f5; }
 
@@ -1252,6 +1302,9 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 @media (max-width: 430px) {
   .header-shortcuts a:last-child { display: none; }
   .stats-grid { grid-template-columns: 1fr; }
+  /* Two facts side by side wrap to three lines each on a phone; one column
+     keeps "placed" and "wanted for" readable at a glance. */
+  .od-facts { grid-template-columns: 1fr; }
   .staff-topbar { align-items: flex-start; }
   .staff-topbar h1 { font-size: 25px; }
   .live-chip { padding: 8px 10px; }
