@@ -178,7 +178,7 @@ img { max-width: 100%; }
 
 .drawer-backdrop{justify-items:end;padding:0}.cart-drawer{width:min(520px,100vw);height:100%;background:var(--paper);display:grid;grid-template-rows:auto 1fr auto}.drawer-head{display:flex;justify-content:space-between;align-items:center;padding:26px 28px;border-bottom:1px solid var(--line)}.drawer-head .eyebrow{margin-bottom:5px}.drawer-head h2{font-family:Georgia,serif;font-size:36px;margin:0}.cart-lines{overflow:auto;padding:12px 28px}.cart-line{display:grid;grid-template-columns:auto 1fr auto;gap:14px;padding:21px 0;border-bottom:1px solid var(--line)}.line-number{font-family:Georgia,serif;font-weight:900;color:var(--red)}.cart-line h3{font-family:Georgia,serif;margin:0 0 4px;font-size:19px}.cart-line p,.cart-line small{font-size:9px;color:var(--muted);display:block;margin:3px 0}.cart-line button{border:0;background:transparent;color:var(--red);font-size:9px;text-transform:uppercase;text-decoration:underline;padding:8px 0;cursor:pointer}.cart-line>strong{font-family:Georgia,serif}.empty-cart{text-align:center;padding:70px 20px;display:grid;justify-items:center}.empty-cart h3{font-family:Georgia,serif;font-size:26px;margin:20px 0 5px}.empty-cart p{font-size:11px;color:var(--muted)}.cart-summary{padding:24px 28px;background:white;border-top:1px solid var(--line)}.cart-summary>div{display:flex;justify-content:space-between;padding:5px 0;font-size:11px}.cart-total{font-family:Georgia,serif;font-size:18px!important;border-top:1px solid var(--line);margin:9px 0 16px;padding-top:15px!important}.cart-total span{display:grid}.cart-total small{font-family:Arial,sans-serif;color:var(--muted);font-size:8px}.cart-total b{font-size:25px}.secure-note{font-size:8px;color:var(--muted);line-height:1.4;text-align:center;margin:14px 0 0}
 
-.checkout-modal{width:min(1050px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--paper);padding:38px;position:relative;border:2px solid var(--ink);box-shadow:var(--shadow)}.checkout-modal>.modal-close{position:absolute;right:25px;top:25px}.checkout-modal>.eyebrow{margin-bottom:12px}.checkout-modal>h2{font-size:52px}.checkout-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:36px;margin-top:30px}.checkout-modal fieldset{border:0;padding:0;margin:0 0 28px}.checkout-modal legend{font-family:Georgia,serif;font-size:20px;font-weight:900;border-bottom:1px solid var(--line);width:100%;padding-bottom:10px}.checkout-modal label{margin:12px 0}.checkout-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}.checkout-options label,.payment-choice{border:1px solid var(--line);padding:14px;background:white;display:flex!important;align-items:center;gap:10px;cursor:pointer}.checkout-options label.selected{border:2px solid var(--ink);background:var(--cream)}.checkout-options small{margin-left:auto;color:var(--muted)}.payment-choice input{width:18px;height:18px;accent-color:var(--red)}.payment-choice span{display:grid;gap:3px}.payment-choice small{color:var(--muted);font-size:9px}.payment-choice.disabled{opacity:.5;cursor:not-allowed}.setup-alert{background:#fff0ca;border:1px solid #9d6c08;padding:14px 17px;margin-top:22px}.setup-alert strong{font-family:Georgia,serif}.setup-alert p{font-size:10px;line-height:1.45;margin:5px 0 0}.checkout-summary{background:var(--green);color:white;padding:26px;align-self:start;position:sticky;top:0}.checkout-summary h3{font-family:Georgia,serif;font-size:25px;margin:0 0 17px}.checkout-summary>div:not(.tip-grid):not(.form-error){display:flex;justify-content:space-between;padding:7px 0;font-size:10px}.checkout-summary hr{border:0;border-top:1px solid rgba(255,255,255,.2)}.checkout-summary>p{font-size:10px;font-weight:900;text-transform:uppercase;margin-top:19px}.tip-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.tip-grid button{border:1px solid rgba(255,255,255,.4);background:transparent;color:white;padding:9px 4px;font-size:9px;cursor:pointer}.tip-grid button.active{background:var(--yellow);color:var(--ink);border-color:var(--yellow)}.checkout-summary .tip-note{text-transform:none;font-weight:400;color:rgba(255,255,255,.6);line-height:1.4}.checkout-summary .primary-button{margin-top:18px;background:var(--yellow);color:var(--ink)}.checkout-summary>small{display:block;font-size:8px;line-height:1.5;color:rgba(255,255,255,.55);margin-top:14px}.checkout-summary .form-error{background:#5d1d17;color:white;border-color:#ef8d7e}
+.checkout-modal{width:min(1050px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--paper);padding:38px;position:relative;border:2px solid var(--ink);box-shadow:var(--shadow)}.checkout-modal>.modal-close{position:absolute;right:25px;top:25px}.checkout-modal>.eyebrow{margin-bottom:12px}.checkout-modal>h2{font-size:52px}.checkout-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:36px;margin-top:30px}.checkout-modal fieldset{border:0;padding:0;margin:0 0 28px}.checkout-modal legend{font-family:Georgia,serif;font-size:20px;font-weight:900;border-bottom:1px solid var(--line);width:100%;padding-bottom:10px}.checkout-modal label{margin:12px 0}.checkout-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}.checkout-options label,.payment-choice{border:1px solid var(--line);padding:14px;background:white;display:flex!important;align-items:center;gap:10px;cursor:pointer}.checkout-options label.selected{border:2px solid var(--ink);background:var(--cream)}.checkout-options small{margin-left:auto;color:var(--muted)}.payment-choice input{width:18px;height:18px;accent-color:var(--red)}.payment-choice span{display:grid;gap:3px}.payment-choice small{color:var(--muted);font-size:9px}.payment-choice.disabled{opacity:.5;cursor:not-allowed}.setup-alert{background:#fff0ca;border:1px solid #9d6c08;padding:14px 17px;margin-top:22px}.setup-alert strong{font-family:Georgia,serif}.setup-alert p{font-size:10px;line-height:1.45;margin:5px 0 0}
 .confirmation-card{width:min(540px,100%);background:var(--paper);padding:46px;text-align:center;border:2px solid var(--ink);box-shadow:10px 10px 0 var(--yellow)}.confirmation-card .eyebrow{justify-content:center}.confirmation-check{width:80px;height:80px;display:grid;place-items:center;border-radius:50%;background:var(--green);color:white;font-size:36px;margin:0 auto 22px;box-shadow:7px 7px 0 var(--yellow)}.confirmation-card h2{font-size:58px}.confirmation-card>p:not(.eyebrow){font-family:Georgia,serif;color:var(--muted);line-height:1.5}.confirmation-estimate{border:1px solid var(--line);background:white;padding:15px 18px;display:flex;justify-content:space-between;align-items:center;margin:22px 0}.confirmation-estimate span{font-size:10px;text-transform:uppercase;font-weight:900}.confirmation-estimate b{font-family:Georgia,serif;font-size:22px}.confirmation-card .primary-button{margin-bottom:12px}.confirmation-note{font-family:Georgia,serif;font-size:13px;line-height:1.5;color:var(--muted);border:1px dashed var(--line);padding:13px 15px;margin:0 0 12px}
 
 .deal-price .primary-button{width:auto;margin-top:18px;background:var(--yellow);color:var(--ink);box-shadow:6px 6px 0 var(--ink);padding:14px 18px;min-height:0;cursor:pointer}.cheese-options{grid-template-columns:repeat(4,1fr)}
@@ -593,6 +593,103 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 
 .checkout-hint { display: block; margin-top: 8px; color: #b4442f; font-size: 9px; }
 
+/* --- Checkout summary -------------------------------------------------------
+   The panel a customer reads immediately before paying.
+
+   It used to be a stack of loose rows: bare item names with no options, a promo
+   box, a tip grid and a total, with the three things they had actually decided —
+   pickup or delivery, where it goes, when it is ready and how it is paid for —
+   left behind in the form on the other side of the screen. Someone checking
+   their order had to reassemble it from the fields they had just filled in.
+
+   The panel now leads with those decisions, then shows what is in the order in
+   the words the customer built it in, then the money. One column, one reading
+   order, nothing that needs to be cross-referenced.
+   -------------------------------------------------------------------------- */
+.checkout-summary {
+  background: var(--green);
+  color: white;
+  padding: 26px;
+  align-self: start;
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: 16px;
+}
+.summary-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.summary-head h3 { font-family: Georgia, serif; font-size: 25px; margin: 0; }
+.summary-head span { font-size: 10px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; color: rgba(255, 255, 255, .6); }
+
+/* Where, when, how much — hairline-separated so the three read as one block of
+   facts rather than three unrelated notes. */
+.summary-plan { display: grid; gap: 1px; margin: 0; background: rgba(255, 255, 255, .22); border: 1px solid rgba(255, 255, 255, .22); }
+.summary-plan > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--green); }
+.summary-plan dt { font-size: 9px; font-weight: 900; letter-spacing: 1.1px; text-transform: uppercase; color: rgba(255, 255, 255, .62); }
+.summary-plan dd { margin: 0; font-size: 13px; font-weight: 700; line-height: 1.4; }
+/* Something still to do, said in the summary rather than left blank. */
+.summary-plan em { font-style: normal; font-weight: 800; color: var(--yellow); }
+
+.summary-items { display: grid; gap: 15px; list-style: none; margin: 0; padding: 0; }
+.summary-items > li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: start; }
+.summary-items > li > div { display: grid; gap: 4px; min-width: 0; }
+.summary-items b { font-size: 13px; line-height: 1.35; }
+.summary-items small { font-size: 11px; line-height: 1.45; color: rgba(255, 255, 255, .7); }
+.summary-qty { display: grid; place-items: center; min-width: 27px; height: 27px; border: 1px solid rgba(255, 255, 255, .38); font-family: Georgia, serif; font-size: 13px; font-weight: 900; }
+.summary-price { font-family: Georgia, serif; font-size: 15px; white-space: nowrap; }
+/* Removing a line from the review screen. Quiet enough not to compete with the
+   pay button, present enough that nobody has to go back to the bag for it. */
+.summary-remove {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, .6);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 5px 0 0;
+}
+.summary-remove:hover { color: var(--yellow); }
+
+/* A promo code is a thing a minority of customers have; an open box next to the
+   total invites everyone else to go looking for one they do not have. */
+.summary-extra { border-block: 1px solid rgba(255, 255, 255, .2); padding: 10px 0; }
+.summary-extra > summary { display: flex; align-items: center; justify-content: space-between; min-height: 30px; font-size: 11px; font-weight: 900; letter-spacing: .8px; text-transform: uppercase; cursor: pointer; list-style: none; }
+.summary-extra > summary::-webkit-details-marker { display: none; }
+.summary-extra > summary::after { content: "+"; font-family: Georgia, serif; font-size: 17px; line-height: 1; color: var(--yellow); }
+.summary-extra[open] > summary::after { content: "–"; }
+/* The shared coupon row is written for a light panel: on the green ground its
+   white button would otherwise carry white text on white. */
+.summary-extra .coupon-row input { border-color: rgba(255, 255, 255, .35); }
+.summary-extra .coupon-row button { color: var(--ink); }
+
+.summary-tip { display: grid; gap: 8px; }
+.summary-label { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0; font-size: 11px; font-weight: 900; letter-spacing: .8px; text-transform: uppercase; }
+.summary-label span { font-size: 9px; font-weight: 700; letter-spacing: .6px; color: rgba(255, 255, 255, .5); }
+.tip-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.tip-grid button { border: 1px solid rgba(255, 255, 255, .4); background: transparent; color: white; padding: 10px 4px; font-size: 10px; font-weight: 800; cursor: pointer; }
+.tip-grid button.active { background: var(--yellow); color: var(--ink); border-color: var(--yellow); }
+.checkout-summary .tip-note { display: block; font-size: 10px; line-height: 1.45; color: rgba(255, 255, 255, .6); }
+.checkout-summary .custom-tip { margin: 0; }
+
+/* The money block, on the dark ground. The shared rules above it are written
+   for the light staff surfaces, so only the colours are restated here. */
+.checkout-summary .checkout-totals { margin: 0; gap: 8px; }
+.checkout-summary .checkout-totals > div small { color: rgba(255, 255, 255, .55); }
+.checkout-summary .checkout-discount b { color: var(--yellow); }
+.checkout-summary .checkout-grand-total { border-top-color: rgba(255, 255, 255, .28); font-size: 14px !important; }
+.checkout-summary .checkout-grand-total b { font-family: Georgia, serif; font-size: 21px; }
+.checkout-summary .coupon-ok { color: var(--yellow); }
+.checkout-summary .coupon-bad { color: #ffc4b6; }
+.checkout-summary .cart-blocker { margin: 0; background: #5d1d17; color: #ffc4b6; }
+.checkout-summary .form-error { background: #5d1d17; color: white; border-color: #ef8d7e; margin: 0; }
+.checkout-summary .terms-accept { margin: 0; }
+.checkout-summary .primary-button { background: var(--yellow); color: var(--ink); }
+.checkout-summary .checkout-hint { margin: -8px 0 0; color: var(--yellow); }
+.summary-note { display: block; font-size: 10px; line-height: 1.5; color: rgba(255, 255, 255, .55); }
+
 /* --- Cart revalidation (H-23) -----------------------------------------------
    A line that cannot be ordered says so next to its own Remove button, rather
    than taking the whole order down at the payment step. */
@@ -1000,30 +1097,11 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .cart-summary > div { font-size: 13px; }
 .cart-total small,
 .secure-note { font-size: 11px; }
-.checkout-summary > div:not(.tip-grid):not(.form-error),
-.checkout-summary > p,
 .checkout-totals > div { font-size: 12px; }
 
-/* Removing a line from the review screen. Quiet enough not to compete with the
-   pay button, present enough that nobody has to go back to the bag for it. */
-.checkout-summary > div > span { flex: 1; min-width: 0; }
-.summary-remove {
-  border: 0;
-  background: transparent;
-  color: rgba(255, 255, 255, .6);
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  text-decoration: underline;
-  cursor: pointer;
-  padding: 4px 0 4px 14px;
-  flex: 0 0 auto;
-}
-.summary-remove:hover { color: var(--yellow); }
 .checkout-totals > div small,
 .payment-choice small,
-.checkout-summary > small,
+.summary-note,
 .checkout-hint,
 .coupon-ok,
 .coupon-bad,
