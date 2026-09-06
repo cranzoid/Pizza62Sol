@@ -74,6 +74,16 @@ export type EmailInput = {
   text: string;
   /** The designed part. Omitted for internal test sends and nothing else. */
   html?: string;
+  /**
+   * Where a reply should land.
+   *
+   * The From address is a provider-authenticated sending domain, which is not
+   * generally a mailbox anyone reads. That is fine for a confirmation nobody
+   * answers, and wrong for a message that is itself a reply: telling a customer
+   * "we read every one" and then bouncing their answer is worse than not
+   * writing. Set on the messages that invite a response; omitted elsewhere.
+   */
+  replyTo?: string | null;
 };
 
 export async function sendEmail(input: EmailInput): Promise<{ provider: string; reference: string | null }> {
@@ -101,6 +111,7 @@ async function sendViaResend(
       // client picks. Omitting the key entirely when there is no HTML matters —
       // Resend rejects a null `html`.
       ...(input.html ? { html: input.html } : {}),
+      ...(input.replyTo ? { reply_to: input.replyTo } : {}),
     }),
   });
   const body = (await response.json().catch(() => null)) as { id?: string; message?: string; name?: string } | null;
@@ -127,6 +138,7 @@ async function sendViaSendGrid(
     body: JSON.stringify({
       personalizations: [{ to: [{ email: input.to }] }],
       from: { email: config.from, name: "Pizza 62" },
+      ...(input.replyTo ? { reply_to: { email: input.replyTo } } : {}),
       subject: input.subject,
       // SendGrid requires the parts in ascending order of preference and
       // rejects the payload otherwise — text/plain must come before text/html.

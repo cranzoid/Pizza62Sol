@@ -95,6 +95,20 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
     setMessage("Marked as handled.");
     await load();
   };
+  /**
+   * Sends the reply and reports whether it went, so the composer can keep the
+   * words on screen when it did not. The API's own wording is shown on a
+   * refusal — "there is nowhere to send a reply" is a fact the person writing
+   * needs, and "that could not be saved" is not.
+   */
+  const reply = async (id: string, message: string): Promise<boolean> => {
+    const response = await fetch("/api/admin/records", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "feedback.reply", id, message }) });
+    const result = await response.json().catch(() => ({}) as { error?: string });
+    if (!response.ok) { setMessage(result.error ?? "The reply could not be sent."); return false; }
+    setMessage("Reply sent to the customer.");
+    await load();
+    return true;
+  };
 
   return <div className="admin-stack admin-controls">
     <div className="viz-toolbar">
@@ -186,7 +200,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
     {tab === "feedback" ? <section className="staff-panel">
       <div className="staff-panel-head"><h2>What customers said</h2><span className="live-chip">{feedback.filter((row) => !row.reviewed_at).length} unhandled</span></div>
       <div className="setup-list">
-        {feedback.map((row) => <FeedbackItem key={String(row.id)} row={row} onReview={review} />)}
+        {feedback.map((row) => <FeedbackItem key={String(row.id)} row={row} onReview={review} onReply={reply} />)}
         {!feedback.length ? <div className="staff-empty">No feedback yet.</div> : null}
       </div>
     </section> : null}
@@ -196,9 +210,45 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
   </div>;
 }
 
-function FeedbackItem({ row, onReview }: { row: FeedbackRow; onReview: (id: string, note: string) => Promise<void> }) {
+/**
+ * One piece of feedback, and the two different things that can be done with it.
+ *
+ * The internal note answers "what did we do about this" for whoever reads the
+ * inbox next week. The reply answers the customer, who until now heard nothing
+ * back at all — which is the reason people stop filling these in. The two are
+ * kept visibly apart because they have different audiences: a note reading
+ * "comped them, watch this driver" must never be able to become a mail.
+ */
+function FeedbackItem({ row, onReview, onReply }: {
+  row: FeedbackRow;
+  onReview: (id: string, note: string) => Promise<void>;
+  onReply: (id: string, message: string) => Promise<boolean>;
+}) {
   const [note, setNote] = useState(String(row.internal_note ?? ""));
+  const [draft, setDraft] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [sending, setSending] = useState(false);
   const rating = Number(row.overall_rating);
+  const repliedAt = row.replied_at ? Number(row.replied_at) : 0;
+  const canReply = Boolean(row.can_reply);
+  const address = row.customer_email ? String(row.customer_email) : "";
+  const trimmed = draft.trim();
+
+  /** Only clears the box once the reply is genuinely on its way — throwing away
+      words someone just typed because a request failed is unforgivable. */
+  const send = async () => {
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      if (await onReply(String(row.id), trimmed)) {
+        setDraft("");
+        setComposing(false);
+      }
+    } finally {
+      setSending(false);
+    }
+  };
+
   return <div className="setup-item">
     <b>{rating}</b>
     <div>
@@ -208,6 +258,34 @@ function FeedbackItem({ row, onReview }: { row: FeedbackRow; onReview: (id: stri
         <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="What you did about it" aria-label="Internal note" />
         <button className="staff-button" onClick={() => void onReview(String(row.id), note)}>Mark handled</button>
       </div>}
+
+      <div className="feedback-reply">
+        {repliedAt ? <div className="feedback-reply__sent">
+          <strong>Replied {when(repliedAt)}</strong>
+          <p>{row.reply_message ? String(row.reply_message) : ""}</p>
+        </div> : null}
+
+        {!canReply
+          ? <p className="feedback-reply__hint">This order has no email address, so there is nowhere to send a reply.</p>
+          : repliedAt && !composing
+            ? <button className="staff-button staff-button--secondary" onClick={() => setComposing(true)}>Write another reply</button>
+            : <>
+              <label className="feedback-reply__label" htmlFor={`reply-${String(row.id)}`}>Reply to the customer</label>
+              <textarea
+                id={`reply-${String(row.id)}`}
+                value={draft}
+                maxLength={2000}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Thank them, say what you have done about it, and invite them back."
+              />
+              <div className="feedback-reply__actions">
+                <span>{address ? `Emailed to ${address}` : "Emailed to the address on the order"} · {trimmed.length}/2000</span>
+                <button className="staff-button" disabled={!trimmed || sending} onClick={() => void send()}>
+                  {sending ? "Sending…" : repliedAt ? "Send this reply" : "Send reply"}
+                </button>
+              </div>
+            </>}
+      </div>
     </div>
   </div>;
 }

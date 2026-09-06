@@ -1629,3 +1629,22 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .cookie-actions { width: 100%; }
   .cookie-actions > * { flex: 1; justify-content: center; }
 }
+
+/* Replying to feedback. Sits inside the feedback row, under the internal note,
+   and is deliberately the wider, quieter block of the two: the note is a phrase
+   typed on the way past, the reply is something a customer will read. */
+.feedback-reply { display:grid; gap:8px; margin-top:12px; padding-top:12px; border-top:1px dashed #d9ded9; }
+.feedback-reply__label { font-size:8px; font-weight:900; letter-spacing:.7px; text-transform:uppercase; color:#526057; }
+.feedback-reply textarea { min-height:78px; padding:11px; border:1px solid #d9ded9; border-radius:8px; background:white; font-size:11px; line-height:1.5; resize:vertical; }
+.feedback-reply__actions { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.feedback-reply__actions span { color:#768078; font-size:9px; }
+.feedback-reply__actions .staff-button:disabled { opacity:.4; cursor:not-allowed; }
+.feedback-reply__hint { margin:0; color:#768078; font-size:9px; line-height:1.45; }
+.feedback-reply__sent { padding:10px 12px; border-left:3px solid #173b2c; border-radius:0 8px 8px 0; background:#eef4f0; }
+.feedback-reply__sent strong { display:block; color:#173b2c; font-size:9px; text-transform:uppercase; letter-spacing:.6px; }
+.feedback-reply__sent p { margin:5px 0 0; color:#3d4a41; font-size:10px; line-height:1.5; white-space:pre-wrap; }
+.feedback-reply__sent + button { justify-self:start; }
+@media (max-width: 700px) {
+  .feedback-reply__actions { align-items:stretch; flex-direction:column; }
+  .feedback-reply__actions .staff-button { width:100%; }
+}
