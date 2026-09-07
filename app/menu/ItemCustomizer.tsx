@@ -392,6 +392,10 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
     return initial;
   });
   const [instructions, setInstructions] = useState("");
+  const quantitySelectable = Boolean(product.configuration.quantitySelectable);
+  const maximumQuantity = Math.max(1, Math.min(100, Number(product.configuration.maxQuantity) || 20));
+  const unitLabel = String(product.configuration.unitLabel ?? "item");
+  const [quantity, setQuantity] = useState(1);
   const optionsFor = (section: ModifierSection): Array<{ value: string; label: string }> => {
     if (section.source === "toppings") return toppings.map((entry) => ({ value: entry.id, label: entry.name }));
     const configured = section.options?.length ? section.options : (
@@ -458,6 +462,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
       <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
+          {quantitySelectable ? <fieldset className="quantity-choice"><legend>How many {unitLabel}s?</legend><p>This special is priced at {formatMoney(product.base_price_cents)} per {unitLabel}.</p><div><button type="button" aria-label={`Remove one ${unitLabel}`} disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximumQuantity} inputMode="numeric" value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(maximumQuantity, Number(event.target.value) || 1)))} /></label><button type="button" aria-label={`Add one ${unitLabel}`} disabled={quantity >= maximumQuantity} onClick={() => setQuantity((current) => Math.min(maximumQuantity, current + 1))}>+</button></div><small>Up to {maximumQuantity} {unitLabel}s per order.</small></fieldset> : null}
           {halalEnabled ? <fieldset><legend>Halal</legend><div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => setHalal(event.target.checked)} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div></fieldset> : null}
           {layout.map(({ section, step, groupHeading }) => {
             const values = valuesOf(section.id);
@@ -490,7 +495,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
           })}
           <label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, halal, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>{quantitySelectable ? `${quantity} ${unitLabel}${quantity === 1 ? "" : "s"} · ${formatMoney(product.base_price_cents)} each` : "Your item"}</small><strong>{formatMoney((product.base_price_cents + extras) * quantity)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, halal, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );

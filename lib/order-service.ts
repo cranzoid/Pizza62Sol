@@ -448,12 +448,16 @@ async function validateItems(
     if ((fulfilment === "pickup" && !product.pickup_eligible) || (fulfilment === "delivery" && !product.delivery_eligible)) {
       throw new OrderValidationError(`${product.name} is not available for ${fulfilment}.`);
     }
+    const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
+    const configuredMaximum = Number(productConfiguration.maxQuantity);
+    const maximumQuantity = Number.isSafeInteger(configuredMaximum) && configuredMaximum >= 1 && configuredMaximum <= 100
+      ? configuredMaximum
+      : 20;
     const quantity = input.quantity ?? 1;
-    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 20) {
-      throw new OrderValidationError("Item quantity must be between 1 and 20.");
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > maximumQuantity) {
+      throw new OrderValidationError(`Item quantity must be between 1 and ${maximumQuantity}.`);
     }
     const instructions = cleanInstructions(input.specialInstructions);
-    const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
     if (!isWithinWeeklyAvailability(productConfiguration.availability)) {
       throw new OrderValidationError(
         `${product.name} is only available ${productConfiguration.availability?.label ?? "during its advertised offer hours"}.`,

@@ -3,6 +3,7 @@ import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   GAME_DAY_SPECIAL_PRODUCT_ID,
+  LABOR_DAY_COMBO_PRODUCT_ID,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
@@ -797,6 +798,51 @@ const DATA_MIGRATIONS: Array<{
         database
           .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
           .bind(JSON.stringify(next), now, GAME_DAY_SPECIAL_PRODUCT_ID),
+      ];
+    },
+  },
+  {
+    /**
+     * The existing C$25.99 combo is now also a free-delivery offer, and the
+     * advertised dipping sauce must reach the kitchen ticket. The new dollar-
+     * wing product itself is inserted by the bumped menu seed; this migration
+     * changes only the existing combo row that an insert-only seed cannot touch.
+     */
+    id: "2026-09-07-labor-day-combo-delivery-and-dip",
+    run: async (database, now) => {
+      const seed = MENU_PRODUCTS.find((product) => product.id === LABOR_DAY_COMBO_PRODUCT_ID);
+      const row = await database
+        .prepare("SELECT configuration_json FROM products WHERE id = ?")
+        .bind(LABOR_DAY_COMBO_PRODUCT_ID)
+        .first<{ configuration_json: string | null }>();
+      if (!seed || !row) return [];
+      const current = safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {});
+      const currentSections = Array.isArray(current.sections)
+        ? current.sections as ModifierSectionSeed[]
+        : [];
+      const seededSections = Array.isArray(seed.configuration?.sections)
+        ? seed.configuration.sections as ModifierSectionSeed[]
+        : [];
+      const dip = seededSections.find((section) => section.id === "included-dip");
+      const baseSections = currentSections.length ? currentSections : seededSections;
+      const sections = baseSections.some((section) => section.id === "included-dip") || !dip
+        ? baseSections
+        : [...baseSections, dip];
+      return [
+        database
+          .prepare(
+            `UPDATE products
+             SET name = ?, description = ?, pickup_eligible = 1,
+                 delivery_eligible = 1, configuration_json = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .bind(
+            seed.name,
+            seed.description,
+            JSON.stringify({ ...current, sections, freeDelivery: true }),
+            now,
+            LABOR_DAY_COMBO_PRODUCT_ID,
+          ),
       ];
     },
   },

@@ -30,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-08-29-game-day-special-r2";
+export const MENU_SEED_VERSION = "2026-09-07-labor-day-specials";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -474,9 +474,18 @@ const singlePizzaPickupSpecials: MenuProductSeed[] = [
 const pickupSpecials: MenuProductSeed[] = [
   ...sliceSpecials,
   ...singlePizzaPickupSpecials,
-  bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings & 3 Pops", 2599, "Large pizza with 3 toppings, 1 lb wings and 3 canned pops.", [
-    ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3),
-  ], true),
+  {
+    ...bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings, 3 Pops & Dip", 2599, "Large pizza with 3 toppings, 1 lb wings, 3 canned pops and 1 dipping sauce. Free standard delivery.", [
+      ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3), includedDip(),
+    ]),
+    configuration: {
+      sections: orderModifierSections([
+        ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3), includedDip(),
+      ]),
+      specialInstructionsEnabled: true,
+      freeDelivery: true,
+    },
+  },
   { ...wings.find((item) => item.id === "1-lb-wings")!, id: "pickup-one-lb-wings", categoryId: "pickup-specials", deliveryEligible: false },
   pickupPizza("pickup-medium-five", "Medium Pizza · 5 Toppings", 1299, "Medium", 210, 5),
   bundle("pickup-two-large-six", "pickup-specials", "2 Large Pizzas · 6 Toppings Shared", 2799, "Share six included toppings across both large pizzas any way you like.", [
@@ -484,6 +493,39 @@ const pickupSpecials: MenuProductSeed[] = [
     ...pizzaSections(2, 0, 230, { sharedGroup: "six-shared", sharedIncluded: 6 }),
   ], true),
 ];
+
+export const LABOR_DAY_WINGS_PRODUCT_ID = "labor-day-dollar-wings";
+export const LABOR_DAY_COMBO_PRODUCT_ID = "pickup-large-wings";
+
+export const LABOR_DAY_AVAILABILITY: WeeklyAvailability = {
+  weekdays: [0, 1, 2, 3, 4, 5, 6],
+  startMinute: 0,
+  endMinute: 1440,
+  timeZone: "America/Toronto",
+  startDate: "2026-09-07",
+  endDate: "2026-09-07",
+  label: "Labor Day · Sept 7",
+};
+
+const laborDayWings: MenuProductSeed = {
+  id: LABOR_DAY_WINGS_PRODUCT_ID,
+  categoryId: "pickup-specials",
+  name: "Labor Day Wings · $1 Each",
+  description: "Chicken wings for $1 each. Choose your quantity and sauce or dry rub. Pickup only.",
+  productType: "configurable",
+  basePriceCents: 100,
+  pickupEligible: true,
+  deliveryEligible: false,
+  configuration: {
+    sections: [wingFlavours(1)],
+    specialInstructionsEnabled: true,
+    availability: LABOR_DAY_AVAILABILITY,
+    featured: true,
+    quantitySelectable: true,
+    maxQuantity: 60,
+    unitLabel: "wing",
+  },
+};
 
 /**
  * The Game Day Special: two large 3-topping pizzas, 2 lb wings, garlic bread and
@@ -579,6 +621,7 @@ const heroes: MenuProductSeed[] = [
 ];
 
 export const MENU_PRODUCTS: MenuProductSeed[] = [
+  laborDayWings,
   gameDaySpecial,
   ...standalonePizzas,
   ...specialtyPizzas,
