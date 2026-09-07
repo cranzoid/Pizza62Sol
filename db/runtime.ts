@@ -103,28 +103,19 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
       );
     }
     for (const [index, topping] of TOPPING_SEEDS.entries()) {
-      const [id, name, isMeat, halalAvailable] = topping;
+      const [id, name, isMeat] = topping;
+      // The halal_* columns are left to their defaults: halal is no longer
+      // offered, and the columns themselves are dropped in a later migration
+      // once no revision that still reads them can be rolled back to.
       operations.push(
         database
           .prepare(
             `INSERT INTO toppings
-             (id, name, kitchen_label, is_meat, has_halal_version, halal_display_name,
-              halal_available, halal_cost_cents, active, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
+             (id, name, kitchen_label, is_meat, active, display_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 1, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
-          .bind(
-            id,
-            name,
-            name.toUpperCase(),
-            isMeat ? 1 : 0,
-            halalAvailable ? 1 : 0,
-            halalAvailable ? `Halal ${name}` : null,
-            halalAvailable ? 1 : 0,
-            index,
-            now,
-            now,
-          ),
+          .bind(id, name, name.toUpperCase(), isMeat ? 1 : 0, index, now, now),
       );
     }
     for (const [index, product] of MENU_PRODUCTS.entries()) {
@@ -137,9 +128,9 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
           .prepare(
             `INSERT INTO products
              (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
-              pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
+              pickup_eligible, delivery_eligible, promotion_eligible, active, sold_out,
               setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
           .bind(
@@ -153,7 +144,6 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
             product.taxable === false ? 0 : 1,
             product.pickupEligible === false ? 0 : 1,
             product.deliveryEligible === false ? 0 : 1,
-            product.halalCapable ? 1 : 0,
             product.name.toUpperCase().slice(0, 40),
             JSON.stringify(product.configuration ?? {}),
             index,
@@ -376,7 +366,9 @@ const DATA_MIGRATIONS: Array<{
   {
     // Splits "Crust, bake & sauce" into a single-choice crust (Regular/Thin/Thick)
     // and a separate bake & sauce group, and gives every pizza inside a deal the
-    // same cheese and halal choices a standalone pizza has, in the same order.
+    // same cheese choices a standalone pizza has, in the same order. (It also gave
+    // them a halal choice, until halal was withdrawn from the menu; this migration
+    // copies whatever the seed defines, so it now produces neither.)
     // Owner-tuned numbers on a section that still exists (min, max, included, extra
     // price) are carried across; the group structure itself is what this replaces.
     id: "2026-07-27-pizza-option-groups",
@@ -595,7 +587,7 @@ const DATA_MIGRATIONS: Array<{
               `UPDATE products
                SET category_id = ?, name = ?, slug = ?, description = ?, product_type = ?,
                    base_price_cents = ?, taxable = ?, pickup_eligible = ?, delivery_eligible = ?,
-                   halal_capable = ?, promotion_eligible = 1, active = 1, sold_out = 0,
+                   promotion_eligible = 1, active = 1, sold_out = 0,
                    setup_required = 0, kitchen_label = ?, configuration_json = ?,
                    display_order = ?, updated_at = ?
                WHERE id = ?`,
@@ -610,7 +602,6 @@ const DATA_MIGRATIONS: Array<{
               product.taxable === false ? 0 : 1,
               product.pickupEligible === false ? 0 : 1,
               product.deliveryEligible === false ? 0 : 1,
-              product.halalCapable ? 1 : 0,
               product.name.toUpperCase().slice(0, 40),
               JSON.stringify(product.configuration ?? {}),
               displayOrder,

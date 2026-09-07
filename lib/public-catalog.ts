@@ -35,7 +35,7 @@ const PUBLIC_SETTING_FIELDS: Record<string, readonly string[]> = {
     "longitude",
     "googleReviewUrl",
   ],
-  operations: ["halalNotice", "halalSurchargeType", "halalSurchargeAmount", "halfToppingUnitsBps"],
+  operations: ["halfToppingUnitsBps"],
 };
 
 export function publicSettings(settings: Record<string, unknown>): Record<string, unknown> {
@@ -72,7 +72,7 @@ export async function loadPublicCatalog(): Promise<PublicCatalog> {
     database
       .prepare(
         `SELECT id, category_id, name, slug, description, product_type, image_url,
-                base_price_cents, taxable, pickup_eligible, delivery_eligible, halal_capable,
+                base_price_cents, taxable, pickup_eligible, delivery_eligible,
                 promotion_eligible, active, sold_out, setup_required, configuration_json, display_order
          FROM products WHERE active = 1 ORDER BY display_order, name`,
       )
@@ -86,8 +86,7 @@ export async function loadPublicCatalog(): Promise<PublicCatalog> {
       .all(),
     database
       .prepare(
-        `SELECT id, name, kitchen_label, is_meat, has_halal_version,
-                halal_display_name, halal_available, halal_cost_cents, display_order
+        `SELECT id, name, kitchen_label, is_meat, display_order
          FROM toppings WHERE active = 1 ORDER BY display_order, name`,
       )
       .all(),

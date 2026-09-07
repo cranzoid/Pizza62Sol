@@ -233,11 +233,30 @@ function rememberedCart(): CartLine[] {
   if (!value) return [];
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as CartLine[]) : [];
+    return Array.isArray(parsed) ? (parsed as CartLine[]).map(withoutRetiredChoices) : [];
   } catch {
     return [];
   }
 }
+
+/**
+ * Strips choices the menu no longer offers from a restored cart line.
+ *
+ * Drafts live in `localStorage` with no expiry, so a basket built before halal
+ * was withdrawn can still be sitting in a browser months later. The server
+ * discards the same things on the way in, but repairing the line here means the
+ * cart the customer *sees* matches what they will be charged for, rather than
+ * listing an option that quietly disappears at checkout.
+ */
+function withoutRetiredChoices(line: CartLine): CartLine {
+  const repaired = { ...line } as CartLine & { halal?: boolean };
+  delete repaired.halal;
+  repaired.modifiers = repaired.modifiers?.filter((modifier) => !RETIRED_MODIFIER_IDS.test(modifier.id));
+  return repaired;
+}
+
+/** Section ids seeded for the withdrawn halal group: `pizza-halal`, `pizza-1-halal`, … */
+const RETIRED_MODIFIER_IDS = /^pizza(-\d+)?-halal$/;
 
 function commerceItems(lines: CartLine[]): CommerceItem[] {
   return lines.map((line) => ({
@@ -946,14 +965,12 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           product={openCustomizerFor}
           variations={catalog.variations.filter((variation) => variation.product_id === openCustomizerFor.id)}
           toppings={catalog.toppings}
-          halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
           onAdd={(line) => { addLine(line); closeCustomizer(); }}
         /> : <GenericCustomizer
           product={openCustomizerFor}
           toppings={catalog.toppings}
-          halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
           onAdd={(line) => { addLine(line); closeCustomizer(); }}
@@ -1021,7 +1038,6 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
 function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[] {
   const options: string[] = [];
   if (line.variationName) options.push(line.variationName);
-  if (line.halal) options.push("Halal meat toppings");
   if (line.extraCheese) options.push("Extra cheese");
   for (const topping of line.toppings ?? []) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
   for (const modifier of line.modifiers ?? []) {

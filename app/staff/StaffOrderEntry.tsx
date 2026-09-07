@@ -70,7 +70,6 @@ function buildSignature(item: BuiltItem): string {
       .sort(),
     [...(item.omitToppings ?? [])].sort(),
     Boolean(item.extraCheese),
-    Boolean(item.halal),
     item.specialInstructions ?? "",
   ]);
 }
@@ -85,7 +84,6 @@ function buildSignature(item: BuiltItem): string {
 function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): string[] {
   const parts: string[] = [];
   if (item.variationName) parts.push(item.variationName);
-  if (item.halal) parts.push("Halal meat");
   if (item.extraCheese) parts.push("Extra cheese");
   for (const topping of item.toppings ?? []) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
   for (const toppingId of item.omitToppings ?? []) parts.push(`No ${toppingNames.get(toppingId) ?? toppingId}`);
@@ -178,7 +176,6 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // built at the counter is charged for a half topping exactly as one built at
   // home is.
   const operations = (dashboard.settings.operations?.value ?? {}) as Record<string, unknown>;
-  const halalNotice = String(operations.halalNotice ?? "Halal meat options use a shared kitchen.");
   const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 10_000);
   const activeToppings = dashboard.toppings.filter((topping) => topping.active);
   const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
@@ -651,7 +648,6 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             product={building}
             variations={buildingVariations}
             toppings={activeToppings}
-            halalNotice={halalNotice}
             halfToppingUnitsBps={halfToppingUnitsBps}
             onClose={() => setBuilding(null)}
             onAdd={add}
@@ -661,7 +657,6 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             key={building.id}
             product={building}
             toppings={activeToppings}
-            halalNotice={halalNotice}
             halfToppingUnitsBps={halfToppingUnitsBps}
             onClose={() => setBuilding(null)}
             onAdd={add}

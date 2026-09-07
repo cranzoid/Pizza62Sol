@@ -38,10 +38,6 @@ type Body =
       name?: string;
       kitchenLabel?: string;
       isMeat?: boolean;
-      hasHalalVersion?: boolean;
-      halalDisplayName?: string;
-      halalAvailable?: boolean;
-      halalCostCents?: number;
       active?: boolean;
     }
   | {
@@ -58,7 +54,6 @@ type Body =
       pickupEligible?: boolean;
       deliveryEligible?: boolean;
       taxable?: boolean;
-      halalCapable?: boolean;
       setupRequired?: boolean;
       kitchenLabel?: string;
       displayOrder?: number;
@@ -259,9 +254,8 @@ export async function POST(request: Request) {
       const user = await requireStaff(request, "manage_menu");
       const name = body.name?.trim() ?? "";
       const kitchenLabel = body.kitchenLabel?.trim() ?? "";
-      const halalCost = body.halalCostCents ?? 0;
-      if (name.length < 2 || name.length > 80 || kitchenLabel.length < 1 || kitchenLabel.length > 40 || !Number.isSafeInteger(halalCost) || halalCost < 0 || halalCost > 10_000) {
-        return Response.json({ error: "Enter a valid topping name, kitchen label, and halal cost." }, { status: 400 });
+      if (name.length < 2 || name.length > 80 || kitchenLabel.length < 1 || kitchenLabel.length > 40) {
+        return Response.json({ error: "Enter a valid topping name and kitchen label." }, { status: 400 });
       }
       const id = body.id?.trim() || crypto.randomUUID();
       const previous = await getD1().prepare("SELECT * FROM toppings WHERE id = ?").bind(id).first();
@@ -269,28 +263,13 @@ export async function POST(request: Request) {
       await getD1()
         .prepare(
           `INSERT INTO toppings
-           (id, name, kitchen_label, is_meat, has_halal_version, halal_display_name,
-            halal_available, halal_cost_cents, active, display_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           (id, name, kitchen_label, is_meat, active, display_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, kitchen_label = excluded.kitchen_label,
-             is_meat = excluded.is_meat, has_halal_version = excluded.has_halal_version,
-             halal_display_name = excluded.halal_display_name, halal_available = excluded.halal_available,
-             halal_cost_cents = excluded.halal_cost_cents, active = excluded.active,
+             is_meat = excluded.is_meat, active = excluded.active,
              updated_at = excluded.updated_at`,
         )
-        .bind(
-          id,
-          name,
-          kitchenLabel,
-          body.isMeat ? 1 : 0,
-          body.hasHalalVersion ? 1 : 0,
-          body.halalDisplayName?.trim() || null,
-          body.halalAvailable ? 1 : 0,
-          halalCost,
-          body.active === false ? 0 : 1,
-          now,
-          now,
-        )
+        .bind(id, name, kitchenLabel, body.isMeat ? 1 : 0, body.active === false ? 0 : 1, now, now)
         .run();
       await writeAudit({ actorId: user.id, action: previous ? "topping.update" : "topping.create", targetType: "topping", targetId: id, previous, next: body });
       return Response.json({ ok: true, id });
@@ -324,7 +303,7 @@ export async function POST(request: Request) {
         .prepare(
           `UPDATE products SET category_id = ?, name = ?, description = ?, product_type = ?,
              image_url = ?, base_price_cents = ?, active = ?, sold_out = ?, pickup_eligible = ?,
-             delivery_eligible = ?, taxable = ?, halal_capable = ?, setup_required = ?,
+             delivery_eligible = ?, taxable = ?, setup_required = ?,
              kitchen_label = ?, configuration_json = ?, display_order = ?, updated_at = ?
            WHERE id = ?`,
         )
@@ -340,7 +319,6 @@ export async function POST(request: Request) {
           body.pickupEligible ?? Boolean(previous.pickup_eligible) ? 1 : 0,
           body.deliveryEligible ?? Boolean(previous.delivery_eligible) ? 1 : 0,
           body.taxable ?? Boolean(previous.taxable) ? 1 : 0,
-          body.halalCapable ?? Boolean(previous.halal_capable) ? 1 : 0,
           body.setupRequired ?? Boolean(previous.setup_required) ? 1 : 0,
           body.kitchenLabel?.trim() || String(previous.kitchen_label ?? name.toUpperCase()).slice(0, 40),
           JSON.stringify(configuration),
@@ -369,9 +347,9 @@ export async function POST(request: Request) {
       await getD1().prepare(
         `INSERT INTO products
          (id, category_id, name, slug, description, product_type, image_url, base_price_cents, taxable,
-          pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
+          pickup_eligible, delivery_eligible, promotion_eligible, active, sold_out,
           setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 0, 1, ?, 0, ?, ?, '{}', 10000, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, ?, 0, ?, ?, '{}', 10000, ?, ?)`,
       ).bind(id, categoryId, name, id, description, productType, imageUrl, basePrice, body.active === false ? 0 : 1, productType === "pizza" ? 1 : 0, name.toUpperCase().slice(0, 40), now, now).run();
       await writeAudit({ actorId: user.id, action: "product.create", targetType: "product", targetId: id, next: body });
       return Response.json({ ok: true, id }, { status: 201 });

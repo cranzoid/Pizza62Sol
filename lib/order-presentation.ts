@@ -118,7 +118,16 @@ export function modifierDetails(modifiers: SnapshotModifier[]): Array<{ label: s
     }));
 }
 
-/** Halal, extra cheese and every deliberate omission, in the order they matter. */
+/**
+ * Extra cheese and every deliberate omission, in the order they matter.
+ *
+ * `halal` is still read, deliberately. Halal was withdrawn from the menu and
+ * nothing writes the flag any more — but every order placed before the
+ * withdrawal has it frozen in its stored snapshot, and this function feeds the
+ * kitchen ticket, the thermal print, the confirmation email and the customer's
+ * order page. Dropping the line would silently reprint historical orders as
+ * something they were not. It costs one branch to keep them truthful.
+ */
 export function snapshotFlags(snapshot: ItemSnapshot): string[] {
   const flags: string[] = [];
   if (snapshot.halal) flags.push("Halal");

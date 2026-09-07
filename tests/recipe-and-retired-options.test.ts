@@ -1,5 +1,5 @@
 /**
- * Set recipes (H-03) and halal on deals (H-05).
+ * Set recipes (H-03), and the retired halal group that outlives them (C-08).
  *
  * **H-03.** A specialty pizza is sold under a name that describes what is on it.
  * The client could drop recipe toppings and the server priced and accepted
@@ -13,9 +13,12 @@
  * reduced the price, a customer could buy the same named product cheaper by
  * removing something and adding it straight back as a paid extra.
  *
- * **H-05.** Deals are flagged halal-capable, but the generic customizer offered
- * no halal control and the server rejected the flag outright — so the preference
- * the menu advertises could not be ordered on the products that advertise it.
+ * **Retired groups.** Halal was withdrawn from the menu, but deals seeded before
+ * the withdrawal still carry a `source: "halal"` section in their stored
+ * configuration, and carts live in `localStorage` with no expiry. A retired group
+ * must therefore be *discarded* on the way in, never rejected: rejecting it would
+ * fail a months-old basket at checkout with "An unsupported item option was
+ * submitted." and nothing the customer could do about it.
  *
  * Requires a reachable Postgres; skipped otherwise.
  */
@@ -178,41 +181,56 @@ withDb("a half-placed recipe topping does not satisfy the recipe", async () => {
   assert.equal(issue.code, "RECIPE_INCOMPLETE");
 });
 
-// --- H-05 -------------------------------------------------------------------
+// --- retired option groups -------------------------------------------------
 
-withDb("accepts halal on a deal that is flagged halal-capable", async () => {
-  const deal = await getPool().query<{ id: string }>(
-    "SELECT id FROM products WHERE halal_capable = 1 AND product_type <> 'pizza' AND active = 1 AND sold_out = 0 LIMIT 1",
+withDb("checks out a saved cart that still names the withdrawn halal group", async () => {
+  // The exact shape a browser saved before the withdrawal: a deal, plus a
+  // modifier naming a section that is still in the product's stored
+  // configuration but is no longer offered anywhere.
+  const deal = await getPool().query<{ id: string; configuration_json: string }>(
+    `SELECT id, configuration_json FROM products
+     WHERE configuration_json LIKE '%"halal"%' AND active = 1 AND sold_out = 0 LIMIT 1`,
   );
-  const productId = deal.rows[0].id;
+  if (!deal.rows.length) return; // nothing seeded with the retired group
+
+  const { id, configuration_json } = deal.rows[0];
+  const sections = (JSON.parse(configuration_json).sections ?? []) as Array<{ id: string; source?: string }>;
+  const retired = sections.find((section) => section.source === "halal");
+  assert.ok(retired, "the fixture must actually carry a retired section");
+
   const quote = await quoteOrder({
     fulfilment: "pickup",
-    items: [{ productId, quantity: 1, halal: true }],
+    items: [{ productId: id, quantity: 1, modifiers: [{ id: retired.id, values: ["Halal meat toppings"] }] }],
     paymentMethod: "pay_at_store",
   });
-  // Asserted narrowly on purpose. A deal has its own required choice groups, and
-  // submitting none of them fails for reasons that have nothing to do with H-05.
-  // The property under test is that halal is no longer *itself* a rejection —
-  // previously `Unsupported customization was added to …` came back for the flag
-  // alone, on a product the menu advertises as halal-capable.
-  const halalRejection = quote.issues.find((issue) => /halal|[Uu]nsupported customization/.test(issue.message));
-  assert.equal(
-    halalRejection,
-    undefined,
-    "the preference the menu advertises must be orderable on the products that advertise it",
-  );
+
+  const rejected = quote.issues.find((issue) => /unsupported item option/i.test(issue.message));
+  assert.equal(rejected, undefined, "a retired group must be discarded, not rejected");
 });
 
-withDb("still refuses halal on a product that is not configured for it", async () => {
-  const plain = await getPool().query<{ id: string }>(
-    "SELECT id FROM products WHERE halal_capable = 0 AND product_type <> 'pizza' AND active = 1 AND sold_out = 0 LIMIT 1",
+withDb("never prints a retired group on the kitchen ticket", async () => {
+  const deal = await getPool().query<{ id: string; configuration_json: string }>(
+    `SELECT id, configuration_json FROM products
+     WHERE configuration_json LIKE '%"halal"%' AND active = 1 AND sold_out = 0 LIMIT 1`,
   );
+  if (!deal.rows.length) return;
+
+  const { id, configuration_json } = deal.rows[0];
+  const sections = (JSON.parse(configuration_json).sections ?? []) as Array<{ id: string; source?: string }>;
+  const retired = sections.find((section) => section.source === "halal");
+  assert.ok(retired);
+
   const quote = await quoteOrder({
     fulfilment: "pickup",
-    items: [{ productId: plain.rows[0].id, quantity: 1, halal: true }],
+    items: [{ productId: id, quantity: 1, modifiers: [{ id: retired.id, values: ["Halal meat toppings"] }] }],
     paymentMethod: "pay_at_store",
   });
-  const issue = quote.issues.find((entry) => entry.index === 0);
-  assert.ok(issue, "halal must not be claimable on an item that cannot honour it");
-  assert.match(issue.message, /not configured for halal/);
+
+  // Whatever else the deal is missing, the withdrawn choice must not survive
+  // into anything the kitchen reads.
+  assert.equal(
+    JSON.stringify(quote.lines).toLowerCase().includes("halal"),
+    false,
+    "a withdrawn choice must not reach the kitchen",
+  );
 });

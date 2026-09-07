@@ -90,14 +90,14 @@ export async function GET(request: Request) {
       getD1()
         .prepare(
           `SELECT id, category_id, name, description, product_type, image_url, base_price_cents,
-                  active, sold_out, pickup_eligible, delivery_eligible, taxable, halal_capable,
+                  active, sold_out, pickup_eligible, delivery_eligible, taxable,
                   setup_required, kitchen_label, configuration_json, display_order
            FROM products ORDER BY display_order, name`,
         )
         .all(),
       getD1()
         .prepare(
-          `SELECT id, name, kitchen_label, is_meat, has_halal_version, halal_available, active
+          `SELECT id, name, kitchen_label, is_meat, active
            FROM toppings ORDER BY display_order, name`,
         )
         .all(),
