@@ -30,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-09-07-labor-day-specials";
+export const MENU_SEED_VERSION = "2026-09-08-labor-day-wing-cap";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -522,7 +522,7 @@ const laborDayWings: MenuProductSeed = {
     availability: LABOR_DAY_AVAILABILITY,
     featured: true,
     quantitySelectable: true,
-    maxQuantity: 60,
+    maxQuantity: 40,
     unitLabel: "wing",
   },
 };

@@ -881,7 +881,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
             <button type="button" className="modal-close" onClick={() => setLaborDayOfferDismissed(true)} aria-label="Close Labor Day specials">×</button>
             <div className="labor-day-popup__intro"><p className="eyebrow"><span /> Open on Labor Day</p><h2 id="labor-day-title">Labor Day<br /><em>tastes better.</em></h2><p>Celebrate with pickup wings for $1 each, or get our $25.99 pizza-and-wings combo with free standard delivery.</p></div>
             <div className="labor-day-popup__offers">
-              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only · first choice</span><h3>$1 Wings</h3><p>Choose 1–60 wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
+              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only · first choice</span><h3>$1 Wings</h3><p>Choose 1–40 wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
               {laborDayCombo ? <article className="labor-day-offer"><span>Pickup or delivery</span><h3>$25.99 Combo</h3><p>Large 3-topping pizza, 1 lb wings, 3 pops and 1 dip.</p><strong>$25.99</strong><button type="button" onClick={() => openLaborDayOffer(laborDayCombo, "delivery")}>Get free delivery <ArrowIcon /></button></article> : null}
             </div>
           </div>

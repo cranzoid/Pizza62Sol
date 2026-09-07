@@ -4,6 +4,7 @@ import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   GAME_DAY_SPECIAL_PRODUCT_ID,
   LABOR_DAY_COMBO_PRODUCT_ID,
+  LABOR_DAY_WINGS_PRODUCT_ID,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
@@ -843,6 +844,28 @@ const DATA_MIGRATIONS: Array<{
             now,
             LABOR_DAY_COMBO_PRODUCT_ID,
           ),
+      ];
+    },
+  },
+  {
+    /**
+     * The Labor Day dollar-wing offer is capped at 40 wings, not 60. The seed
+     * does not overwrite existing products, so production needs one precise row
+     * update after the corrected seed ships.
+     */
+    id: "2026-09-08-labor-day-wing-cap-40",
+    run: async (database, now) => {
+      const row = await database
+        .prepare("SELECT configuration_json FROM products WHERE id = ?")
+        .bind(LABOR_DAY_WINGS_PRODUCT_ID)
+        .first<{ configuration_json: string | null }>();
+      if (!row) return [];
+      const configuration = safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {});
+      if (configuration.maxQuantity === 40) return [];
+      return [
+        database
+          .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
+          .bind(JSON.stringify({ ...configuration, maxQuantity: 40 }), now, LABOR_DAY_WINGS_PRODUCT_ID),
       ];
     },
   },
