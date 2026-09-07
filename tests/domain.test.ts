@@ -537,7 +537,6 @@ test("resolves Hamilton delivery addresses and blocks out-of-area postal codes (
 });
 
 test("keeps unconfirmed public product claims disabled until owner confirmation (H-21)", () => {
-  assert.equal(LAUNCH_SETTINGS.featureFlags.halalPreparationClaim, false);
   assert.equal(LAUNCH_SETTINGS.featureFlags.dryRubLabel, false);
 });
 
@@ -637,18 +636,17 @@ test("every pizza is built in the same order wherever it is ordered from", () =>
     { id: "t", label: "Toppings", source: "toppings" as const, min: 0, max: 3, group: "Pizza 1" },
     { id: "b", label: "Bake & sauce", source: "bake_sauce" as const, min: 0, max: 2, group: "Pizza 1" },
     { id: "c", label: "Crust", source: "crust" as const, min: 0, max: 1, group: "Pizza 1" },
-    { id: "h", label: "Halal meat", source: "halal" as const, min: 0, max: 1, group: "Pizza 1" },
     { id: "ch", label: "Cheese", source: "cheese" as const, min: 1, max: 1, group: "Pizza 1" },
     { id: "w", label: "Wings", source: "wing_flavours" as const, min: 1, max: 2 },
   ];
   assert.deepEqual(
     orderModifierSections(sections).map((section) => section.id),
-    ["ch", "h", "c", "b", "t", "w"],
+    ["ch", "c", "b", "t", "w"],
   );
-  // The owner can move toppings ahead of the crust; cheese and halal stay first.
+  // The owner can move toppings ahead of the crust; cheese stays first.
   assert.deepEqual(
     orderModifierSections(sections, true).map((section) => section.id),
-    ["ch", "h", "t", "c", "b", "w"],
+    ["ch", "t", "c", "b", "w"],
   );
   // Groups stay together in the order they first appear.
   const twoPizzas = [
@@ -659,12 +657,12 @@ test("every pizza is built in the same order wherever it is ordered from", () =>
   assert.deepEqual(orderModifierSections(twoPizzas).map((section) => section.id), ["p2c", "p1c", "p1t"]);
 });
 
-test("deals ask for cheese, halal and crust on every pizza they contain", () => {
+test("deals ask for cheese and crust on every pizza they contain", () => {
   const twoForOne = MENU_PRODUCTS.find((product) => product.id === "two-for-one-large")!;
   const sections = (twoForOne.configuration as { sections: Array<{ id: string; source?: string; group?: string }> }).sections;
   for (const pizza of ["Pizza 1", "Pizza 2"]) {
     const sources = sections.filter((section) => section.group === pizza).map((section) => section.source);
-    assert.deepEqual(sources, ["cheese", "halal", "crust", "bake_sauce", "toppings"]);
+    assert.deepEqual(sources, ["cheese", "crust", "bake_sauce", "toppings"]);
   }
 });
 

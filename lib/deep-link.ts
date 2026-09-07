@@ -68,8 +68,7 @@ export type DeepLinkProduct = {
  *
  * Everything else in the query string is left exactly as it arrived. That is
  * not tidiness: `utm_*`, `gclid`, `gbraid`, `wbraid` and `fbclid` are read by
- * `captureCampaignAttribution`, which runs in `MarketingConsent` — a sibling
- * mounted *after* the storefront in the root layout, so its effect fires second.
+ * `captureCampaignAttribution`, which runs in the storefront after it mounts.
  * A deep link that cleaned the whole query string would erase the attribution
  * for the very click that paid to arrive.
  */

@@ -41,6 +41,7 @@ import {
   isCustomerNotifiableStatus,
   renderCustomerConfirmation,
   renderCustomerStatusUpdate,
+  renderFeedbackReply,
   renderFeedbackRequest,
   renderFeedbackReward,
   renderLowRatingAlert,
@@ -298,6 +299,40 @@ async function deliver(row: OutboxRow): Promise<void> {
       if (!reward) throw new ParkForSetup("no live promotion behind the feedback reward code");
       const message = await renderFeedbackReward(order, reward);
       await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
+    /**
+     * What the restaurant wrote back, sent to the customer who wrote in.
+     *
+     * Email only, on purpose. A reply worth sending is a paragraph or three,
+     * and a paragraph delivered as four concatenated text messages is not a
+     * reply, it is an imposition — so the customer's phone number is left
+     * alone here even where SMS is switched on for the operational messages.
+     *
+     * The Reply-To is the restaurant's own address rather than the sending
+     * domain, so an answer to this lands in a mailbox someone opens. Without
+     * one the message would invite a conversation it cannot receive.
+     */
+    case "feedback_reply": {
+      if (!orderId) throw new PermanentFailure("reply payload has no orderId");
+      const order = await loadOrder(orderId);
+      if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
+      const to = row.recipient ?? order.customer_email;
+      if (!to) throw new PermanentFailure("no recipient address");
+      const reply = typeof payload.reply === "string" ? payload.reply.trim() : "";
+      // An empty reply is a mail that says nothing over the restaurant's name.
+      // It can never become non-empty on a retry, so it fails rather than loops.
+      if (!reply) throw new PermanentFailure("reply payload has no message");
+      const message = await renderFeedbackReply(order, payload as Parameters<typeof renderFeedbackReply>[1]);
+      const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
+      await sendEmail({
+        to,
+        subject: message.emailSubject,
+        text: message.emailText,
+        html: message.emailHtml,
+        replyTo: business.email ?? null,
+      });
       return;
     }
 

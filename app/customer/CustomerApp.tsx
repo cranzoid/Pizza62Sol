@@ -31,7 +31,7 @@ import {
   withoutDeepLinkParams,
   type DeepLinkRequest,
 } from "@/lib/deep-link";
-import { openCookieChoices, orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
+import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -233,11 +233,30 @@ function rememberedCart(): CartLine[] {
   if (!value) return [];
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as CartLine[]) : [];
+    return Array.isArray(parsed) ? (parsed as CartLine[]).map(withoutRetiredChoices) : [];
   } catch {
     return [];
   }
 }
+
+/**
+ * Strips choices the menu no longer offers from a restored cart line.
+ *
+ * Drafts live in `localStorage` with no expiry, so a basket built before halal
+ * was withdrawn can still be sitting in a browser months later. The server
+ * discards the same things on the way in, but repairing the line here means the
+ * cart the customer *sees* matches what they will be charged for, rather than
+ * listing an option that quietly disappears at checkout.
+ */
+function withoutRetiredChoices(line: CartLine): CartLine {
+  const repaired = { ...line } as CartLine & { halal?: boolean };
+  delete repaired.halal;
+  repaired.modifiers = repaired.modifiers?.filter((modifier) => !RETIRED_MODIFIER_IDS.test(modifier.id));
+  return repaired;
+}
+
+/** Section ids seeded for the withdrawn halal group: `pizza-halal`, `pizza-1-halal`, … */
+const RETIRED_MODIFIER_IDS = /^pizza(-\d+)?-halal$/;
 
 function commerceItems(lines: CartLine[]): CommerceItem[] {
   return lines.map((line) => ({
@@ -403,7 +422,13 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     ? countdown(store.acceptingUntil - now)
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
-  const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed;
+  const [laborDayOfferDismissed, setLaborDayOfferDismissed] = useState(false);
+  const laborDayWings = catalog?.products.find((product) => product.id === "labor-day-dollar-wings") ?? null;
+  const laborDayCombo = catalog?.products.find((product) => product.id === "pickup-large-wings") ?? null;
+  const laborDayAvailability = laborDayWings?.configuration.availability as WeeklyAvailability | undefined;
+  const laborDayOfferAvailable = Boolean(laborDayWings && laborDayAvailability && isWithinWeeklyAvailability(laborDayAvailability, new Date(now)));
+  const showLaborDayOffer = laborDayOfferAvailable && !laborDayOfferDismissed;
+  const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed && !showLaborDayOffer;
 
   // The site used to open on pickup — inherited from a previous visit, or just
   // the default — and say so only in small type beside the estimate. A customer
@@ -417,9 +442,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Behind the closed notice: a customer who arrives after hours needs to be
   // told the kitchen is shut before being asked how they want the food.
   const showMethodPrompt =
-    Boolean(catalog) && !methodAsked && !showClosedNotice && pickupEnabled && deliveryEnabled;
+    Boolean(catalog) && !methodAsked && !showClosedNotice && !showLaborDayOffer && pickupEnabled && deliveryEnabled;
   const deliveryDialogRef = useDialogBehavior<HTMLFormElement>(deliveryGate, () => setDeliveryGate(false));
   const closedDialogRef = useDialogBehavior<HTMLDivElement>(showClosedNotice, () => setClosedNoticeDismissed(true));
+  const laborDayDialogRef = useDialogBehavior<HTMLDivElement>(showLaborDayOffer, () => setLaborDayOfferDismissed(true));
   const opensIn = store.changesAt ? countdown(store.changesAt - now) : "";
   const opensAtLabel = store.changesAt
     ? new Date(store.changesAt).toLocaleString("en-CA", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone })
@@ -493,7 +519,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Behind the closed notice, for the same reason the method prompt is: a
   // customizer opened under that modal is one the customer cannot see.
   // Dismissing the notice re-renders and the offer is there waiting.
-  const openCustomizerFor = selectedProduct ?? (showClosedNotice ? null : deepLinkProduct);
+  const openCustomizerFor = selectedProduct ?? (showClosedNotice || showLaborDayOffer ? null : deepLinkProduct);
   const closeCustomizer = () => {
     setSelectedProduct(null);
     setDeepLinkSpent(true);
@@ -611,14 +637,23 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     openProduct(product);
   };
 
+  const openLaborDayOffer = (product: Product, nextFulfilment: "pickup" | "delivery") => {
+    setLaborDayOfferDismissed(true);
+    setClosedNoticeDismissed(true);
+    window.sessionStorage.setItem(METHOD_ASKED_KEY, "1");
+    setMethodAsked(true);
+    setFulfilment(nextFulfilment);
+    trackEvent("fulfilment_selected", { fulfilment: nextFulfilment, source: "labor_day_popup" });
+    openProduct(product);
+  };
+
   useEffect(() => {
     // The deep-link parameters are dropped from the address bar so the URL a
     // customer can bookmark, share or reload is the plain homepage rather than
     // one that reopens a customizer every time. Only those two: the campaign
-    // parameters beside them are read by `MarketingConsent`, which the root
-    // layout mounts after this component and whose effect therefore runs
-    // second. Clearing the whole query string here would delete the attribution
-    // belonging to the click that paid to arrive.
+    // parameters beside them are read by the first-party attribution capture.
+    // Clearing the whole query string here would delete the attribution belonging
+    // to the click that paid to arrive.
     const cleaned = withoutDeepLinkParams(window.location.href);
     if (cleaned) window.history.replaceState(null, "", cleaned);
   }, []);
@@ -855,9 +890,22 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         <div className="footer-brand"><BrandLogo src={logoUrl} name={businessName} chip /><p>{String(content.footerTagline ?? "Hamilton pizza made for real life.")}</p></div>
         <div><b>Order</b><a href="#offers">Offers</a><a href="#menu">Menu</a><Link href="/track">Track an order</Link></div>
         <div><b>Information</b><a href="#hours">Hours & delivery</a><Link href="/privacy">Privacy</Link><Link href="/accessibility">Accessibility</Link></div>
-        <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "footer" })}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<button type="button" className="footer-text-button" onClick={openCookieChoices}>Cookie choices</button><Link href="/admin">Staff portal</Link></div>
+        <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "footer" })}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<Link href="/admin">Staff portal</Link></div>
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
       </footer>
+
+      {showLaborDayOffer && laborDayWings ? (
+        <div className="modal-backdrop labor-day-backdrop" role="presentation" onMouseDown={() => setLaborDayOfferDismissed(true)}>
+          <div ref={laborDayDialogRef} className="labor-day-popup" role="dialog" aria-modal="true" aria-labelledby="labor-day-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => setLaborDayOfferDismissed(true)} aria-label="Close Labor Day specials">×</button>
+            <div className="labor-day-popup__intro"><p className="eyebrow"><span /> Open on Labor Day</p><h2 id="labor-day-title">Labor Day<br /><em>tastes better.</em></h2><p>Celebrate with pickup wings for $1 each, or get our $25.99 pizza-and-wings combo with free standard delivery.</p></div>
+            <div className="labor-day-popup__offers">
+              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only · first choice</span><h3>$1 Wings</h3><p>Choose 1–40 wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
+              {laborDayCombo ? <article className="labor-day-offer"><span>Pickup or delivery</span><h3>$25.99 Combo</h3><p>Large 3-topping pizza, 1 lb wings, 3 pops and 1 dip.</p><strong>$25.99</strong><button type="button" onClick={() => openLaborDayOffer(laborDayCombo, "delivery")}>Get free delivery <ArrowIcon /></button></article> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showMethodPrompt ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => answerMethodPrompt()}>
@@ -917,14 +965,12 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           product={openCustomizerFor}
           variations={catalog.variations.filter((variation) => variation.product_id === openCustomizerFor.id)}
           toppings={catalog.toppings}
-          halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
           onAdd={(line) => { addLine(line); closeCustomizer(); }}
         /> : <GenericCustomizer
           product={openCustomizerFor}
           toppings={catalog.toppings}
-          halalNotice={String(operations.halalNotice ?? "Halal meat options use a shared kitchen.")}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
           onAdd={(line) => { addLine(line); closeCustomizer(); }}
@@ -992,7 +1038,6 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
 function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[] {
   const options: string[] = [];
   if (line.variationName) options.push(line.variationName);
-  if (line.halal) options.push("Halal meat toppings");
   if (line.extraCheese) options.push("Extra cheese");
   for (const topping of line.toppings ?? []) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
   for (const modifier of line.modifiers ?? []) {

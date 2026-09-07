@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
-import MarketingConsent from "./MarketingConsent";
 import WebAppRegistration from "./WebAppRegistration";
 import "./globals.css";
 
@@ -93,11 +92,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html
-    lang="en-CA"
-    data-meta-pixel-id={process.env.META_PIXEL_ID || undefined}
-    data-ga4-id={process.env.GA4_MEASUREMENT_ID || undefined}
-    data-google-ads-id={process.env.GOOGLE_ADS_ID || undefined}
-    data-google-ads-label={process.env.GOOGLE_ADS_CONVERSION_LABEL || undefined}
-  ><body>{children}<MarketingConsent /><WebAppRegistration /></body></html>;
+  return <html lang="en-CA"><body>{children}<WebAppRegistration /></body></html>;
 }

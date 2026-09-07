@@ -579,3 +579,95 @@ export async function renderFeedbackReward(
       : `Pizza 62: thanks for the feedback. Code ${reward.code} takes ${worth} your next order.`,
   };
 }
+
+// --- customer: the restaurant writes back ------------------------------------
+
+/**
+ * The reply a member of staff typed, in the house envelope.
+ *
+ * **The words are carried in the payload, not read back at send time.** That is
+ * the opposite of the rule the rest of this file follows, and deliberately so:
+ * everything else in a message is a *fact about the order* that should describe
+ * itself correctly whenever it is sent, whereas a reply is a thing a person
+ * said at a moment. If the owner writes a second, better reply while the first
+ * is still queued, the first must go out as it was approved — or be replaced on
+ * purpose — rather than silently becoming a message nobody wrote.
+ *
+ * The customer's own words are quoted back for the same reason a support reply
+ * quotes the ticket: this may arrive days later, and "we are sorry about that"
+ * with no antecedent is a message that cannot be understood.
+ */
+export async function renderFeedbackReply(
+  order: OrderSnapshot,
+  payload: {
+    orderNumber?: string;
+    overall?: number;
+    writtenFeedback?: string | null;
+    reply?: string;
+  },
+): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const orderNumber = payload.orderNumber ?? order.order_number;
+  const rating = Number(payload.overall);
+  const rated = Number.isFinite(rating) && rating >= 1 && rating <= 5;
+  const written = (payload.writtenFeedback ?? "").trim();
+  const reply = (payload.reply ?? "").trim();
+
+  // The opening line is ours, and it has to fit what they actually said. The
+  // same "thanks for the kind words" sent to someone who rated us one star
+  // reads as a form letter that nobody opened, which is the exact impression
+  // replying at all is meant to dispel.
+  const opening = !rated
+    ? `Hi ${firstName(order.customer_name)}, thank you for your feedback on order ${orderNumber}. Someone here read it, and wanted to write back.`
+    : rating <= 2
+      ? `Hi ${firstName(order.customer_name)}, thank you for telling us about order ${orderNumber} — we are sorry it was not what it should have been. Someone here read every word, and this is their reply.`
+      : rating >= 4
+        ? `Hi ${firstName(order.customer_name)}, thank you for the kind words about order ${orderNumber}. Someone here read them, and wanted to write back.`
+        : `Hi ${firstName(order.customer_name)}, thank you for your feedback on order ${orderNumber}. Someone here read it, and this is their reply.`;
+
+  const sections: Section[] = [{ type: "paragraph", text: opening }];
+  if (rated) {
+    sections.push({
+      type: "callout",
+      label: `Order ${orderNumber}`,
+      value: `${rating} out of 5`,
+      tone: rating >= 4 ? "good" : rating <= 2 ? "warn" : "neutral",
+    });
+  }
+  if (written) sections.push({ type: "note", title: "What you told us", lines: [written] });
+  sections.push({ type: "divider" });
+  // Every non-empty line becomes its own paragraph, so a reply typed with
+  // breaks in it arrives with them. Collapsing it into one block is how a
+  // three-point answer turns into a wall.
+  for (const line of reply.split(/\n+/).map((entry) => entry.trim()).filter(Boolean)) {
+    sections.push({ type: "paragraph", text: line });
+  }
+  if (base) sections.push({ type: "button", label: "Order again", href: base });
+
+  const heading = !rated
+    ? "Thank you for your feedback"
+    : rating <= 2
+      ? "Thank you for telling us"
+      : rating >= 4
+        ? "Thank you for the kind words"
+        : "Thank you for your feedback";
+
+  const { emailHtml, emailText } = build({
+    eyebrow: "A reply from Pizza 62",
+    heading,
+    tone: "feedback",
+    preheader: reply.slice(0, 120) || `A reply about order ${orderNumber}.`,
+    baseUrl: base,
+    // The invitation is only honest because the dispatcher sets a Reply-To that
+    // reaches the restaurant. If that ever stops being true, this line goes.
+    signoff: "Just reply to this email if you would like to talk it through — it comes straight to us.",
+    sections,
+  });
+
+  return {
+    emailSubject: `A reply from Pizza 62 about order ${orderNumber}`,
+    emailText,
+    emailHtml,
+    smsBody: `Pizza 62 has replied to your feedback on order ${orderNumber} — it is in your email.`,
+  };
+}

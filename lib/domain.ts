@@ -18,7 +18,6 @@ export type PizzaPricingInput = {
   halfToppingUnitsBps: number;
   toppings: ToppingSelection[];
   extraCheese: boolean;
-  halalSurchargeCents?: number;
 };
 
 export type PizzaPricingResult = {
@@ -283,7 +282,6 @@ export const EXTRA_CHEESE_OPTION = "Extra Cheese";
 export const CRUST_OPTIONS = ["Regular Crust", "Thin Crust", "Thick Crust"] as const;
 export const DEFAULT_CRUST_OPTION = "Regular Crust";
 export const BAKE_SAUCE_OPTIONS = ["Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"] as const;
-export const HALAL_OPTION = "Halal meat toppings";
 
 /**
  * The cans in the fridge, and the wing sauces on the board.
@@ -353,6 +351,15 @@ export type ModifierSource =
   | "crust"
   | "bake_sauce"
   | "cheese"
+  /**
+   * Retired. Halal was withdrawn from the menu, so nothing offers, prices or
+   * prints it any more — but deals seeded before the withdrawal still carry a
+   * `source: "halal"` section in their stored `configuration_json`, and a cart
+   * saved in a browser still names one. The member stays so the code that
+   * recognises and discards those sections is type-checked rather than casting.
+   * Removing it is safe only once `RETIRED_SECTION_SOURCES` has been applied to
+   * every stored product configuration.
+   */
   | "halal";
 
 export type ModifierSection = {
@@ -374,13 +381,29 @@ export type ModifierSection = {
 
 export type ModifierValue = { value: string; placement: ToppingPlacement };
 
+/**
+ * Option groups that are no longer offered but may still sit in a stored product
+ * configuration or a browser's saved cart.
+ *
+ * A retired group is *discarded*, never rejected. `validateModifiers` refuses any
+ * modifier id it does not recognise, and carts persist in `localStorage` with no
+ * expiry — so deleting these sections outright would fail an existing cart at
+ * checkout with "An unsupported item option was submitted." and no way for the
+ * customer to understand why. Dropping them on the way through costs nothing and
+ * cannot strand anyone.
+ */
+export const RETIRED_SECTION_SOURCES: ReadonlySet<string> = new Set(["halal"]);
+
+export function isRetiredSection(section: Pick<ModifierSection, "source">): boolean {
+  return RETIRED_SECTION_SOURCES.has(section.source ?? "");
+}
+
 // The order a customer is asked to build a pizza in: what it is made of first
-// (cheese and halal), then how it is baked (crust, bake and sauce), then what goes
-// on it. Deals used to ask for toppings before the crust, which made the same
-// pizza feel like two different products depending on where it was ordered from.
+// (cheese), then how it is baked (crust, bake and sauce), then what goes on it.
+// Deals used to ask for toppings before the crust, which made the same pizza feel
+// like two different products depending on where it was ordered from.
 const SECTION_RANK: Record<string, number> = {
   cheese: 1,
-  halal: 2,
   crust: 3,
   bake_sauce: 4,
   pizza_base: 4,
@@ -447,7 +470,6 @@ export function priceToppingUnits(
 export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
   assertIntegerCents(input.basePriceCents, "Base price");
   assertIntegerCents(input.extraToppingPriceCents, "Extra topping price");
-  assertIntegerCents(input.halalSurchargeCents ?? 0, "Halal surcharge");
   const normalizedToppings = normalizeToppings(input.toppings);
   const selectedUnitsBps =
     toppingUnitsBps(normalizedToppings, input.halfToppingUnitsBps) +
@@ -466,10 +488,7 @@ export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
     includedUnitsBps,
     paidUnitsBps,
     extraToppingTotalCents,
-    totalCents:
-      input.basePriceCents +
-      extraToppingTotalCents +
-      (input.halalSurchargeCents ?? 0),
+    totalCents: input.basePriceCents + extraToppingTotalCents,
   };
 }
 

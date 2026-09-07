@@ -162,6 +162,7 @@ img { max-width: 100%; }
 .public-footer { background:var(--ink);color:var(--paper);padding:64px clamp(25px,6vw,92px) 28px;display:grid;grid-template-columns:1.6fr repeat(3,1fr);gap:45px }.footer-brand{display:grid;justify-items:start}.footer-brand .brand-logo{width:196px;height:74px;margin-bottom:16px}.footer-brand p{color:rgba(255,255,255,.5);font-size:12px}.public-footer>div:not(.footer-brand){display:grid;align-content:start;gap:12px}.public-footer>div>b{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--yellow);margin-bottom:8px}.public-footer>div>a{font-size:12px;color:rgba(255,255,255,.7)}.public-footer>small{grid-column:1/-1;border-top:1px solid rgba(255,255,255,.14);padding-top:22px;color:rgba(255,255,255,.4);font-size:9px}
 
 .modal-backdrop,.drawer-backdrop { position:fixed;inset:0;background:rgba(23,20,15,.72);z-index:200;display:grid;place-items:center;padding:20px;backdrop-filter:blur(5px);overflow:auto }.modal-backdrop--right{justify-items:end;padding:0}.modal-close{width:42px;height:42px;border:1px solid var(--line);border-radius:50%;background:white;font-size:25px;line-height:1;cursor:pointer}.delivery-gate{width:min(620px,100%);background:var(--paper);padding:48px;position:relative;box-shadow:var(--shadow);border:2px solid var(--ink)}.delivery-gate>.modal-close{position:absolute;right:20px;top:20px}.gate-number{font-family:Georgia,serif;color:var(--red);font-size:68px;font-weight:900;position:absolute;right:45px;bottom:35px;opacity:.08}.delivery-gate h2{font-size:58px}.delivery-gate>p:not(.eyebrow){font-family:Georgia,serif;color:var(--muted);line-height:1.5}.delivery-gate label,.checkout-modal label,.instructions-label{display:grid;gap:8px;font-size:10px;text-transform:uppercase;font-weight:900;letter-spacing:.7px;margin:24px 0 14px}.delivery-gate input,.checkout-modal input,.checkout-modal textarea,.instructions-label textarea{border:1px solid var(--line);background:white;padding:15px 16px;min-height:50px;color:var(--ink);text-transform:none;font-weight:600;letter-spacing:0}.delivery-gate input{font-family:Georgia,serif;font-size:22px;text-transform:uppercase}.gate-error,.gate-success{padding:12px 14px;font-size:11px;margin-bottom:12px}.gate-error{background:#ffe8e2;color:#8a2117}.gate-success{background:#e5f2e9;color:#1f5937}.primary-button{display:flex;justify-content:center;align-items:center;gap:18px;width:100%;border:2px solid var(--ink);background:var(--red);color:white;padding:16px 20px;min-height:54px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.7px;box-shadow:5px 5px 0 var(--ink);cursor:pointer}.primary-button:hover:not(:disabled){transform:translate(-2px,-2px);box-shadow:8px 8px 0 var(--ink)}.primary-button:disabled{opacity:.5;cursor:not-allowed}.text-button{border:0;background:transparent;text-decoration:underline;padding:13px;display:block;margin:5px auto;font-size:11px;font-weight:800;cursor:pointer}
+.labor-day-backdrop{z-index:900;background:rgba(18,15,10,.82)}.labor-day-popup{width:min(920px,100%);position:relative;overflow:hidden;padding:clamp(28px,5vw,58px);border:3px solid var(--ink);background:var(--yellow);box-shadow:14px 14px 0 var(--red-dark)}.labor-day-popup::after{content:"LABOR DAY";position:absolute;right:-22px;top:82px;z-index:0;color:rgba(255,255,255,.34);font-family:Georgia,serif;font-size:clamp(70px,12vw,150px);font-weight:900;line-height:.72;transform:rotate(-8deg);pointer-events:none}.labor-day-popup>.modal-close{position:absolute;right:18px;top:18px;z-index:3}.labor-day-popup__intro{position:relative;z-index:1;max-width:690px}.labor-day-popup__intro .eyebrow{color:var(--ink)}.labor-day-popup__intro .eyebrow span{background:var(--red)}.labor-day-popup__intro h2{margin:10px 0 12px;font-size:clamp(48px,7vw,80px);line-height:.88;letter-spacing:-4px}.labor-day-popup__intro h2 em{font-weight:400}.labor-day-popup__intro>p:last-child{max-width:650px;margin:0;font-family:Georgia,serif;font-size:17px;line-height:1.45}.labor-day-popup__offers{position:relative;z-index:1;display:grid;grid-template-columns:1.15fr .85fr;gap:14px;margin-top:28px}.labor-day-offer{display:grid;align-content:start;min-height:250px;padding:23px;border:2px solid var(--ink);background:var(--paper);box-shadow:6px 6px 0 var(--ink)}.labor-day-offer--primary{color:white;background:var(--red)}.labor-day-offer>span{font-size:10px;font-weight:900;letter-spacing:.8px;text-transform:uppercase}.labor-day-offer h3{margin:12px 0 6px;font-family:Georgia,serif;font-size:38px;letter-spacing:-1.8px}.labor-day-offer p{margin:0 0 18px;line-height:1.45}.labor-day-offer strong{margin-top:auto;font-family:Georgia,serif;font-size:32px}.labor-day-offer strong small{font-family:Arial,sans-serif;font-size:12px;text-transform:uppercase}.labor-day-offer button{min-height:48px;margin-top:15px;padding:12px 14px;border:2px solid var(--ink);background:var(--yellow);color:var(--ink);font-size:10px;font-weight:900;text-transform:uppercase;cursor:pointer}.labor-day-offer:not(.labor-day-offer--primary) button{background:var(--green);color:white}.quantity-choice>p{margin:0 0 14px;color:var(--muted)}.quantity-choice>div{display:grid;grid-template-columns:46px minmax(110px,180px) 46px;gap:8px;align-items:end}.quantity-choice>div>button{height:50px;border:2px solid var(--ink);background:var(--yellow);font-size:24px;font-weight:900;cursor:pointer}.quantity-choice>div>button:disabled{opacity:.4;cursor:not-allowed}.quantity-choice label{display:grid;gap:5px;font-size:9px;font-weight:900;text-transform:uppercase}.quantity-choice input{height:50px;border:2px solid var(--ink);background:white;padding:8px;text-align:center;font-family:Georgia,serif;font-size:24px;font-weight:900}.quantity-choice>small{display:block;margin-top:9px;color:var(--muted)}
 
 /* The delivery-or-pickup prompt. Paper-and-ink like the postal-code gate, and
    the two choices echo the hero's method switch on purpose — it is the same
@@ -1576,56 +1577,28 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .menu-item-thumb { width:48px; height:48px; }
   .product-admin-card > summary > .menu-edit-label { grid-column:1/-1; grid-row:auto; justify-self:end; }
 }
-/* Optional ad measurement is offered without obscuring the menu or checkout. */
-.cookie-panel {
-  position: fixed;
-  z-index: 1200;
-  right: 1rem;
-  bottom: 1rem;
-  left: 1rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.25rem;
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 1rem 1.15rem;
-  color: #fffaf0;
-  background: #173b2c;
-  border: 1px solid rgba(255, 255, 255, .22);
-  border-radius: 1rem;
-  box-shadow: 0 1rem 3rem rgba(0, 0, 0, .28);
-}
-.cookie-panel strong { display: block; font-size: 1.05rem; }
-.cookie-panel p { max-width: 50rem; margin: .3rem 0 0; line-height: 1.45; }
-.cookie-panel small { display: block; margin-top: .35rem; opacity: .8; }
-.cookie-actions { display: flex; flex: 0 0 auto; gap: .65rem; }
-.cookie-actions .primary-button { white-space: nowrap; }
-.cookie-decline {
-  padding: .75rem 1rem;
-  color: inherit;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, .5);
-  border-radius: 999px;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 800;
-}
-.footer-text-button {
-  width: fit-content;
-  min-height: 28px;
-  padding: 0;
-  color: rgba(255, 255, 255, .7);
-  background: none;
-  border: 0;
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-}
-.footer-text-button:hover, .footer-text-button:focus-visible { text-decoration: underline; }
 @media (max-width: 720px) {
-  .cookie-panel { align-items: stretch; flex-direction: column; }
-  .cookie-actions { width: 100%; }
-  .cookie-actions > * { flex: 1; justify-content: center; }
+  .labor-day-popup{padding:55px 18px 24px;box-shadow:8px 8px 0 var(--red-dark)}
+  .labor-day-popup__intro h2{font-size:48px;letter-spacing:-3px}.labor-day-popup__intro>p:last-child{font-size:15px}
+  .labor-day-popup__offers{grid-template-columns:1fr;max-height:50vh;overflow:auto;padding:2px 7px 9px 2px}
+  .labor-day-offer{min-height:230px}.labor-day-offer h3{font-size:32px}
+}
+
+/* Replying to feedback. Sits inside the feedback row, under the internal note,
+   and is deliberately the wider, quieter block of the two: the note is a phrase
+   typed on the way past, the reply is something a customer will read. */
+.feedback-reply { display:grid; gap:8px; margin-top:12px; padding-top:12px; border-top:1px dashed #d9ded9; }
+.feedback-reply__label { font-size:8px; font-weight:900; letter-spacing:.7px; text-transform:uppercase; color:#526057; }
+.feedback-reply textarea { min-height:78px; padding:11px; border:1px solid #d9ded9; border-radius:8px; background:white; font-size:11px; line-height:1.5; resize:vertical; }
+.feedback-reply__actions { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.feedback-reply__actions span { color:#768078; font-size:9px; }
+.feedback-reply__actions .staff-button:disabled { opacity:.4; cursor:not-allowed; }
+.feedback-reply__hint { margin:0; color:#768078; font-size:9px; line-height:1.45; }
+.feedback-reply__sent { padding:10px 12px; border-left:3px solid #173b2c; border-radius:0 8px 8px 0; background:#eef4f0; }
+.feedback-reply__sent strong { display:block; color:#173b2c; font-size:9px; text-transform:uppercase; letter-spacing:.6px; }
+.feedback-reply__sent p { margin:5px 0 0; color:#3d4a41; font-size:10px; line-height:1.5; white-space:pre-wrap; }
+.feedback-reply__sent + button { justify-self:start; }
+@media (max-width: 700px) {
+  .feedback-reply__actions { align-items:stretch; flex-direction:column; }
+  .feedback-reply__actions .staff-button { width:100%; }
 }

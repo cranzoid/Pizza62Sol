@@ -19,7 +19,6 @@ export type MenuProductSeed = {
   taxable?: boolean;
   pickupEligible?: boolean;
   deliveryEligible?: boolean;
-  halalCapable?: boolean;
   configuration?: Record<string, unknown>;
   variations?: Array<{
     id: string;
@@ -30,7 +29,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-08-29-game-day-special-r2";
+export const MENU_SEED_VERSION = "2026-09-08-labor-day-wing-cap";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -46,30 +45,37 @@ export const MENU_CATEGORIES = [
   ["hamilton-heroes", "Hamilton Heroes", "hamilton-heroes", 110],
 ] as const;
 
+/**
+ * `[id, name, isMeat]`.
+ *
+ * `isMeat` no longer gates anything — it used to drive the halal topping filter —
+ * but it is still true of the topping and the admin topping list labels each one
+ * "Meat" or "Vegetarian" from it, so it stays.
+ */
 export const TOPPING_SEEDS = [
-  ["pepperoni", "Pepperoni", true, true],
-  ["italian-sausage", "Italian Sausage", true, true],
-  ["hot-sausage", "Hot Sausage", true, true],
-  ["ham", "Ham", true, false],
-  ["mushrooms", "Mushrooms", false, false],
-  ["tomatoes", "Tomatoes", false, false],
-  ["green-peppers", "Green Peppers", false, false],
-  ["hot-peppers", "Hot Peppers", false, false],
-  ["jalapenos", "Jalapeños", false, false],
-  ["onions", "Onions", false, false],
-  ["green-olives", "Green Olives", false, false],
-  ["anchovies", "Anchovies", false, false],
-  ["pineapple", "Pineapple", false, false],
-  ["garlic", "Garlic", false, false],
-  ["real-bacon", "Real Bacon", true, false],
-  ["bacon-bits", "Bacon Bits", true, false],
-  ["black-olives", "Black Olives", false, false],
-  ["real-chicken", "Real Chicken", true, true],
-  ["feta-cheese", "Feta Cheese", false, false],
-  ["sun-dried-tomatoes", "Sun-Dried Tomatoes", false, false],
-  ["ground-beef", "Ground Beef", true, true],
-  ["meatballs", "Meatballs", true, true],
-  ["corn", "Corn", false, false],
+  ["pepperoni", "Pepperoni", true],
+  ["italian-sausage", "Italian Sausage", true],
+  ["hot-sausage", "Hot Sausage", true],
+  ["ham", "Ham", true],
+  ["mushrooms", "Mushrooms", false],
+  ["tomatoes", "Tomatoes", false],
+  ["green-peppers", "Green Peppers", false],
+  ["hot-peppers", "Hot Peppers", false],
+  ["jalapenos", "Jalapeños", false],
+  ["onions", "Onions", false],
+  ["green-olives", "Green Olives", false],
+  ["anchovies", "Anchovies", false],
+  ["pineapple", "Pineapple", false],
+  ["garlic", "Garlic", false],
+  ["real-bacon", "Real Bacon", true],
+  ["bacon-bits", "Bacon Bits", true],
+  ["black-olives", "Black Olives", false],
+  ["real-chicken", "Real Chicken", true],
+  ["feta-cheese", "Feta Cheese", false],
+  ["sun-dried-tomatoes", "Sun-Dried Tomatoes", false],
+  ["ground-beef", "Ground Beef", true],
+  ["meatballs", "Meatballs", true],
+  ["corn", "Corn", false],
 ] as const;
 
 // Retained so pizzas configured before crust and bake/sauce were split into their
@@ -100,10 +106,6 @@ const bakeSauce = (id: string, group?: string): ModifierSectionSeed => ({
 const cheese = (id: string, extraPriceCents: number, group?: string): ModifierSectionSeed => ({
   id, label: "Cheese", group, source: "cheese", min: 1, max: 1, included: 1,
   optionPrices: { [EXTRA_CHEESE_OPTION]: extraPriceCents },
-});
-
-const halal = (id: string, group?: string): ModifierSectionSeed => ({
-  id, label: "Halal meat", group, source: "halal", min: 0, max: 1,
 });
 
 const toppings = (
@@ -169,8 +171,8 @@ const sliceTopping = (id: string, group: string): ModifierSectionSeed => ({
 });
 
 // Every pizza inside a deal is built in the same order as a pizza ordered on its
-// own: cheese and halal, then crust and bake/sauce, then toppings. `index` is null
-// for single-pizza deals so the existing "pizza-toppings" section id is preserved.
+// own: cheese, then crust and bake/sauce, then toppings. `index` is null for
+// single-pizza deals so the existing "pizza-toppings" section id is preserved.
 const pizzaSections = (
   index: number | null,
   includedToppings: number,
@@ -181,7 +183,6 @@ const pizzaSections = (
   const group = index === null ? "Your pizza" : `Pizza ${index}`;
   return [
     cheese(`pizza${suffix}-cheese`, extraPriceCents, group),
-    halal(`pizza${suffix}-halal`, group),
     crust(`pizza${suffix}-crust`, group),
     bakeSauce(`pizza${suffix}-bake-sauce`, group),
     toppings(
@@ -213,7 +214,6 @@ const bundle = (
   basePriceCents: priceCents,
   pickupEligible: true,
   deliveryEligible: !pickupOnly,
-  halalCapable: true,
   configuration: { sections: orderModifierSections(sections), specialInstructionsEnabled: true },
 });
 
@@ -230,7 +230,6 @@ const standalonePizzas: MenuProductSeed[] = PIZZA_SIZES.map((size) => ({
   basePriceCents: size.basePriceCents,
   pickupEligible: false,
   deliveryEligible: true,
-  halalCapable: true,
   configuration: { variationLabel: "Your pizza", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [
     {
@@ -273,7 +272,6 @@ const specialtyPizzas: MenuProductSeed[] = specialtyRecipes.map(([id, name, desc
   description,
   productType: "pizza",
   basePriceCents: 1699,
-  halalCapable: true,
   configuration: { fixedRecipe: true, recipeToppingIds, presetExtraCheese, crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: specialtyPrices.map(([variationName, price, extra]) => ({
     id: `specialty-${id}-${slug(variationName)}`,
@@ -353,13 +351,13 @@ const configurableSides: MenuProductSeed[] = [
   {
     id: "pizza-three-item-sub", categoryId: "sides", name: "Pizza 3 Item Sub",
     description: "Pizza sub with three included toppings.", productType: "pizza", basePriceCents: 899,
-    halalCapable: true, configuration: { variationLabel: "Included offer", specialInstructionsEnabled: true },
+    configuration: { variationLabel: "Included offer", specialInstructionsEnabled: true },
     variations: [{ id: "pizza-three-item-sub-offer", name: "3 Items", basePriceCents: 899, extraToppingPriceCents: 160, includedToppingUnitsBps: 30_000 }],
   },
   {
     id: "panzerotti-three-items", categoryId: "sides", name: "Panzerotti · 3 Items",
     description: "Panzerotti with three included toppings.", productType: "pizza", basePriceCents: 1199,
-    halalCapable: true, configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
+    configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
     variations: [{ id: "panzerotti", name: "Panzerotti", basePriceCents: 1199, extraToppingPriceCents: 210, includedToppingUnitsBps: 30_000 }],
   },
   {
@@ -371,7 +369,7 @@ const configurableSides: MenuProductSeed[] = [
 
 const pickupPizza = (id: string, name: string, price: number, size: string, extra: number, included: number): MenuProductSeed => ({
   id, categoryId: "pickup-specials", name, description: `${included} topping${included === 1 ? "" : "s"} included.`,
-  productType: "pizza", basePriceCents: price, pickupEligible: true, deliveryEligible: false, halalCapable: true,
+  productType: "pizza", basePriceCents: price, pickupEligible: true, deliveryEligible: false,
   configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [{ id: `${id}-size`, name: size, basePriceCents: price, extraToppingPriceCents: extra, includedToppingUnitsBps: included * 10_000 }],
 });
@@ -474,9 +472,18 @@ const singlePizzaPickupSpecials: MenuProductSeed[] = [
 const pickupSpecials: MenuProductSeed[] = [
   ...sliceSpecials,
   ...singlePizzaPickupSpecials,
-  bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings & 3 Pops", 2599, "Large pizza with 3 toppings, 1 lb wings and 3 canned pops.", [
-    ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3),
-  ], true),
+  {
+    ...bundle("pickup-large-wings", "pickup-specials", "Large Pizza, 1 lb Wings, 3 Pops & Dip", 2599, "Large pizza with 3 toppings, 1 lb wings, 3 canned pops and 1 dipping sauce. Free standard delivery.", [
+      ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3), includedDip(),
+    ]),
+    configuration: {
+      sections: orderModifierSections([
+        ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3), includedDip(),
+      ]),
+      specialInstructionsEnabled: true,
+      freeDelivery: true,
+    },
+  },
   { ...wings.find((item) => item.id === "1-lb-wings")!, id: "pickup-one-lb-wings", categoryId: "pickup-specials", deliveryEligible: false },
   pickupPizza("pickup-medium-five", "Medium Pizza · 5 Toppings", 1299, "Medium", 210, 5),
   bundle("pickup-two-large-six", "pickup-specials", "2 Large Pizzas · 6 Toppings Shared", 2799, "Share six included toppings across both large pizzas any way you like.", [
@@ -484,6 +491,39 @@ const pickupSpecials: MenuProductSeed[] = [
     ...pizzaSections(2, 0, 230, { sharedGroup: "six-shared", sharedIncluded: 6 }),
   ], true),
 ];
+
+export const LABOR_DAY_WINGS_PRODUCT_ID = "labor-day-dollar-wings";
+export const LABOR_DAY_COMBO_PRODUCT_ID = "pickup-large-wings";
+
+export const LABOR_DAY_AVAILABILITY: WeeklyAvailability = {
+  weekdays: [0, 1, 2, 3, 4, 5, 6],
+  startMinute: 0,
+  endMinute: 1440,
+  timeZone: "America/Toronto",
+  startDate: "2026-09-07",
+  endDate: "2026-09-07",
+  label: "Labor Day · Sept 7",
+};
+
+const laborDayWings: MenuProductSeed = {
+  id: LABOR_DAY_WINGS_PRODUCT_ID,
+  categoryId: "pickup-specials",
+  name: "Labor Day Wings · $1 Each",
+  description: "Chicken wings for $1 each. Choose your quantity and sauce or dry rub. Pickup only.",
+  productType: "configurable",
+  basePriceCents: 100,
+  pickupEligible: true,
+  deliveryEligible: false,
+  configuration: {
+    sections: [wingFlavours(1)],
+    specialInstructionsEnabled: true,
+    availability: LABOR_DAY_AVAILABILITY,
+    featured: true,
+    quantitySelectable: true,
+    maxQuantity: 40,
+    unitLabel: "wing",
+  },
+};
 
 /**
  * The Game Day Special: two large 3-topping pizzas, 2 lb wings, garlic bread and
@@ -579,6 +619,7 @@ const heroes: MenuProductSeed[] = [
 ];
 
 export const MENU_PRODUCTS: MenuProductSeed[] = [
+  laborDayWings,
   gameDaySpecial,
   ...standalonePizzas,
   ...specialtyPizzas,

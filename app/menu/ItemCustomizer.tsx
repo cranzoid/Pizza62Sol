@@ -32,12 +32,12 @@ import {
   DEFAULT_CRUST_OPTION,
   DRINK_OPTIONS,
   EXTRA_CHEESE_OPTION,
-  HALAL_OPTION,
   TWO_LITRE_DRINK_OPTIONS,
   WING_FLAVOURS,
   formatMoney,
   modifierUnitsBps,
   normalizeModifierValues,
+  isRetiredSection,
   orderModifierSections,
   pricePizza,
   priceToppingUnits,
@@ -60,7 +60,6 @@ export type CustomizerProduct = {
   product_type: "pizza" | "simple" | "bundle" | "configurable";
   base_price_cents: number;
   taxable: number;
-  halal_capable: number;
   sold_out: number;
   setup_required: number;
   configuration: Record<string, unknown>;
@@ -79,8 +78,6 @@ export type CustomizerTopping = {
   id: string;
   name: string;
   is_meat: number;
-  has_halal_version: number;
-  halal_available: number;
 };
 
 export type ModifierSelection = {
@@ -114,7 +111,6 @@ export type BuiltItem = {
   omitToppings?: string[];
   modifiers?: ModifierSelection[];
   extraCheese?: boolean;
-  halal?: boolean;
   specialInstructions?: string;
   freeDelivery?: boolean;
 };
@@ -138,7 +134,6 @@ export function toOrderItems(items: BuiltItem[]) {
       values: modifier.values.map((value) => (value.placement ? { value: value.value, placement: value.placement } : value.value)),
     })),
     extraCheese: line.extraCheese,
-    halal: line.halal,
     specialInstructions: line.specialInstructions,
   }));
 }
@@ -161,25 +156,21 @@ function ArrowIcon() {
 export function ToppingPicker({
   toppings,
   selected,
-  halalOnly,
   allowPlacement = true,
   onToggle,
   onPlacement,
 }: {
   toppings: CustomizerTopping[];
   selected: SelectedTopping[];
-  halalOnly: boolean;
   allowPlacement?: boolean;
   onToggle: (topping: CustomizerTopping) => void;
   onPlacement: (toppingId: string, placement: ToppingPlacement) => void;
 }) {
   return <div className="topping-grid">{toppings.map((topping) => {
     const entry = selected.find((item) => item.toppingId === topping.id);
-    const unavailableForHalal = Boolean(halalOnly && topping.is_meat && !(topping.has_halal_version && topping.halal_available));
     return <div className={`topping-chip ${entry ? "topping-chip--active" : ""}`} key={topping.id}>
-      <button className={entry ? "active" : ""} type="button" disabled={unavailableForHalal} onClick={() => onToggle(topping)}>
-        <span>{entry ? "✓" : unavailableForHalal ? "×" : "+"}</span>{topping.name}
-        {halalOnly && topping.is_meat ? <small>{unavailableForHalal ? "Not halal" : "Halal"}</small> : null}
+      <button className={entry ? "active" : ""} type="button" onClick={() => onToggle(topping)}>
+        <span>{entry ? "✓" : "+"}</span>{topping.name}
       </button>
       {entry && allowPlacement ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
         {PLACEMENTS.map(([placement, symbol, label]) => <button
@@ -208,7 +199,6 @@ export function PizzaCustomizer({
   product,
   variations,
   toppings,
-  halalNotice,
   halfToppingUnitsBps,
   onClose,
   onAdd,
@@ -216,7 +206,6 @@ export function PizzaCustomizer({
   product: CustomizerProduct;
   variations: CustomizerVariation[];
   toppings: CustomizerTopping[];
-  halalNotice: string;
   halfToppingUnitsBps: number;
   onClose: () => void;
   onAdd: (line: BuiltItem) => void;
@@ -248,13 +237,11 @@ export function PizzaCustomizer({
         .filter((topping): topping is CustomizerTopping => Boolean(topping))
     : [];
   const cheeseEnabled = configuration.cheeseEnabled !== false;
-  const halalEnabled = Boolean(product.halal_capable);
   const crustOptions = stringList(configuration.crustOptions);
   const bakeSauceOptions = stringList(configuration.bakeSauceOptions);
   // Pizzas configured before crust and bake/sauce were split keep one combined group.
   const legacyBaseOptions = !crustOptions.length && !bakeSauceOptions.length ? stringList(configuration.pizzaBaseOptions) : [];
   const [cheese, setCheese] = useState(configuration.presetExtraCheese ? EXTRA_CHEESE_OPTION : DEFAULT_CHEESE_OPTION);
-  const [halal, setHalal] = useState(false);
   const [crust, setCrust] = useState(() => (crustOptions.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : crustOptions[0] ?? ""));
   const [bakeSauce, setBakeSauce] = useState<string[]>([]);
   const [legacyBase, setLegacyBase] = useState<string[]>([]);
@@ -290,28 +277,20 @@ export function PizzaCustomizer({
   });
   const setPlacement = (toppingId: string, placement: ToppingPlacement) =>
     setSelected((current) => current.map((entry) => entry.toppingId === toppingId ? { ...entry, placement } : entry));
-  const chooseHalal = (next: boolean) => {
-    setHalal(next);
-    if (next) setSelected((current) => current.filter((entry) => {
-      const topping = toppings.find((candidate) => candidate.id === entry.toppingId);
-      return !topping?.is_meat || Boolean(topping.has_halal_version && topping.halal_available);
-    }));
-  };
   // The customer is always asked in the same order: what it is made of, how it is
   // baked, then what goes on it. Steps that are switched off are skipped and the
   // numbering closes up behind them. The owner can put toppings before the crust.
   const steps = [
     "size",
-    cheeseEnabled || halalEnabled ? "cheese" : "",
+    cheeseEnabled ? "cheese" : "",
     ...(configuration.toppingsFirst
       ? ["toppings", crustOptions.length ? "crust" : "", bakeSauceOptions.length ? "bake" : "", legacyBaseOptions.length ? "legacy" : ""]
       : [crustOptions.length ? "crust" : "", bakeSauceOptions.length ? "bake" : "", legacyBaseOptions.length ? "legacy" : "", "toppings"]),
   ].filter(Boolean);
   const stepNumber = (name: string) => String(steps.indexOf(name) + 1);
   const sizePanel = <><fieldset><legend><span>{stepNumber("size")}</span> {String(configuration.variationLabel ?? "Choose your size")}</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset></>;
-  const cheesePanel = <>{cheeseEnabled || halalEnabled ? <fieldset><legend><span>{stepNumber("cheese")}</span> {cheeseEnabled && halalEnabled ? "Cheese & halal" : cheeseEnabled ? "Cheese" : "Halal"}</legend>
+  const cheesePanel = <>{cheeseEnabled ? <fieldset><legend><span>{stepNumber("cheese")}</span> Cheese</legend>
             {cheeseEnabled ? <div className="size-options cheese-options">{CHEESE_OPTIONS.map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => setCheese(option)} /><span><b>{option.replace(" Cheese", "")}</b><small>{option === EXTRA_CHEESE_OPTION ? `Counts as one topping${variation ? ` · ${formatMoney(variation.extra_topping_price_cents)}` : ""}` : "No extra charge"}</small></span></label>)}</div> : null}
-            {halalEnabled ? <div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => chooseHalal(event.target.checked)} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div> : null}
           </fieldset> : null}</>;
   const crustPanel = <>{crustOptions.length ? <fieldset><legend><span>{stepNumber("crust")}</span> Crust</legend><div className="topping-grid">{crustOptions.map((option) => <button className={crust === option ? "active" : ""} type="button" key={option} aria-pressed={crust === option} onClick={() => setCrust(option)}><span>{crust === option ? "✓" : "+"}</span>{option}</button>)}</div></fieldset> : null}</>;
   const bakePanel = <>{bakeSauceOptions.length ? <fieldset><legend><span>{stepNumber("bake")}</span> Bake &amp; sauce</legend><div className="topping-grid">{bakeSauceOptions.map((option) => { const active = bakeSauce.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setBakeSauce((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div><div className="allowance-meter"><span>Optional</span><b>Choose up to 2</b></div></fieldset> : null}</>;
@@ -335,7 +314,7 @@ export function PizzaCustomizer({
               </div>
             </> : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
             {fixedRecipe ? <p className="editor-hint">Add anything extra below.</p> : null}
-            <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} halalOnly={halal} onToggle={toggleTopping} onPlacement={setPlacement} />
+            <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} onToggle={toggleTopping} onPlacement={setPlacement} />
             <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
@@ -353,7 +332,7 @@ export function PizzaCustomizer({
             : <>{crustPanel}{bakePanel}{legacyPanel}{toppingsPanel}</>}
           <label className="instructions-label">Special instructions <small>Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: cut into squares" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, halal, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
@@ -362,23 +341,21 @@ export function PizzaCustomizer({
 const LEGACY_BASE_FALLBACK = ["Thin Crust", "Thick Crust", "Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"];
 
 // Deals build each pizza with the same choices, in the same order, as a pizza
-// ordered on its own — cheese and halal, crust, bake & sauce, then toppings — and
+// ordered on its own — cheese, crust, bake & sauce, then toppings — and
 // group them under a heading per pizza so a two-pizza deal reads as two pizzas.
-export function GenericCustomizer({ product, toppings, halalNotice, halfToppingUnitsBps, onClose, onAdd }: { product: CustomizerProduct; toppings: CustomizerTopping[]; halalNotice: string; halfToppingUnitsBps: number; onClose: () => void; onAdd: (line: BuiltItem) => void }) {
+export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onClose, onAdd }: { product: CustomizerProduct; toppings: CustomizerTopping[]; halfToppingUnitsBps: number; onClose: () => void; onAdd: (line: BuiltItem) => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
+  // Retired groups are dropped here, so they neither render nor consume a step
+  // number. Deals seeded before halal was withdrawn still carry one in their
+  // stored configuration; the server discards it on the way back in.
   const sections = useMemo(
     () => orderModifierSections(
-      (Array.isArray(product.configuration.sections) ? product.configuration.sections : []) as ModifierSection[],
+      ((Array.isArray(product.configuration.sections) ? product.configuration.sections : []) as ModifierSection[])
+        .filter((section) => !isRetiredSection(section)),
       Boolean(product.configuration.toppingsFirst),
     ),
     [product.configuration],
   );
-  // H-05: deals are flagged halal-capable but the generic customizer offered no
-  // halal control and the server rejected the flag outright, so the preference
-  // the menu advertises could not actually be ordered on the products that
-  // advertise it. The same one-line control the pizza customizer has.
-  const halalEnabled = Boolean(product.halal_capable);
-  const [halal, setHalal] = useState(false);
   const [selected, setSelected] = useState<Record<string, ModifierSelection["values"]>>(() => {
     const initial: Record<string, ModifierSelection["values"]> = {};
     for (const section of sections) {
@@ -392,6 +369,10 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
     return initial;
   });
   const [instructions, setInstructions] = useState("");
+  const quantitySelectable = Boolean(product.configuration.quantitySelectable);
+  const maximumQuantity = Math.max(1, Math.min(100, Number(product.configuration.maxQuantity) || 20));
+  const unitLabel = String(product.configuration.unitLabel ?? "item");
+  const [quantity, setQuantity] = useState(1);
   const optionsFor = (section: ModifierSection): Array<{ value: string; label: string }> => {
     if (section.source === "toppings") return toppings.map((entry) => ({ value: entry.id, label: entry.name }));
     const configured = section.options?.length ? section.options : (
@@ -401,8 +382,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
             : section.source === "cheese" ? [...CHEESE_OPTIONS]
               : section.source === "crust" ? [...CRUST_OPTIONS]
                 : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
-                  : section.source === "halal" ? [HALAL_OPTION]
-                    : LEGACY_BASE_FALLBACK
+                  : LEGACY_BASE_FALLBACK
     );
     return configured.map((entry) => ({ value: entry, label: entry }));
   };
@@ -421,8 +401,6 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
     ...current,
     [sectionId]: (current[sectionId] ?? []).map((entry) => entry.value === value ? { ...entry, placement } : entry),
   }));
-  const halalFor = (section: ModifierSection) =>
-    sections.some((candidate) => candidate.source === "halal" && candidate.group === section.group && valuesOf(candidate.id).length > 0);
   const unitsFor = (section: ModifierSection) =>
     modifierUnitsBps(normalizeModifierValues(valuesOf(section.id).map((entry) => ({ value: entry.value, placement: entry.placement }))), halfToppingUnitsBps);
   const valid = sections.every((section) => valuesOf(section.id).length >= section.min);
@@ -458,7 +436,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
       <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
-          {halalEnabled ? <fieldset><legend>Halal</legend><div className="choice-list"><label><input type="checkbox" checked={halal} onChange={(event) => setHalal(event.target.checked)} /><span><b>Use halal meat toppings</b><small>{halalNotice}</small></span><em>No surcharge</em></label></div></fieldset> : null}
+          {quantitySelectable ? <fieldset className="quantity-choice"><legend>How many {unitLabel}s?</legend><p>This special is priced at {formatMoney(product.base_price_cents)} per {unitLabel}.</p><div><button type="button" aria-label={`Remove one ${unitLabel}`} disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximumQuantity} inputMode="numeric" value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(maximumQuantity, Number(event.target.value) || 1)))} /></label><button type="button" aria-label={`Add one ${unitLabel}`} disabled={quantity >= maximumQuantity} onClick={() => setQuantity((current) => Math.min(maximumQuantity, current + 1))}>+</button></div><small>Up to {maximumQuantity} {unitLabel}s per order.</small></fieldset> : null}
           {layout.map(({ section, step, groupHeading }) => {
             const values = valuesOf(section.id);
             const included = section.sharedGroup ? section.sharedIncluded ?? 0 : section.included ?? 0;
@@ -472,13 +450,11 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
               <fieldset>
                 <legend><span>{step}</span> {section.label}</legend>
                 {isToppings ? <div className="setup-alert"><strong>{section.sharedGroup ? `${included} toppings shared across this deal` : `${included} toppings included in this price`}</strong><p>Each additional topping is {formatMoney(section.extraPriceCents ?? 0)}. A topping on half counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>
-                  : section.source === "halal" ? <div className="setup-alert"><strong>Halal meat toppings</strong><p>{halalNotice}</p></div>
                     : section.extraPriceCents ? <div className="setup-alert"><strong>Optional add-on</strong><p>This choice adds {formatMoney(section.extraPriceCents)}.</p></div> : null}
                 {isToppings
                   ? <ToppingPicker
                       toppings={toppings}
                       selected={values.map((entry) => ({ toppingId: entry.value, placement: entry.placement ?? "whole", name: entry.label }))}
-                      halalOnly={halalFor(section)}
                       allowPlacement={section.max > 1}
                       onToggle={(topping) => toggle(section, { value: topping.id, label: topping.name })}
                       onPlacement={(toppingId, placement) => setPlacement(section.id, toppingId, placement)}
@@ -490,7 +466,7 @@ export function GenericCustomizer({ product, toppings, halalNotice, halfToppingU
           })}
           <label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your item</small><strong>{formatMoney(product.base_price_cents + extras)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity: 1, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, halal, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>{quantitySelectable ? `${quantity} ${unitLabel}${quantity === 1 ? "" : "s"} · ${formatMoney(product.base_price_cents)} each` : "Your item"}</small><strong>{formatMoney((product.base_price_cents + extras) * quantity)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );

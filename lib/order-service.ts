@@ -3,10 +3,10 @@ import {
   BAKE_SAUCE_OPTIONS,
   CHEESE_OPTIONS,
   CRUST_OPTIONS,
-  HALAL_OPTION,
   explainPromotionMiss,
   generateOpaqueToken,
   hashOpaqueToken,
+  isRetiredSection,
   isWithinWeeklyAvailability,
   modifierUnitsBps,
   normalizeModifierValues,
@@ -50,7 +50,6 @@ export type OrderRequest = {
     /** H-03: recipe toppings the customer asked to leave off. Must be a subset. */
     omitToppings?: string[];
     extraCheese?: boolean;
-    halal?: boolean;
     modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
     specialInstructions?: string;
   }>;
@@ -93,7 +92,6 @@ type DbProduct = {
   taxable: number;
   pickup_eligible: number;
   delivery_eligible: number;
-  halal_capable: number;
   promotion_eligible: number;
   active: number;
   sold_out: number;
@@ -162,8 +160,6 @@ type TaxTipSetting = {
 
 type OperationSetting = {
   halfToppingUnitsBps: number;
-  halalSurchargeType: string;
-  halalSurchargeAmount: number;
   feedbackDelayMinutes: number;
 };
 
@@ -279,8 +275,7 @@ function modifierOptions(
             : section.source === "crust" ? [...CRUST_OPTIONS]
               : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
                 : section.source === "cheese" ? [...CHEESE_OPTIONS]
-                  : section.source === "halal" ? [HALAL_OPTION]
-                    : []
+                  : []
   );
   return new Map(options.map((value) => [value, value]));
 }
@@ -298,14 +293,25 @@ function validateModifiers(
   toppingNames: Map<string, string>,
   halfToppingUnitsBps: number,
 ): { snapshot: ModifierSnapshot[]; extraCents: number } {
-  const provided = new Map((input ?? []).map((entry) => [entry.id ?? "", entry.values ?? []]));
-  if ([...provided.keys()].some((id) => !sections.some((section) => section.id === id))) {
+  // A retired group (halal) is dropped from both sides before anything is checked,
+  // so a deal whose stored configuration still lists one, and a cart saved in a
+  // browser before it was withdrawn, both go through as if it had never existed.
+  // Rejecting instead would fail an existing cart at checkout with "An unsupported
+  // item option was submitted." — see RETIRED_SECTION_SOURCES in lib/domain.
+  const retiredIds = new Set(sections.filter(isRetiredSection).map((section) => section.id));
+  const liveSections = sections.filter((section) => !retiredIds.has(section.id));
+  const provided = new Map(
+    (input ?? [])
+      .filter((entry) => !retiredIds.has(entry.id ?? ""))
+      .map((entry) => [entry.id ?? "", entry.values ?? []]),
+  );
+  if ([...provided.keys()].some((id) => !liveSections.some((section) => section.id === id))) {
     throw new OrderValidationError("An unsupported item option was submitted.");
   }
   const snapshot: ModifierSnapshot[] = [];
   const sharedUnits = new Map<string, number>();
   let extraCents = 0;
-  for (const section of sections) {
+  for (const section of liveSections) {
     const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
     const optionPrices = section.optionPrices ?? {};
@@ -422,18 +428,16 @@ async function validateItems(
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
   const toppingRows = await database
-    .prepare("SELECT id, name, is_meat, has_halal_version, halal_available FROM toppings WHERE active = 1")
-    .all<{ id: string; name: string; is_meat: number; has_halal_version: number; halal_available: number }>();
+    .prepare("SELECT id, name FROM toppings WHERE active = 1")
+    .all<{ id: string; name: string }>();
   const allowedToppings = new Set(toppingRows.results.map((row) => row.id));
   const toppingNames = new Map(toppingRows.results.map((row) => [row.id, row.name]));
-  const meatToppings = new Set(toppingRows.results.filter((row) => row.is_meat).map((row) => row.id));
-  const halalMeatToppings = new Set(toppingRows.results.filter((row) => row.is_meat && row.has_halal_version && row.halal_available).map((row) => row.id));
   const validated: ValidatedItem[] = [];
   for (const input of items) {
     const product = await database
       .prepare(
         `SELECT id, category_id, name, product_type, base_price_cents, taxable,
-                pickup_eligible, delivery_eligible, halal_capable, promotion_eligible,
+                pickup_eligible, delivery_eligible, promotion_eligible,
                 active, sold_out, setup_required, configuration_json
          FROM products WHERE id = ?`,
       )
@@ -448,12 +452,16 @@ async function validateItems(
     if ((fulfilment === "pickup" && !product.pickup_eligible) || (fulfilment === "delivery" && !product.delivery_eligible)) {
       throw new OrderValidationError(`${product.name} is not available for ${fulfilment}.`);
     }
+    const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
+    const configuredMaximum = Number(productConfiguration.maxQuantity);
+    const maximumQuantity = Number.isSafeInteger(configuredMaximum) && configuredMaximum >= 1 && configuredMaximum <= 100
+      ? configuredMaximum
+      : 20;
     const quantity = input.quantity ?? 1;
-    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 20) {
-      throw new OrderValidationError("Item quantity must be between 1 and 20.");
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > maximumQuantity) {
+      throw new OrderValidationError(`Item quantity must be between 1 and ${maximumQuantity}.`);
     }
     const instructions = cleanInstructions(input.specialInstructions);
-    const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
     if (!isWithinWeeklyAvailability(productConfiguration.availability)) {
       throw new OrderValidationError(
         `${product.name} is only available ${productConfiguration.availability?.label ?? "during its advertised offer hours"}.`,
@@ -523,16 +531,6 @@ async function validateItems(
           );
         }
       }
-      if (input.halal && !product.halal_capable) {
-        throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
-      }
-      if (input.halal && toppings.some((entry) => meatToppings.has(entry.toppingId) && !halalMeatToppings.has(entry.toppingId))) {
-        throw new OrderValidationError("One or more selected meat toppings do not currently have a halal alternative.");
-      }
-      const halalSurchargeCents =
-        input.halal && operations.halalSurchargeType === "fixed_product"
-          ? operations.halalSurchargeAmount
-          : 0;
       const pizza = pricePizza({
         basePriceCents: variation.base_price_cents,
         extraToppingPriceCents: variation.extra_topping_price_cents,
@@ -540,7 +538,6 @@ async function validateItems(
         halfToppingUnitsBps: operations.halfToppingUnitsBps,
         toppings,
         extraCheese: Boolean(input.extraCheese),
-        halalSurchargeCents,
       });
       if (productConfiguration.requireIncludedToppings) {
         const selectedToppingUnitsBps = modifierUnitsBps(
@@ -572,7 +569,6 @@ async function validateItems(
         includedUnitsBps: pizza.includedUnitsBps,
         paidUnitsBps: pizza.paidUnitsBps,
         extraCheese: Boolean(input.extraCheese),
-        halal: Boolean(input.halal),
         // Only present when something was deliberately left off, so the kitchen
         // ticket can print it and a reader can tell "no omissions" from "field
         // not written by an older build".
@@ -582,14 +578,6 @@ async function validateItems(
     } else if (input.toppings?.length || input.extraCheese) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
     } else {
-      // H-05: deals are marked halal-capable but the generic customizer offered
-      // no halal control, and the server rejected the flag outright — so the
-      // advertised preference could not be ordered on the products that
-      // advertise it. Accepted here, gated on the same `halal_capable` flag the
-      // pizza branch uses, and carried into the snapshot the kitchen reads.
-      if (input.halal && !product.halal_capable) {
-        throw new OrderValidationError(`${product.name} is not configured for halal selection.`);
-      }
       const validatedModifiers = validateModifiers(
         input.modifiers,
         orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
@@ -599,7 +587,6 @@ async function validateItems(
       unitPriceCents += validatedModifiers.extraCents;
       snapshot = {
         ...snapshot,
-        halal: Boolean(input.halal),
         modifiers: validatedModifiers.snapshot,
         modifierExtraCents: validatedModifiers.extraCents,
       };

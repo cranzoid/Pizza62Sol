@@ -26,15 +26,13 @@ generated from `db/schema.ts`.
 - `PUBLIC_BASE_URL` and `SEO_INDEXABLE=true` — canonical public origin and the production-only indexing gate
 - `GOOGLE_SITE_VERIFICATION` — optional Search Console verification token
 - `META_PIXEL_ID` — optional numeric Meta Pixel ID
-- `GA4_MEASUREMENT_ID` — optional GA4 web stream ID (`G-...`)
+- `GA4_MEASUREMENT_ID` — legacy optional GA4 web stream ID (`G-...`); the public site no longer loads third-party measurement tags
 - `GOOGLE_ADS_ID` and `GOOGLE_ADS_CONVERSION_LABEL` — optional direct Google Ads purchase conversion identifiers
 
-The marketing IDs are public identifiers, not credentials. Empty values disable
-their integrations. When configured, Meta and Google load only after the visitor
-allows optional measurement. Product views, bag additions, checkout starts,
-phone-link clicks, and confirmed purchases are mapped to commerce events. Purchase
-events use the server-generated order number as the transaction ID and CAD order
-value, including after the customer returns from Clover Hosted Checkout.
+The marketing IDs are public identifiers, not credentials. They remain documented
+for deployment compatibility, but the public site no longer loads Meta or Google
+advertising-measurement tags. First-party service analytics still records product
+views, bag additions, checkout starts, phone-link clicks, and confirmed purchases.
 
 The home page server-renders the live menu and emits `Restaurant`, `WebSite`, and
 `Menu` JSON-LD. Production exposes a canonical sitemap and crawler policy; Azure

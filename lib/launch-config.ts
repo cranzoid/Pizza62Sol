@@ -68,10 +68,6 @@ export const LAUNCH_SETTINGS = {
     feedbackDelayMinutes: 40,
     lowRatingThreshold: 2,
     halfToppingUnitsBps: 10_000,
-    halalSurchargeType: "none",
-    halalSurchargeAmount: 0,
-    halalNotice:
-      "Halal meat options are available for selected toppings. Pizza 62 uses a shared kitchen, so please tell our team about allergies or preparation concerns before ordering.",
   },
   /**
    * The thank-you that goes out after someone fills in the feedback form.
@@ -119,8 +115,6 @@ export const LAUNCH_SETTINGS = {
     extraWingSauce: false,
     blueCheeseAddon: false,
     bottledPopUpgrades: false,
-    // H-21: keep unconfirmed public claims off until the owner confirms them.
-    halalPreparationClaim: false,
     wingBreadedLabel: false,
     dryRubLabel: false,
   },

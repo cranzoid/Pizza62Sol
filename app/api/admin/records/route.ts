@@ -1,6 +1,12 @@
 /**
  * Order history and the feedback inbox — the two things an owner looks back at.
  *
+ * The inbox is no longer read-only. A customer who answered the questions used
+ * to hear nothing back: the only thing that could be done with their feedback
+ * was to tick "handled" and write a note nobody outside the office would read.
+ * `feedback.reply` sends them what a member of staff actually wants to say, in
+ * the same envelope as every other Pizza 62 mail.
+ *
  * H-20: history was a hard-capped 100 rows with a text search and a status
  * filter, and no export. So "how did last month go", "how many were delivery",
  * and "reconcile this against the bank" were all unanswerable, and the answer to
@@ -21,6 +27,8 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, safeJson, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
+import { anyProviderConfigured } from "@/lib/notifications/config";
+import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { ORDER_CHANNELS } from "@/db/schema";
 import { orderSourceLabel, parseAttribution, type OrderAttribution } from "@/lib/attribution";
 import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
@@ -106,17 +114,27 @@ export async function GET(request: Request) {
       const rows = await getD1()
         .prepare(
           `SELECT f.id, f.overall_rating, f.written_feedback, f.answers_json, f.submitted_at,
-                  f.reviewed_at, f.internal_note, o.order_number, o.fulfilment
+                  f.reviewed_at, f.internal_note, f.reply_message, f.replied_at,
+                  o.order_number, o.fulfilment, o.customer_email
            FROM feedback_responses f LEFT JOIN orders o ON o.id = f.order_id
            ORDER BY f.submitted_at DESC LIMIT 100`,
         )
         .all<Record<string, unknown>>();
       return Response.json({
-        feedback: rows.results.map((row) => ({
-          ...row,
-          answers: safeJson(String(row.answers_json ?? "{}"), {}),
-          answers_json: undefined,
-        })),
+        feedback: rows.results.map((row) => {
+          const email = typeof row.customer_email === "string" ? row.customer_email.trim() : "";
+          return {
+            ...row,
+            answers: safeJson(String(row.answers_json ?? "{}"), {}),
+            answers_json: undefined,
+            // Whether a reply can be sent is not the same question as whether
+            // this member of staff may read the address. Someone without the
+            // contact permission can still answer a complaint; they just do not
+            // get to see, or copy down, where the answer goes.
+            can_reply: Boolean(email),
+            customer_email: canViewContact ? email || null : null,
+          };
+        }),
       });
     }
 
@@ -343,9 +361,108 @@ export async function POST(request: Request) {
   try {
     await ensureDatabase();
     const user = await requireStaff(request, "view_orders");
-    const body = (await request.json()) as { action?: string; id?: string; note?: string };
+    const body = (await request.json()) as { action?: string; id?: string; note?: string; message?: string };
+    const mayHandleFeedback =
+      user.role === "owner" || hasPermission(user.role, user.permissions, "view_analytics");
+
+    /**
+     * Writing back to the customer who left the feedback.
+     *
+     * Three things this does beyond queueing a mail, each of which would be a
+     * bug if it were left out:
+     *
+     * - **The reply is stored on the response, not only in the queue.** The
+     *   dispatcher scrubs a payload once it is delivered, so the outbox is not a
+     *   record of what anyone was told. "What did we say to this person" has to
+     *   be answerable next month, when they mention it on the phone.
+     * - **Replying marks the feedback handled.** Answering the customer *is*
+     *   handling it, and leaving the row in the unhandled count afterwards
+     *   trains everyone to ignore the count.
+     * - **It is queued, never sent inline.** A provider timing out must not lose
+     *   the reply or leave the button spinning; the outbox already retries,
+     *   backs off, and parks when there are no credentials yet.
+     */
+    if (body.action === "feedback.reply") {
+      if (!mayHandleFeedback) {
+        return Response.json({ error: "You do not have permission to reply to feedback." }, { status: 403 });
+      }
+      const message = String(body.message ?? "").trim();
+      if (!message) {
+        return Response.json({ error: "Write a reply before sending it." }, { status: 400 });
+      }
+      if (message.length > 2000) {
+        return Response.json({ error: "A reply must be 2,000 characters or fewer." }, { status: 400 });
+      }
+      const feedback = await getD1()
+        .prepare(
+          `SELECT f.id, f.overall_rating, f.written_feedback,
+                  o.id AS order_id, o.order_number, o.customer_email
+           FROM feedback_responses f LEFT JOIN orders o ON o.id = f.order_id
+           WHERE f.id = ?`,
+        )
+        .bind(body.id ?? "")
+        .first<Record<string, unknown>>();
+      if (!feedback) {
+        return Response.json({ error: "That feedback no longer exists." }, { status: 404 });
+      }
+      const recipient = typeof feedback.customer_email === "string" ? feedback.customer_email.trim() : "";
+      if (!recipient) {
+        // Counter and phone orders are often taken with a name and nothing else.
+        // Saying so plainly beats queueing a mail with nowhere to go.
+        return Response.json(
+          { error: "This order has no email address, so there is nowhere to send a reply." },
+          { status: 400 },
+        );
+      }
+      const now = Date.now();
+      await getD1()
+        .prepare(
+          `UPDATE feedback_responses
+             SET reply_message = ?, replied_at = ?, replied_by = ?,
+                 reviewed_at = COALESCE(reviewed_at, ?)
+           WHERE id = ?`,
+        )
+        .bind(message, now, user.id, now, String(feedback.id))
+        .run();
+      await getD1()
+        .prepare(
+          `INSERT INTO notification_outbox
+           (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+           VALUES (?, 'feedback_reply', ?, ?, ?, 0, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          recipient,
+          JSON.stringify({
+            orderId: feedback.order_id,
+            orderNumber: feedback.order_number,
+            feedbackId: feedback.id,
+            overall: feedback.overall_rating,
+            writtenFeedback: feedback.written_feedback,
+            reply: message,
+          }),
+          (await anyProviderConfigured()) ? "pending" : "pending_provider_setup",
+          now,
+          now,
+          now,
+        )
+        .run();
+      // In-process, so a reply written while the customer is still on the phone
+      // reaches them within seconds rather than at the next cron tick. Failures
+      // are swallowed: the row is durable and the sweeper is the safety net.
+      dispatchSoon();
+      await writeAudit({
+        actorId: user.id,
+        action: "feedback.reply",
+        targetType: "feedback",
+        targetId: String(feedback.id),
+        next: { message },
+      });
+      return Response.json({ ok: true, repliedAt: now });
+    }
+
     if (body.action === "feedback.review") {
-      if (user.role !== "owner" && !hasPermission(user.role, user.permissions, "view_analytics")) {
+      if (!mayHandleFeedback) {
         return Response.json({ error: "You do not have permission to handle feedback." }, { status: 403 });
       }
       const now = Date.now();

@@ -642,6 +642,22 @@ export const feedbackResponses = pgTable(
     writtenFeedback: text("written_feedback"),
     reviewedAt: bigint("reviewed_at", { mode: "number" }),
     internalNote: text("internal_note"),
+    /**
+     * What the restaurant wrote back, and when it left.
+     *
+     * The mail itself lives in the outbox only until it is delivered — the
+     * dispatcher scrubs a sent payload — so this column is the durable record of
+     * what the customer was told. Kept here rather than in a replies table
+     * because there is no inbound channel: a reply goes out, and anything the
+     * customer says back arrives in the restaurant's own inbox, not here.
+     *
+     * `replied_by` is the staff id as text, with no foreign key. A member of
+     * staff who leaves must not take the record of what they promised a customer
+     * with them.
+     */
+    replyMessage: text("reply_message"),
+    repliedAt: bigint("replied_at", { mode: "number" }),
+    repliedBy: text("replied_by"),
     submittedAt: bigint("submitted_at", { mode: "number" }).notNull(),
   },
   (table) => [

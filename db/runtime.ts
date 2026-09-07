@@ -3,6 +3,8 @@ import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   GAME_DAY_SPECIAL_PRODUCT_ID,
+  LABOR_DAY_COMBO_PRODUCT_ID,
+  LABOR_DAY_WINGS_PRODUCT_ID,
   MENU_CATEGORIES,
   MENU_PRODUCTS,
   MENU_SEED_VERSION,
@@ -101,28 +103,19 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
       );
     }
     for (const [index, topping] of TOPPING_SEEDS.entries()) {
-      const [id, name, isMeat, halalAvailable] = topping;
+      const [id, name, isMeat] = topping;
+      // The halal_* columns are left to their defaults: halal is no longer
+      // offered, and the columns themselves are dropped in a later migration
+      // once no revision that still reads them can be rolled back to.
       operations.push(
         database
           .prepare(
             `INSERT INTO toppings
-             (id, name, kitchen_label, is_meat, has_halal_version, halal_display_name,
-              halal_available, halal_cost_cents, active, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
+             (id, name, kitchen_label, is_meat, active, display_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 1, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
-          .bind(
-            id,
-            name,
-            name.toUpperCase(),
-            isMeat ? 1 : 0,
-            halalAvailable ? 1 : 0,
-            halalAvailable ? `Halal ${name}` : null,
-            halalAvailable ? 1 : 0,
-            index,
-            now,
-            now,
-          ),
+          .bind(id, name, name.toUpperCase(), isMeat ? 1 : 0, index, now, now),
       );
     }
     for (const [index, product] of MENU_PRODUCTS.entries()) {
@@ -135,9 +128,9 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
           .prepare(
             `INSERT INTO products
              (id, category_id, name, slug, description, product_type, base_price_cents, taxable,
-              pickup_eligible, delivery_eligible, halal_capable, promotion_eligible, active, sold_out,
+              pickup_eligible, delivery_eligible, promotion_eligible, active, sold_out,
               setup_required, kitchen_label, configuration_json, display_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO NOTHING`,
           )
           .bind(
@@ -151,7 +144,6 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
             product.taxable === false ? 0 : 1,
             product.pickupEligible === false ? 0 : 1,
             product.deliveryEligible === false ? 0 : 1,
-            product.halalCapable ? 1 : 0,
             product.name.toUpperCase().slice(0, 40),
             JSON.stringify(product.configuration ?? {}),
             index,
@@ -374,7 +366,9 @@ const DATA_MIGRATIONS: Array<{
   {
     // Splits "Crust, bake & sauce" into a single-choice crust (Regular/Thin/Thick)
     // and a separate bake & sauce group, and gives every pizza inside a deal the
-    // same cheese and halal choices a standalone pizza has, in the same order.
+    // same cheese choices a standalone pizza has, in the same order. (It also gave
+    // them a halal choice, until halal was withdrawn from the menu; this migration
+    // copies whatever the seed defines, so it now produces neither.)
     // Owner-tuned numbers on a section that still exists (min, max, included, extra
     // price) are carried across; the group structure itself is what this replaces.
     id: "2026-07-27-pizza-option-groups",
@@ -593,7 +587,7 @@ const DATA_MIGRATIONS: Array<{
               `UPDATE products
                SET category_id = ?, name = ?, slug = ?, description = ?, product_type = ?,
                    base_price_cents = ?, taxable = ?, pickup_eligible = ?, delivery_eligible = ?,
-                   halal_capable = ?, promotion_eligible = 1, active = 1, sold_out = 0,
+                   promotion_eligible = 1, active = 1, sold_out = 0,
                    setup_required = 0, kitchen_label = ?, configuration_json = ?,
                    display_order = ?, updated_at = ?
                WHERE id = ?`,
@@ -608,7 +602,6 @@ const DATA_MIGRATIONS: Array<{
               product.taxable === false ? 0 : 1,
               product.pickupEligible === false ? 0 : 1,
               product.deliveryEligible === false ? 0 : 1,
-              product.halalCapable ? 1 : 0,
               product.name.toUpperCase().slice(0, 40),
               JSON.stringify(product.configuration ?? {}),
               displayOrder,
@@ -797,6 +790,73 @@ const DATA_MIGRATIONS: Array<{
         database
           .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
           .bind(JSON.stringify(next), now, GAME_DAY_SPECIAL_PRODUCT_ID),
+      ];
+    },
+  },
+  {
+    /**
+     * The existing C$25.99 combo is now also a free-delivery offer, and the
+     * advertised dipping sauce must reach the kitchen ticket. The new dollar-
+     * wing product itself is inserted by the bumped menu seed; this migration
+     * changes only the existing combo row that an insert-only seed cannot touch.
+     */
+    id: "2026-09-07-labor-day-combo-delivery-and-dip",
+    run: async (database, now) => {
+      const seed = MENU_PRODUCTS.find((product) => product.id === LABOR_DAY_COMBO_PRODUCT_ID);
+      const row = await database
+        .prepare("SELECT configuration_json FROM products WHERE id = ?")
+        .bind(LABOR_DAY_COMBO_PRODUCT_ID)
+        .first<{ configuration_json: string | null }>();
+      if (!seed || !row) return [];
+      const current = safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {});
+      const currentSections = Array.isArray(current.sections)
+        ? current.sections as ModifierSectionSeed[]
+        : [];
+      const seededSections = Array.isArray(seed.configuration?.sections)
+        ? seed.configuration.sections as ModifierSectionSeed[]
+        : [];
+      const dip = seededSections.find((section) => section.id === "included-dip");
+      const baseSections = currentSections.length ? currentSections : seededSections;
+      const sections = baseSections.some((section) => section.id === "included-dip") || !dip
+        ? baseSections
+        : [...baseSections, dip];
+      return [
+        database
+          .prepare(
+            `UPDATE products
+             SET name = ?, description = ?, pickup_eligible = 1,
+                 delivery_eligible = 1, configuration_json = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .bind(
+            seed.name,
+            seed.description,
+            JSON.stringify({ ...current, sections, freeDelivery: true }),
+            now,
+            LABOR_DAY_COMBO_PRODUCT_ID,
+          ),
+      ];
+    },
+  },
+  {
+    /**
+     * The Labor Day dollar-wing offer is capped at 40 wings, not 60. The seed
+     * does not overwrite existing products, so production needs one precise row
+     * update after the corrected seed ships.
+     */
+    id: "2026-09-08-labor-day-wing-cap-40",
+    run: async (database, now) => {
+      const row = await database
+        .prepare("SELECT configuration_json FROM products WHERE id = ?")
+        .bind(LABOR_DAY_WINGS_PRODUCT_ID)
+        .first<{ configuration_json: string | null }>();
+      if (!row) return [];
+      const configuration = safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {});
+      if (configuration.maxQuantity === 40) return [];
+      return [
+        database
+          .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
+          .bind(JSON.stringify({ ...configuration, maxQuantity: 40 }), now, LABOR_DAY_WINGS_PRODUCT_ID),
       ];
     },
   },
