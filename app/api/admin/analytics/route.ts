@@ -33,7 +33,7 @@ export async function GET(request: Request) {
     const previousStart = start - days * 86_400_000;
     const paidFilter = "status != 'cancelled' AND (payment_method = 'pay_at_store' OR payment_status IN ('paid', 'partially_refunded', 'refunded'))";
     const database = getD1();
-    const [orderRows, totals, previousTotals, fulfilment, payment, schedule, statuses, topProducts, categorySales, events, ratings, customers] =
+    const [orderRows, totals, previousTotals, fulfilment, payment, schedule, statuses, topProducts, categorySales, events, upsellOrderItems, ratings, customers] =
       await Promise.all([
         database
           .prepare(
@@ -131,6 +131,14 @@ export async function GET(request: Request) {
           .all<Record<string, unknown>>(),
         database
           .prepare(
+            `SELECT i.order_id, i.quantity, i.line_total_cents, i.snapshot_json
+             FROM order_items i JOIN orders o ON o.id = i.order_id
+             WHERE o.created_at >= ? AND ${paidFilter}`,
+          )
+          .bind(start)
+          .all<{ order_id: string; quantity: number; line_total_cents: number; snapshot_json: string }>(),
+        database
+          .prepare(
             `SELECT overall_rating AS rating, COUNT(*) AS responses FROM feedback_responses
              WHERE submitted_at >= ? GROUP BY overall_rating ORDER BY overall_rating`,
           )
@@ -170,6 +178,16 @@ export async function GET(request: Request) {
     }
 
     const eventCounts = new Map(events.results.map((row) => [String(row.event_name), Number(row.sessions ?? 0)]));
+    const purchasedUpsells = upsellOrderItems.results.filter((row) => {
+      try {
+        const snapshot = JSON.parse(row.snapshot_json) as { merchandising?: { source?: string; placement?: string } };
+        return snapshot.merchandising?.source === "upsell" && snapshot.merchandising.placement === "cart";
+      } catch {
+        return false;
+      }
+    });
+    const upsellImpressions = eventCounts.get("upsell_impression") ?? 0;
+    const upsellAdds = eventCounts.get("upsell_added") ?? 0;
     const visits = eventCounts.get("website_visit") ?? 0;
     const funnel = [
       { step: "Visited the site", sessions: visits },
@@ -232,6 +250,16 @@ export async function GET(request: Request) {
       })),
       funnel,
       conversionBps: visits ? Math.round(((eventCounts.get("purchase_completed") ?? 0) / visits) * 10_000) : 0,
+      upsells: {
+        impressionSessions: upsellImpressions,
+        selectedSessions: eventCounts.get("upsell_selected") ?? 0,
+        addedSessions: upsellAdds,
+        removedSessions: eventCounts.get("upsell_removed") ?? 0,
+        addRateBps: upsellImpressions ? Math.round((upsellAdds / upsellImpressions) * 10_000) : 0,
+        purchasedItems: purchasedUpsells.reduce((sum, row) => sum + Number(row.quantity), 0),
+        purchasedOrders: new Set(purchasedUpsells.map((row) => row.order_id)).size,
+        revenueCents: purchasedUpsells.reduce((sum, row) => sum + Number(row.line_total_cents), 0),
+      },
       ratings: {
         count: ratingCount,
         average: ratingCount ? ratingRows.reduce((sum, row) => sum + row.rating * row.responses, 0) / ratingCount : 0,

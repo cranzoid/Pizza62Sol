@@ -267,7 +267,7 @@ export type CloverChargeResult = {
 /**
  * Raised when Clover refuses the card. Distinct from a transport or config
  * failure because it is the customer's problem to solve, not ours: the message
- * is shown to them and the order stays payable rather than being cancelled.
+ * allows the checkout to start a fresh attempt with another card.
  */
 export class CloverDeclinedError extends Error {
   constructor(message: string) {
@@ -359,7 +359,9 @@ export async function createCloverCharge(input: {
   // taken the money, and treating it as success would hand out free pizza.
   const status = (body.status ?? "").toLowerCase();
   if (status && !["paid", "succeeded", "captured"].includes(status)) {
-    throw new CloverDeclinedError(`The payment was not completed (${status}).`);
+    // A pending/unknown state is not a confirmed decline. Keep the original
+    // attempt key so retrying cannot start an independent second charge.
+    throw new Error(`Clover payment outcome is unconfirmed (${status}).`);
   }
 
   return {

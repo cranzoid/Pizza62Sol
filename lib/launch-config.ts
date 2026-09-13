@@ -117,6 +117,9 @@ export const LAUNCH_SETTINGS = {
     bottledPopUpgrades: false,
     wingBreadedLabel: false,
     dryRubLabel: false,
+    // Rolled out from Admin after the recommendation tray has been checked
+    // against the current menu. Older settings rows safely behave as off.
+    upsellsEnabled: false,
   },
   content: {
     heroEyebrow: "Hamilton-made since the first slice",

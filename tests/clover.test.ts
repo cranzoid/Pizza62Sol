@@ -430,7 +430,10 @@ test("refuses a 2xx that did not actually take the money", async () => {
   // as paid gives the food away.
   configure();
   stubClover({ id: "chg_1", status: "pending", amount: 2032 });
-  await assert.rejects(() => createCloverCharge(CHARGE), CloverDeclinedError);
+  await assert.rejects(
+    () => createCloverCharge(CHARGE),
+    (error: Error) => !(error instanceof CloverDeclinedError) && /unconfirmed/.test(error.message),
+  );
 });
 
 test("refuses to charge a non-positive amount or an empty token", async () => {

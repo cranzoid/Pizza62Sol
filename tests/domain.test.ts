@@ -540,6 +540,10 @@ test("keeps unconfirmed public product claims disabled until owner confirmation 
   assert.equal(LAUNCH_SETTINGS.featureFlags.dryRubLabel, false);
 });
 
+test("keeps cart recommendations behind the owner rollout switch", () => {
+  assert.equal(LAUNCH_SETTINGS.featureFlags.upsellsEnabled, false);
+});
+
 test("accepts orders through exact closing time and handles midnight", () => {
   assert.equal(isTimeWithinConfiguredHours(1, 1320, [...REGULAR_HOURS]), true);
   assert.equal(isTimeWithinConfiguredHours(1, 1321, [...REGULAR_HOURS]), false);

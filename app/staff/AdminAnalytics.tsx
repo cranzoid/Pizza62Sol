@@ -36,6 +36,16 @@ export type Analytics = {
   categorySales: SalesRow[];
   funnel: Array<{ step: string; sessions: number }>;
   conversionBps: number;
+  upsells: {
+    impressionSessions: number;
+    selectedSessions: number;
+    addedSessions: number;
+    removedSessions: number;
+    addRateBps: number;
+    purchasedItems: number;
+    purchasedOrders: number;
+    revenueCents: number;
+  };
   ratings: { count: number; average: number; distribution: Array<{ rating: number; responses: number }> };
   customers: { total: number; returning: number };
 };
@@ -166,6 +176,18 @@ export function AdminAnalyticsPanel() {
         </dl>
       </section>
     </div>
+
+    <section className="staff-panel">
+      <div className="staff-panel-head"><h2>Cart recommendations</h2><span className="live-chip">{formatMoney(data.upsells.revenueCents)} add-on sales</span></div>
+      <dl className="viz-facts">
+        <div><dt>Shoppers shown recommendations</dt><dd>{compact(data.upsells.impressionSessions)}</dd></div>
+        <div><dt>Opened a recommendation</dt><dd>{compact(data.upsells.selectedSessions)}</dd></div>
+        <div><dt>Added a recommendation</dt><dd>{compact(data.upsells.addedSessions)} · {(data.upsells.addRateBps / 100).toFixed(1)}%</dd></div>
+        <div><dt>Removed after adding</dt><dd>{compact(data.upsells.removedSessions)}</dd></div>
+        <div><dt>Paid orders with an add-on</dt><dd>{compact(data.upsells.purchasedOrders)}</dd></div>
+        <div><dt>Paid add-on items</dt><dd>{compact(data.upsells.purchasedItems)} · {formatMoney(data.upsells.revenueCents)}</dd></div>
+      </dl>
+    </section>
 
     <div className="staff-grid viz-pair">
       <section className="staff-panel">

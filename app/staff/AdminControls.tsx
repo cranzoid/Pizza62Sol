@@ -163,6 +163,7 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   const business = settings.business.value;
   const operations = settings.operations.value;
   const rewards = settings.rewards?.value ?? {};
+  const featureFlags = settings.featureFlags?.value ?? {};
   const initialContent = settings.content?.value ?? {};
   const initialHours = (settings.hours.value as unknown as Array<{ weekday: number; label: string; openMinute: number; closeMinute: number }>).map((row) => ({ ...row }));
   const [message, setMessage] = useState("");
@@ -173,6 +174,7 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
   const [operationsForm, setOperationsForm] = useState({ cancellation: String(operations.cancellationRequestWindowMinutes), feedbackDelay: String(operations.feedbackDelayMinutes), halfToppingUnitsBps: String(operations.halfToppingUnitsBps ?? 10_000) });
   const [content, setContent] = useState({ heroEyebrow: String(initialContent.heroEyebrow ?? ""), heroHeadline: String(initialContent.heroHeadline ?? ""), heroAccent: String(initialContent.heroAccent ?? ""), heroDescription: String(initialContent.heroDescription ?? ""), dealEyebrow: String(initialContent.dealEyebrow ?? ""), dealHeadline: String(initialContent.dealHeadline ?? ""), dealDescription: String(initialContent.dealDescription ?? ""), footerTagline: String(initialContent.footerTagline ?? "") });
   const [rewardForm, setRewardForm] = useState({ enabled: Boolean(rewards.feedbackRewardEnabled), code: String(rewards.feedbackRewardCode ?? ""), offer: String(rewards.feedbackRewardOffer ?? "") });
+  const [upsellsEnabled, setUpsellsEnabled] = useState(Boolean(featureFlags.upsellsEnabled));
   const [hours, setHours] = useState(initialHours);
   const save = async (key: string, value: Record<string, unknown> | typeof hours) => {
     setMessage("");
@@ -237,6 +239,10 @@ export function AdminSettingsPanel({ dashboard, onSaved }: { dashboard: Dashboar
       <Field label="Deal headline" value={content.dealHeadline} onChange={(dealHeadline) => setContent({ ...content, dealHeadline })} />
       <Field label="Deal description" wide multiline value={content.dealDescription} onChange={(dealDescription) => setContent({ ...content, dealDescription })} />
       <Field label="Footer tagline" wide value={content.footerTagline} onChange={(footerTagline) => setContent({ ...content, footerTagline })} />
+    </SettingsCard>
+    <SettingsCard title="Cart recommendations" onSave={() => save("featureFlags", { ...featureFlags, upsellsEnabled })}>
+      <Check label="Show relevant add-ons in the cart" checked={upsellsEnabled} onChange={setUpsellsEnabled} />
+      <p className="editor-hint field-wide">Suggests up to three available items based on the whole order. Products already chosen or included in a deal are automatically left out.</p>
     </SettingsCard>
     {/* The coupon that goes out after someone fills in the feedback form.
         What it is *worth* is not here on purpose: the code names a promotion in
