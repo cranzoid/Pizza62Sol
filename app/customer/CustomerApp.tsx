@@ -429,7 +429,6 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
   const [laborDayOfferDismissed, setLaborDayOfferDismissed] = useState(false);
   const laborDayWings = catalog?.products.find((product) => product.id === "labor-day-dollar-wings") ?? null;
-  const laborDayCombo = catalog?.products.find((product) => product.id === "pickup-large-wings") ?? null;
   const laborDayAvailability = laborDayWings?.configuration.availability as WeeklyAvailability | undefined;
   const laborDayOfferAvailable = Boolean(laborDayWings && laborDayAvailability && isWithinWeeklyAvailability(laborDayAvailability, new Date(now)));
   const showLaborDayOffer = laborDayOfferAvailable && !laborDayOfferDismissed;
@@ -722,7 +721,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     window.sessionStorage.setItem(METHOD_ASKED_KEY, "1");
     setMethodAsked(true);
     setFulfilment(nextFulfilment);
-    trackEvent("fulfilment_selected", { fulfilment: nextFulfilment, source: "labor_day_popup" });
+    trackEvent("fulfilment_selected", { fulfilment: nextFulfilment, source: "game_day_popup" });
     openProduct(product);
   };
 
@@ -976,11 +975,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
       {showLaborDayOffer && laborDayWings ? (
         <div className="modal-backdrop labor-day-backdrop" role="presentation" onMouseDown={() => setLaborDayOfferDismissed(true)}>
           <div ref={laborDayDialogRef} className="labor-day-popup" role="dialog" aria-modal="true" aria-labelledby="labor-day-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
-            <button type="button" className="modal-close" onClick={() => setLaborDayOfferDismissed(true)} aria-label="Close Labor Day specials">×</button>
-            <div className="labor-day-popup__intro"><p className="eyebrow"><span /> Open on Labor Day</p><h2 id="labor-day-title">Labor Day<br /><em>tastes better.</em></h2><p>Celebrate with pickup wings for $1 each, or get our $25.99 pizza-and-wings combo with free standard delivery.</p></div>
+            <button type="button" className="modal-close" onClick={() => setLaborDayOfferDismissed(true)} aria-label="Close Game Day specials">×</button>
+            <div className="labor-day-popup__intro"><p className="eyebrow"><span /> Open on Game Day</p><h2 id="labor-day-title">Game Day<br /><em>tastes better.</em></h2><p>Celebrate with pickup wings for $1 each.</p></div>
             <div className="labor-day-popup__offers">
-              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only · first choice</span><h3>$1 Wings</h3><p>Choose 1–40 wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
-              {laborDayCombo ? <article className="labor-day-offer"><span>Pickup or delivery</span><h3>$25.99 Combo</h3><p>Large 3-topping pizza, 1 lb wings, 3 pops and 1 dip.</p><strong>$25.99</strong><button type="button" onClick={() => openLaborDayOffer(laborDayCombo, "delivery")}>Get free delivery <ArrowIcon /></button></article> : null}
+              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only</span><h3>$1 Wings</h3><p>Choose 1–40 wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
             </div>
           </div>
         </div>
