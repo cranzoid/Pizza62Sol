@@ -113,6 +113,13 @@ export type BuiltItem = {
   extraCheese?: boolean;
   specialInstructions?: string;
   freeDelivery?: boolean;
+  /** Why this line was suggested, retained for aggregate merchandising analytics. */
+  merchandising?: {
+    source: "upsell";
+    placement: "cart";
+    ruleId: string;
+    sourceProductIds: string[];
+  };
 };
 
 /**
@@ -135,6 +142,7 @@ export function toOrderItems(items: BuiltItem[]) {
     })),
     extraCheese: line.extraCheese,
     specialInstructions: line.specialInstructions,
+    merchandising: line.merchandising,
   }));
 }
 

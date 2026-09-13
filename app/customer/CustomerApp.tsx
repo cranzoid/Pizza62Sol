@@ -32,6 +32,7 @@ import {
   type DeepLinkRequest,
 } from "@/lib/deep-link";
 import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
+import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -297,6 +298,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   const [gateMessage, setGateMessage] = useState("");
   const [cart, setCart] = useState<CartLine[]>(rememberedCart);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  // Set only while a configurable recommendation is being built. It lets the
+  // completed line retain which cart rule suggested it, without putting a
+  // second customizer on top of the cart drawer.
+  const [pendingUpsell, setPendingUpsell] = useState<UpsellRecommendation<Product> | null>(null);
   // Set once the deep-linked customizer has been closed or added, so that
   // closing it lands on the menu rather than reopening the same offer forever.
   const [deepLinkSpent, setDeepLinkSpent] = useState(false);
@@ -495,6 +500,13 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // of tax drift, and when they do the customer is charged something they never
   // agreed to. There is now one implementation, and it lives on the server.
   const { quote: cartQuote, loading: cartQuoteLoading } = useOrderQuote({ cart, fulfilment });
+  const upsellsEnabled = Boolean(catalog?.settings.featureFlags?.value.upsellsEnabled);
+  const upsellRecommendations = useMemo(
+    () => upsellsEnabled && catalog
+      ? recommendUpsells({ cart, products: catalog.products, fulfilment, now: new Date(now) })
+      : [],
+    [upsellsEnabled, catalog, cart, fulfilment, now],
+  );
 
   /**
    * The offer an ad click asked for, if it is one this page can honour.
@@ -521,8 +533,11 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Dismissing the notice re-renders and the offer is there waiting.
   const openCustomizerFor = selectedProduct ?? (showClosedNotice || showLaborDayOffer ? null : deepLinkProduct);
   const closeCustomizer = () => {
+    const returnToCart = Boolean(pendingUpsell);
     setSelectedProduct(null);
+    setPendingUpsell(null);
     setDeepLinkSpent(true);
+    if (returnToCart) setCartOpen(true);
   };
 
   const completeOrder = (result: Record<string, unknown>) => {
@@ -592,9 +607,18 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
       value: (line.unitPriceCents * line.quantity) / 100,
       items: commerceItems([line]),
     });
+    if (line.merchandising?.source === "upsell") {
+      trackEvent("upsell_added", {
+        productId: line.productId,
+        ruleId: line.merchandising.ruleId,
+        sourceProductIds: line.merchandising.sourceProductIds,
+        currency: "CAD",
+        value: (line.unitPriceCents * line.quantity) / 100,
+      });
+    }
   };
 
-  const addSimple = (product: Product) => {
+  const addSimple = (product: Product, merchandising?: CartLine["merchandising"]) => {
     if (product.setup_required || product.sold_out) return;
     addLine({
       key: crypto.randomUUID(),
@@ -605,6 +629,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
       unitPriceCents: product.base_price_cents,
       taxable: Boolean(product.taxable),
       freeDelivery: Boolean(product.configuration.freeDelivery),
+      merchandising,
     });
   };
 
@@ -620,6 +645,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   }, []);
 
   const openProduct = (product: Product) => {
+    setPendingUpsell(null);
     trackProductViewed(product);
     // The same predicate a deep link uses to decide whether it may open this
     // product at all. Shared rather than repeated, because the promise that an
@@ -627,6 +653,59 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     // "does this product have a customizer".
     if (hasCustomizer(product)) setSelectedProduct(product);
     else addSimple(product);
+  };
+
+  const openUpsell = (recommendation: UpsellRecommendation<Product>) => {
+    const { product, ruleId, sourceProductIds } = recommendation;
+    const merchandising: NonNullable<CartLine["merchandising"]> = {
+      source: "upsell",
+      placement: "cart",
+      ruleId,
+      sourceProductIds,
+    };
+    trackEvent("upsell_selected", {
+      productId: product.id,
+      ruleId,
+      sourceProductIds,
+      requiresChoices: hasCustomizer(product),
+    });
+    if (hasCustomizer(product)) {
+      setPendingUpsell(recommendation);
+      setCartOpen(false);
+      setSelectedProduct(product);
+      return;
+    }
+    addSimple(product, merchandising);
+  };
+
+  const addCustomizedLine = (line: CartLine) => {
+    const merchandising: CartLine["merchandising"] = pendingUpsell ? {
+      source: "upsell",
+      placement: "cart",
+      ruleId: pendingUpsell.ruleId,
+      sourceProductIds: pendingUpsell.sourceProductIds,
+    } : undefined;
+    addLine({ ...line, merchandising });
+    setSelectedProduct(null);
+    setPendingUpsell(null);
+    setDeepLinkSpent(true);
+  };
+
+  const removeLine = (key: string, closeCheckoutWhenEmpty = false) => {
+    const removed = cart.find((line) => line.key === key);
+    setCart((current) => {
+      const next = current.filter((line) => line.key !== key);
+      if (closeCheckoutWhenEmpty && !next.length) setCheckoutOpen(false);
+      return next;
+    });
+    trackEvent("remove_from_cart");
+    if (removed?.merchandising?.source === "upsell") {
+      trackEvent("upsell_removed", {
+        productId: removed.productId,
+        ruleId: removed.merchandising.ruleId,
+        sourceProductIds: removed.merchandising.sourceProductIds,
+      });
+    }
   };
 
   const openOffer = (product: Product) => {
@@ -967,13 +1046,13 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           toppings={catalog.toppings}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
-          onAdd={(line) => { addLine(line); closeCustomizer(); }}
+          onAdd={addCustomizedLine}
         /> : <GenericCustomizer
           product={openCustomizerFor}
           toppings={catalog.toppings}
           halfToppingUnitsBps={halfToppingUnitsBps}
           onClose={closeCustomizer}
-          onAdd={(line) => { addLine(line); closeCustomizer(); }}
+          onAdd={addCustomizedLine}
         />
       ) : null}
 
@@ -984,8 +1063,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           loading={cartQuoteLoading}
           fulfilment={fulfilment}
           toppingNames={toppingNames}
+          recommendations={upsellRecommendations}
           onClose={() => setCartOpen(false)}
-          onRemove={(key) => { setCart((current) => current.filter((line) => line.key !== key)); trackEvent("remove_from_cart"); }}
+          onRemove={removeLine}
+          onUpsell={openUpsell}
           onCheckout={() => { setCartOpen(false); setCheckoutOpen(true); trackEvent("checkout_started", { currency: "CAD", value: (cartQuote?.totals.totalCents ?? 0) / 100, items: commerceItems(cart) }); }}
         />
       ) : null}
@@ -1002,16 +1083,9 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           timeZone={timeZone}
           now={now}
           onClose={() => setCheckoutOpen(false)}
-          onRemove={(key) => {
-            setCart((current) => {
-              const next = current.filter((line) => line.key !== key);
-              // An empty bag has nothing to check out. Staying on a review screen
-              // with no items and a disabled pay button is a dead end.
-              if (!next.length) setCheckoutOpen(false);
-              return next;
-            });
-            trackEvent("remove_from_cart");
-          }}
+          // An empty bag has nothing to check out. Staying on a review screen
+          // with no items and a disabled pay button is a dead end.
+          onRemove={(key) => removeLine(key, true)}
           onConfirmed={completeOrder}
         />
       ) : null}
@@ -1062,14 +1136,28 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
  * problems by cart position, so an item that cannot be ordered says so *here*,
  * next to a button that removes it, rather than at the payment screen.
  */
-function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, onClose, onRemove, onCheckout }: { cart: CartLine[]; quote: Quote | null; loading: boolean; fulfilment: string; toppingNames: Map<string, string>; onClose: () => void; onRemove: (key: string) => void; onCheckout: () => void }) {
+function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommendations, onClose, onRemove, onUpsell, onCheckout }: {
+  cart: CartLine[];
+  quote: Quote | null;
+  loading: boolean;
+  fulfilment: "pickup" | "delivery";
+  toppingNames: Map<string, string>;
+  recommendations: UpsellRecommendation<Product>[];
+  onClose: () => void;
+  onRemove: (key: string) => void;
+  onUpsell: (recommendation: UpsellRecommendation<Product>) => void;
+  onCheckout: () => void;
+}) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const totals = quote?.totals ?? EMPTY_TOTALS;
   const lineIssue = (index: number) => quote?.issues.find((issue) => issue.index === index) ?? null;
   const orderIssues = quote?.issues.filter((issue) => issue.index === null) ?? [];
   const blocked = Boolean(quote && !quote.ok);
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside ref={dialogRef} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2 id="cart-title">Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
-    <div className="cart-lines">{cart.length ? cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{lineOptions(line, toppingNames).map((option, position) => <small key={`${position}-${option}`}>{option}</small>)}{line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; }) : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
+    <div className="cart-lines">{cart.length ? <>
+      {cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{lineOptions(line, toppingNames).map((option, position) => <small key={`${position}-${option}`}>{option}</small>)}{line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; })}
+      <UpsellTray recommendations={recommendations} onChoose={onUpsell} />
+    </> : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
     <div className="cart-summary">
       <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
       {totals.discountCents > 0 ? <div className="cart-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
@@ -1081,6 +1169,46 @@ function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, onClose, o
       <p className="secure-note">Every price here is calculated by Pizza 62, not by your browser, so this is what you will be charged.</p>
     </div>
   </aside></div>;
+}
+
+function UpsellTray({ recommendations, onChoose }: {
+  recommendations: UpsellRecommendation<Product>[];
+  onChoose: (recommendation: UpsellRecommendation<Product>) => void;
+}) {
+  const signature = recommendations.map(({ product, ruleId }) => `${ruleId}:${product.id}`).join("|");
+  const lastImpression = useRef("");
+  useEffect(() => {
+    if (!signature || lastImpression.current === signature) return;
+    lastImpression.current = signature;
+    trackEvent("upsell_impression", {
+      placement: "cart",
+      productIds: recommendations.map(({ product }) => product.id),
+      ruleIds: recommendations.map(({ ruleId }) => ruleId),
+    });
+  }, [signature, recommendations]);
+
+  if (!recommendations.length) return null;
+  return <section className="upsell-tray" aria-labelledby="upsell-title">
+    <div className="upsell-tray__heading">
+      <div><span>Complete your order</span><h3 id="upsell-title">A little something extra?</h3></div>
+      <small>Picked for your bag</small>
+    </div>
+    <div className="upsell-list">
+      {recommendations.map((recommendation) => {
+        const { product, reason } = recommendation;
+        const requiresChoices = hasCustomizer(product);
+        return <article className="upsell-card" key={`${recommendation.ruleId}-${product.id}`}>
+          <div className={`upsell-card__image${product.image_url ? " has-image" : ""}`} style={product.image_url ? { backgroundImage: `url(${product.image_url})` } : undefined} aria-hidden="true">
+            {!product.image_url ? product.name.slice(0, 2).toUpperCase() : null}
+          </div>
+          <div className="upsell-card__copy"><small>{reason}</small><strong>{product.name}</strong><span>{requiresChoices ? "from " : ""}{formatMoney(product.base_price_cents)}</span></div>
+          <button type="button" onClick={() => onChoose(recommendation)} aria-label={`${requiresChoices ? "Choose" : "Add"} ${product.name}`}>
+            {requiresChoices ? "Choose" : "Add"}<span aria-hidden="true">+</span>
+          </button>
+        </article>;
+      })}
+    </div>
+  </section>;
 }
 
 function Checkout({ cart, fulfilment, toppingNames, settings, integrations, store, hours, timeZone, now, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; toppingNames: Map<string, string>; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
@@ -1102,9 +1230,9 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   const cloverIframe = integrations.cloverIframe;
   const inlineCardAvailable = Boolean(cloverIframe?.enabled && cloverIframe.publicToken) && !cardFormBlocked;
   // C-07: one durable idempotency key per checkout attempt. It survives refreshes,
-  // back-navigation, and double-clicks (persisted in localStorage) and is only
-  // cleared after the order is accepted, so retries never create a second order.
-  const [idempotencyKey] = useState(() => {
+  // back-navigation and double-clicks. Only a confirmed decline starts a fresh
+  // attempt; ambiguous failures retain the key to prevent duplicate charges.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => {
     if (typeof window === "undefined") return `${crypto.randomUUID()}-${crypto.randomUUID()}`;
     const storageKey = "p62_checkout_idempotency";
     const existing = window.localStorage.getItem(storageKey);
@@ -1206,7 +1334,17 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         attribution: orderAttribution(),
       }) });
       const result = await response.json() as Record<string, unknown>;
-      if (!response.ok) throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
+      if (!response.ok) {
+        if (response.status === 402 && result.code === "PAYMENT_DECLINED") {
+          // Clover definitively refused this attempt. A new card must use a new
+          // key, both in our database and at Clover. Never rotate on a timeout
+          // or generic server error: the original charge could have succeeded.
+          const nextKey = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
+          window.localStorage.setItem("p62_checkout_idempotency", nextKey);
+          setIdempotencyKey(nextKey);
+        }
+        throw new Error(String(result.error ?? result.message ?? "Order was not accepted."));
+      }
       // C-07: a terminal duplicate means the order already exists. Clear the key and
       // show the confirmation, otherwise the stale key would resolve every future
       // checkout from this browser to the same duplicate and block ordering for good.

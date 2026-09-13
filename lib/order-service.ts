@@ -52,6 +52,12 @@ export type OrderRequest = {
     extraCheese?: boolean;
     modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
     specialInstructions?: string;
+    merchandising?: {
+      source?: string;
+      placement?: string;
+      ruleId?: string;
+      sourceProductIds?: string[];
+    };
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
@@ -235,6 +241,23 @@ function cleanInstructions(value: string | undefined, max = 500): string | null 
   const clean = value?.trim() ?? "";
   if (clean.length > max) throw new OrderValidationError(`Instructions cannot exceed ${max} characters.`);
   return clean || null;
+}
+
+/**
+ * A browser may claim any merchandising source it likes, so keep only the
+ * narrow attribution shape this storefront emits. It can inform reporting but
+ * never pricing, eligibility, promotions, or kitchen instructions.
+ */
+function normalizeMerchandisingAttribution(
+  value: NonNullable<NonNullable<OrderRequest["items"]>[number]>["merchandising"],
+): Record<string, unknown> | null {
+  if (!value || value.source !== "upsell" || value.placement !== "cart") return null;
+  const ruleId = typeof value.ruleId === "string" ? value.ruleId.trim().slice(0, 100) : "";
+  if (!ruleId) return null;
+  const sourceProductIds = Array.isArray(value.sourceProductIds)
+    ? [...new Set(value.sourceProductIds.map(String).map((id) => id.trim()).filter(Boolean))].slice(0, 20)
+    : [];
+  return { source: "upsell", placement: "cart", ruleId, sourceProductIds };
 }
 
 function normalizeDeliveryAddress(address: OrderRequest["address"]): Record<string, string> {
@@ -471,9 +494,11 @@ async function validateItems(
     }
     let variation: DbVariation | null = null;
     let unitPriceCents = product.base_price_cents;
+    const merchandisingAttribution = normalizeMerchandisingAttribution(input.merchandising);
     let snapshot: Record<string, unknown> = {
       productType: product.product_type,
       productConfiguration,
+      ...(merchandisingAttribution ? { merchandising: merchandisingAttribution } : {}),
     };
     if (product.product_type === "pizza") {
       variation = await database
@@ -1195,6 +1220,24 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     };
   }
   try {
+    // A declined inline payment remains in the audit trail and still owns its
+    // payment key. Old browser tabs can keep that key after a decline. Return a
+    // definitive decline before inserting another payment, so the browser can
+    // renew the attempt instead of hitting payments_idempotency_uq.
+    const declinedAttempt = await getD1()
+      .prepare(`SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id
+                WHERE p.idempotency_key = ? AND p.provider = 'clover'
+                  AND p.status = 'declined' AND p.provider_reference IS NULL
+                  AND o.status = 'cancelled' AND o.payment_status = 'failed'`)
+      .bind(idempotencyKey)
+      .first<{ id: string }>();
+    if (declinedAttempt) {
+      throw new OrderValidationError(
+        "The previous card attempt was declined. Please try again with another card, or pay at the store.",
+        402,
+        "PAYMENT_DECLINED",
+      );
+    }
     const customer = normalizeCustomer(body.customer, context.staffEntry);
     const fulfilment = body.fulfilment;
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
@@ -1668,14 +1711,15 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
             .bind(Date.now(), orderId),
           // Releases the key so the customer's next attempt is a fresh order
           // rather than resolving to this cancelled one. Safe against
-          // double-charging because the *Clover* key is the browser's, which does
-          // not change across the retry — see the note on it above.
+          // double-charging on ambiguous failures because the browser retains
+          // the Clover key. Only a confirmed decline renews the browser's key;
+          // the declined payment stays in the audit trail under the old key.
           getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ?").bind(keyHash),
         ]);
         throw new OrderValidationError(
           declined
             ? "That card was declined. No payment was taken — try another card, or pay at the store."
-            : "The payment could not be completed. No payment was taken; please try again.",
+            : "We could not confirm the payment. Please retry this checkout so we can check the same payment attempt.",
           declined ? 402 : 502,
           declined ? "PAYMENT_DECLINED" : "PAYMENT_PROVIDER_ERROR",
         );

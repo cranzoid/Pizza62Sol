@@ -1092,6 +1092,91 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   font-weight: 600;
   letter-spacing: 0;
 }
+.upsell-tray {
+  padding: 24px 0 10px;
+  border-top: 3px solid var(--ink);
+}
+.upsell-tray__heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.upsell-tray__heading > div { display: grid; gap: 4px; }
+.upsell-tray__heading span,
+.upsell-tray__heading > small {
+  color: var(--red);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+}
+.upsell-tray__heading > small { color: var(--muted); text-align: right; }
+.upsell-tray__heading h3 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 21px;
+  line-height: 1.05;
+}
+.upsell-list { display: grid; gap: 8px; }
+.upsell-card {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: white;
+}
+.upsell-card__image {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--yellow);
+  background-position: center;
+  background-size: cover;
+  color: var(--red);
+  font-family: Georgia, serif;
+  font-size: 17px;
+  font-weight: 900;
+}
+.upsell-card__copy { min-width: 0; display: grid; gap: 3px; }
+.upsell-card__copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upsell-card__copy strong {
+  overflow: hidden;
+  font-family: Georgia, serif;
+  font-size: 15px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upsell-card__copy span { color: var(--green); font-size: 11px; font-weight: 900; }
+.upsell-card > button {
+  min-width: 72px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  background: var(--ink);
+  color: white;
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.upsell-card > button span { color: var(--yellow); font-size: 16px; line-height: 1; }
 .cart-line p,
 .cart-line small { font-size: 11px; line-height: 1.45; }
 .cart-line button { min-height: 38px; font-size: 11px; }

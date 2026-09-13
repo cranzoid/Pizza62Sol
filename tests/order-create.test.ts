@@ -387,3 +387,108 @@ withDb("throttles one caller without affecting another", async () => {
   assert.equal(responses.at(-1)?.status, 429);
   assert.equal((await post(await orderBody(), quiet)).status, 201, "another caller keeps its own budget");
 });
+
+// --- inline card declines and safe retries ----------------------------------
+
+async function withInlineClover(run: () => Promise<void>) {
+  const { clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
+  const names = ["CLOVER_MERCHANT_ID", "CLOVER_API_TOKEN", "CLOVER_PUBLIC_TOKEN", "CLOVER_IFRAME_ENABLED"];
+  const previous = names.map((name) => process.env[name]);
+  const originalFetch = globalThis.fetch;
+  Object.assign(process.env, {
+    CLOVER_MERCHANT_ID: "retry-test-merchant",
+    CLOVER_API_TOKEN: "retry-test-private",
+    CLOVER_PUBLIC_TOKEN: "retry-test-public",
+    CLOVER_IFRAME_ENABLED: "true",
+  });
+  clearIntegrationSecretCache();
+  try { await run(); } finally {
+    globalThis.fetch = originalFetch;
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+    clearIntegrationSecretCache();
+  }
+}
+
+withDb("a declined card can use a fresh attempt; stale tabs avoid a database collision and paid replays never charge again", async () => {
+  await withInlineClover(async () => {
+    const calls: Array<{ key: string | null; source: string }> = [];
+    globalThis.fetch = (async (_url, init) => {
+      const charge = JSON.parse(String(init?.body));
+      calls.push({ key: new Headers(init?.headers).get("idempotency-key"), source: charge.source });
+      return calls.length === 1
+        ? Response.json({ error: { message: "DECLINED-XXX" } }, { status: 402 })
+        : Response.json({ id: "paid-retry-test", status: "paid", amount: charge.amount });
+    }) as typeof fetch;
+    const first = await orderBody({ paymentMethod: "online", paymentToken: "clv_declined" });
+    const declined = await post(first);
+    assert.equal(declined.status, 402);
+    assert.equal((await json(declined)).code, "PAYMENT_DECLINED");
+
+    // Reproduces existing production tabs that still hold the declined key.
+    const staleRetry = await post({ ...first, paymentToken: "clv_new_card" });
+    assert.equal(staleRetry.status, 402);
+    assert.equal((await json(staleRetry)).code, "PAYMENT_DECLINED");
+    assert.equal(calls.length, 1, "a stale key must not make another Clover request");
+
+    const retry = { ...first, idempotencyKey: uniqueKey(), paymentToken: "clv_new_card" };
+    const accepted = await post(retry);
+    assert.equal(accepted.status, 201);
+    assert.equal((await json(accepted)).paymentStatus, "paid");
+    const replay = await post(retry);
+    assert.equal(replay.status, 200);
+    assert.equal((await json(replay)).duplicate, true);
+    assert.equal(calls.length, 2, "only the new attempt may charge again");
+    assert.notEqual(calls[0].key, calls[1].key);
+    assert.equal(calls[1].source, "clv_new_card");
+    const payments = await getPool().query(
+      "SELECT status, failure_reason FROM payments WHERE idempotency_key = ANY($1::text[]) ORDER BY created_at",
+      [[first.idempotencyKey, retry.idempotencyKey]],
+    );
+    assert.deepEqual(payments.rows.map((row) => row.status), ["declined", "captured"]);
+    assert.equal(payments.rows[0].failure_reason, "DECLINED-XXX");
+  });
+});
+
+withDb("a confirmed card decline can be followed by pay-at-store with a new attempt", async () => {
+  await withInlineClover(async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return Response.json({ error: { message: "Declined" } }, { status: 402 });
+    }) as typeof fetch;
+    const body = await orderBody({ paymentMethod: "online", paymentToken: "clv_declined" });
+    assert.equal((await post(body)).status, 402);
+    const response = await post({ ...body, idempotencyKey: uniqueKey(), paymentMethod: "pay_at_store", paymentToken: undefined });
+    assert.equal(response.status, 201);
+    assert.equal((await json(response)).paymentStatus, "pending_at_store");
+    assert.equal(calls, 1);
+  });
+});
+
+for (const outcome of ["network error", "pending charge"]) {
+  withDb(`${outcome} retains the Clover key on retry instead of declaring a fresh card attempt`, async () => {
+    await withInlineClover(async () => {
+      const keys: Array<string | null> = [];
+      globalThis.fetch = (async (_url, init) => {
+        keys.push(new Headers(init?.headers).get("idempotency-key"));
+        if (keys.length === 1) {
+          if (outcome === "network error") throw new TypeError("fetch failed");
+          return Response.json({ id: "pending-test", status: "pending" });
+        }
+        return Response.json({ id: "recovered-test", status: "paid", amount: JSON.parse(String(init?.body)).amount });
+      }) as typeof fetch;
+      const body = await orderBody({ paymentMethod: "online", paymentToken: "clv_test" });
+      const response = await post(body);
+      assert.equal(response.status, 502);
+      assert.equal((await json(response)).code, "PAYMENT_PROVIDER_ERROR");
+      const retry = await post(body);
+      assert.equal(retry.status, 201);
+      assert.equal((await json(retry)).paymentStatus, "paid");
+      assert.equal(keys.length, 2);
+      assert.equal(keys[0], keys[1], "uncertain outcomes must reuse Clover's deduplication key");
+    });
+  });
+}

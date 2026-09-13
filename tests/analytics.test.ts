@@ -46,6 +46,7 @@ const analytics = async (cookie: string) => {
     totals: { grossSalesCents: number; taxableSalesCents: number; nonTaxableSalesCents: number; taxCents: number; finalTotalCents: number };
     topProducts: Array<{ name: string; nonTaxableSalesCents: number }>;
     categorySales: Array<{ name: string; salesCents: number; taxableSalesCents: number; nonTaxableSalesCents: number }>;
+    upsells: { purchasedItems: number; purchasedOrders: number; revenueCents: number };
   };
 };
 
@@ -79,8 +80,8 @@ withDb("reports tax-exempt pickup-special sales in order, product, and category 
   await getPool().query(
     `INSERT INTO order_items (id,order_id,product_id,product_name,variation_name,quantity,unit_price_cents,
        line_total_cents,taxable,snapshot_json,instructions,created_at)
-     VALUES ($1,$2,'slice-combo','Slice Combo',NULL,2,450,900,0,'{}',NULL,$3)`,
-    [itemId, orderId, now],
+     VALUES ($1,$2,'slice-combo','Slice Combo',NULL,2,450,900,0,$4,NULL,$3)`,
+    [itemId, orderId, now, JSON.stringify({ merchandising: { source: "upsell", placement: "cart", ruleId: "test" } })],
   );
 
   const after = await analytics(cookie);
@@ -98,4 +99,7 @@ withDb("reports tax-exempt pickup-special sales in order, product, and category 
   const slice = after.topProducts.find((row) => row.name === "Slice Combo");
   assert.ok(slice, "Slice Combo should appear in product sales reporting");
   assert.ok(slice.nonTaxableSalesCents >= 900);
+  assert.equal(after.upsells.purchasedItems - before.upsells.purchasedItems, 2);
+  assert.equal(after.upsells.purchasedOrders - before.upsells.purchasedOrders, 1);
+  assert.equal(after.upsells.revenueCents - before.upsells.revenueCents, 900);
 });
