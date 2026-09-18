@@ -3,6 +3,7 @@ import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   withWingStyle,
+  STAFF_IMPORTED_PRODUCTS,
   GAME_DAY_SPECIAL_PRODUCT_ID,
   LABOR_DAY_COMBO_PRODUCT_ID,
   LABOR_DAY_WINGS_PRODUCT_ID,
@@ -874,6 +875,21 @@ const DATA_MIGRATIONS: Array<{
       });
     },
   },
+  {
+    // Older releases retired some of these IDs. Reintroduce only the owner's
+    // explicitly requested counter items, and keep every one off the public menu.
+    id: "2026-09-18-restore-loyverse-staff-items",
+    run: (database, now) => STAFF_IMPORTED_PRODUCTS.map((product) =>
+      database.prepare(`UPDATE products SET category_id = ?, name = ?, description = ?,
+        product_type = ?, base_price_cents = ?, pickup_eligible = ?, delivery_eligible = ?,
+        active = 1, sold_out = 0, setup_required = 0, kitchen_label = ?, configuration_json = ?, updated_at = ? WHERE id = ?`)
+        .bind(product.categoryId, product.name, product.description, product.productType,
+          product.basePriceCents, product.pickupEligible === false ? 0 : 1,
+          product.deliveryEligible === false ? 0 : 1, product.name.toUpperCase().slice(0, 40),
+          JSON.stringify(product.configuration ?? {}), now, product.id),
+    ),
+  },
+
 ];
 
 export async function runDataMigrations(database: D1Database): Promise<void> {

@@ -649,7 +649,7 @@ const weekday = (product: MenuProductSeed, day: number, label: string) => staffO
   ...product, categoryId: "weekday-specials", pickupEligible: true, deliveryEligible: false,
   configuration: { ...product.configuration, availability: { weekdays: [day], startMinute: 0, endMinute: 1440, timeZone: "America/Toronto", label } },
 });
-const staffProducts: MenuProductSeed[] = [
+export const STAFF_IMPORTED_PRODUCTS: MenuProductSeed[] = [
   ...([
     ["buffalo-chicken-wrap", "Buffalo Chicken Wrap", 999],
     ["chicken-burger", "Chicken Burger", 649],
@@ -702,7 +702,7 @@ export const MENU_PRODUCTS: MenuProductSeed[] = [
   { id: "chocolate-brownie", categoryId: "desserts", name: "Chocolate Brownie", description: "A rich chocolate brownie for a sweet finish.", productType: "simple", basePriceCents: 299 },
   ...pickupSpecials,
   ...heroes,
-  ...staffProducts,
+  ...STAFF_IMPORTED_PRODUCTS,
 ];
 
 /** Products explicitly confirmed for the 2026-08-27 menu release. */

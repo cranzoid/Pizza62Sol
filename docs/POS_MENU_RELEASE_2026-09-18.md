@@ -13,7 +13,7 @@ Fourteen missing items were added as active, staff-only products: Buffalo Chicke
 Wrap, Chicken Burger, Chicken Fingers with Fries, Fried Chicken Dumplings,
 Shawarma Style Wrap, Free Garlic Bread, 12 Wings, large Nachos with Salsa Sauce,
 $1 Medium Pizza, the Monday/Tuesday/Wednesday specials, and both Game Night Deals.
-Weekday specials retain their weekday limits. These items can be disabled or
+The one-time restore migration reactivates legacy retired IDs as staff-only; subsequent deploys preserve owner edits. Weekday specials retain their weekday limits. These items can be disabled or
 published deliberately using Active and Staff only in Menu setup.
 
 Existing pizza sizes, specialty recipes/price options, combos, deals, drinks,

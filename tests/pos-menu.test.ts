@@ -47,3 +47,26 @@ test("the 40-wing limit covers different styles and sauces in one cart", { skip:
     assert.ok(quote.issues.some(i => /limited to 40/.test(i.message)));
   } finally { await getPool().query("DELETE FROM products WHERE id=$1", [id]); }
 });
+
+test("the release restores retired counter IDs once and preserves later owner edits", { skip: !reachable }, async () => {
+  const { runDataMigrations } = await import("@/db/runtime");
+  const { PostgresDatabase } = await import("@/db/pg-driver");
+  const marker = "dataMigration:2026-09-18-restore-loyverse-staff-items";
+  const pool = getPool();
+  const original = (await pool.query("SELECT active, configuration_json, base_price_cents FROM products WHERE id='chicken-burger'")).rows[0];
+  const publicPrice = (await pool.query("SELECT base_price_cents FROM products WHERE id='poutine'")).rows[0].base_price_cents;
+  try {
+    await pool.query("DELETE FROM settings WHERE key=$1", [marker]);
+    await pool.query("UPDATE products SET active=0, configuration_json='{}' WHERE id='chicken-burger'");
+    await runDataMigrations(new PostgresDatabase(pool));
+    const restored = (await pool.query("SELECT active, configuration_json FROM products WHERE id='chicken-burger'")).rows[0];
+    assert.equal(restored.active, 1);
+    assert.equal(JSON.parse(restored.configuration_json).staffOnly, true);
+    await pool.query("UPDATE products SET base_price_cents=701 WHERE id='chicken-burger'");
+    await runDataMigrations(new PostgresDatabase(pool));
+    assert.equal((await pool.query("SELECT base_price_cents FROM products WHERE id='chicken-burger'")).rows[0].base_price_cents, 701);
+    assert.equal((await pool.query("SELECT base_price_cents FROM products WHERE id='poutine'")).rows[0].base_price_cents, publicPrice);
+  } finally {
+    await pool.query("UPDATE products SET active=$1, configuration_json=$2, base_price_cents=$3 WHERE id='chicken-burger'", [original.active, original.configuration_json, original.base_price_cents]);
+  }
+});
