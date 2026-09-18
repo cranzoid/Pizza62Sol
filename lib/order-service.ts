@@ -447,6 +447,7 @@ async function validateItems(
   items: OrderRequest["items"],
   fulfilment: Fulfilment,
   operations: OperationSetting,
+  staffEntry = false,
 ): Promise<ValidatedItem[]> {
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
@@ -476,6 +477,7 @@ async function validateItems(
       throw new OrderValidationError(`${product.name} is not available for ${fulfilment}.`);
     }
     const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
+    if (productConfiguration.staffOnly && !staffEntry) throw new OrderValidationError("This item is only available at the counter.");
     const configuredMaximum = Number(productConfiguration.maxQuantity);
     const maximumQuantity = Number.isSafeInteger(configuredMaximum) && configuredMaximum >= 1 && configuredMaximum <= 100
       ? configuredMaximum
@@ -630,6 +632,13 @@ async function validateItems(
       snapshot,
       instructions,
     });
+  }
+  // A cap applies across differently configured lines, not just each sauce/style build.
+  for (const item of validated) {
+    const configuration = item.snapshot.productConfiguration as ProductConfiguration;
+    if (!configuration?.quantitySelectable || !configuration.maxQuantity) continue;
+    const count = validated.filter((line) => line.productId === item.productId).reduce((sum, line) => sum + line.quantity, 0);
+    if (count > Number(configuration.maxQuantity)) throw new OrderValidationError(`${item.productName} is limited to ${configuration.maxQuantity} per order.`);
   }
   return validated;
 }
@@ -858,7 +867,7 @@ export type OrderQuote = {
  *
  * Read-only: no order, no payment, no idempotency key, nothing persisted.
  */
-export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
+export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boolean } = {}): Promise<OrderQuote> {
   await ensureDatabase();
   const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
   const [ordering, delivery, taxTips, operations] = await Promise.all([
@@ -879,11 +888,11 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
   // completely unchanged rather than reworked to collect errors.
   let items: ValidatedItem[] = [];
   try {
-    items = await validateItems(submitted, fulfilment, operations);
-  } catch {
+    items = await validateItems(submitted, fulfilment, operations, context.staffEntry);
+  } catch (cartError) {
     for (const [index, line] of submitted.entries()) {
       try {
-        const [validated] = await validateItems([line], fulfilment, operations);
+        const [validated] = await validateItems([line], fulfilment, operations, context.staffEntry);
         items.push(validated);
       } catch (error) {
         issues.push({
@@ -894,6 +903,7 @@ export async function quoteOrder(body: OrderRequest): Promise<OrderQuote> {
         });
       }
     }
+    if (!issues.length) issues.push({ index: null, productId: null, code: "ORDER_VALIDATION_FAILED", message: cartError instanceof Error ? cartError.message : "This cart cannot be ordered." });
   }
 
   const couponCode = normalizeCouponCode(body.couponCode);
@@ -1296,7 +1306,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     if (fulfilment === "delivery" && !customer.phone) {
       throw new OrderValidationError("A delivery needs a phone number the driver can call.");
     }
-    const items = await validateItems(body.items, fulfilment, operations);
+    const items = await validateItems(body.items, fulfilment, operations, context.staffEntry);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
       productId: item.productId,

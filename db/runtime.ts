@@ -2,6 +2,7 @@ import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
+  withWingStyle,
   GAME_DAY_SPECIAL_PRODUCT_ID,
   LABOR_DAY_COMBO_PRODUCT_ID,
   LABOR_DAY_WINGS_PRODUCT_ID,
@@ -858,6 +859,19 @@ const DATA_MIGRATIONS: Array<{
           .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
           .bind(JSON.stringify({ ...configuration, maxQuantity: 40 }), now, LABOR_DAY_WINGS_PRODUCT_ID),
       ];
+    },
+  },
+  {
+    id: "2026-09-18-wing-style",
+    run: async (database, now) => {
+      const rows = await database.prepare("SELECT id, configuration_json FROM products").all<{ id: string; configuration_json: string }>();
+      return rows.results.flatMap((row) => {
+        const configuration = safeJson<Record<string, unknown>>(row.configuration_json, {});
+        const sections = (Array.isArray(configuration.sections) ? configuration.sections : []) as ModifierSectionSeed[];
+        const next = withWingStyle(sections);
+        if (next === sections) return [];
+        return [database.prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify({ ...configuration, sections: next }), now, row.id)];
+      });
     },
   },
 ];

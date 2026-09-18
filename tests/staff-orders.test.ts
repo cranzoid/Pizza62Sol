@@ -121,7 +121,7 @@ withDb("a customer cannot label their own order as a walk-in", async () => {
       }),
     }),
   );
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 201, await response.clone().text());
   const result = (await response.json()) as { orderNumber: string };
   assert.equal(await channelOf(result.orderNumber), "online", "the request body must not be able to set the channel");
 });
@@ -164,7 +164,7 @@ withDb("records a walk-in with only a name", async () => {
     idempotencyKey: nextKey(),
     customer: { name: "Blue cap" },
   });
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 201, await response.clone().text());
   const result = (await response.json()) as {
     orderNumber: string;
     orderId: string;
@@ -203,7 +203,7 @@ withDb("still emails a phone customer who gives an address", async () => {
     idempotencyKey: nextKey(),
     customer: { name: "Ada", phone: "905-555-0142", email: "ada@example.test" },
   });
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 201, await response.clone().text());
   const result = (await response.json()) as { orderNumber: string; orderId: string };
   assert.equal(await channelOf(result.orderNumber), "phone");
   const outbox = await getPool().query<{ kind: string }>(
@@ -340,7 +340,7 @@ withDb("rings in a deal, with a flavour chosen for every included can", async ()
           { id: "pizza-1-toppings", values: ["pepperoni"] },
           { id: "pizza-2-cheese", values: ["Regular Cheese"] },
           { id: "pizza-2-toppings", values: ["mushrooms"] },
-          { id: "wing-flavours", values: ["Honey Garlic"] },
+          { id: "wing-style", values: ["Classic (non-breaded)"] }, { id: "wing-flavours", values: ["Honey Garlic"] },
           { id: "drink-1", values: ["Root Beer"] },
           { id: "drink-2", values: ["Canada Dry"] },
           { id: "drink-3", values: ["Crush Cream Soda"] },
@@ -455,7 +455,7 @@ withDb("takes a phone delivery with an address, priced like a website delivery",
     customer: { name: "Ada", phone: "905-555-0142", email: "ada@example.test" },
     address: { line1: "55 Parkdale Ave N", unit: "2", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" },
   });
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 201, await response.clone().text());
   const result = (await response.json()) as { orderNumber: string };
 
   const order = (

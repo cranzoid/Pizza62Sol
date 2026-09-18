@@ -26,8 +26,8 @@ test("the $1 wing offer is pickup-only, quantity-selectable, and first in the me
   assert.equal(wings.configuration?.quantitySelectable, true);
   assert.equal(wings.configuration?.maxQuantity, 40);
   const sections = wings.configuration?.sections as Array<{ source?: string; min: number; max: number }>;
-  assert.equal(sections.length, 1);
-  assert.deepEqual(sections[0], { id: "wing-flavours", label: "Sauces & dry rubs", source: "wing_flavours", min: 1, max: 1 });
+  assert.equal(sections.length, 2);
+  assert.deepEqual(sections[1], { id: "wing-flavours", label: "Sauces & dry rubs", source: "wing_flavours", min: 1, max: 1 });
 });
 
 test("the $1 wing offer runs only on Labor Day in Toronto", () => {
