@@ -93,14 +93,14 @@ export async function loadPublicCatalog(): Promise<PublicCatalog> {
     listSettings(),
   ]);
 
+  const products = productResult.results.map((product) => ({
+    ...(product as { id: string; category_id: string }), configuration: safeJson<Record<string, unknown>>(product.configuration_json as string, {}), configuration_json: undefined,
+  })).filter((product) => !product.configuration.staffOnly);
+  const publicIds = new Set(products.map((product) => product["id"]));
   return {
-    categories: categoryResult.results,
-    products: productResult.results.map((product) => ({
-      ...product,
-      configuration: safeJson(product.configuration_json as string, {}),
-      configuration_json: undefined,
-    })),
-    variations: variationResult.results,
+    categories: categoryResult.results.filter((category) => products.some((product) => product["category_id"] === category.id)),
+    products,
+    variations: variationResult.results.filter((variation) => publicIds.has(String(variation.product_id))),
     toppings: toppingResult.results,
     settings: publicSettings(settings),
     closures: await loadActiveClosures(),

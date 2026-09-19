@@ -158,7 +158,7 @@ withDb("asks about the pizza inside a deal, not just a pizza bought on its own",
 
 withDb("asks about the wings, which no customer was ever asked before", async () => {
   const ids = await questionIds(
-    await completedOrder([{ productId: "1-lb-wings", quantity: 1, modifiers: [{ id: "wing-flavours", values: ["Hot"] }] }]),
+    await completedOrder([{ productId: "1-lb-wings", quantity: 1, modifiers: [{ id: "wing-style", values: ["Classic (non-breaded)"] }, { id: "wing-flavours", values: ["Hot"] }] }]),
   );
   assert.ok(ids.includes("wings"), `a wings order should be asked about the wings — got ${ids.join(", ")}`);
   assert.ok(!ids.includes("crust"), "wings alone are not a pizza");
@@ -174,7 +174,7 @@ withDb("has retired the vague pizza-quality question", async () => {
 withDb("emails the thank-you coupon to someone who rated us one star", async () => {
   const placed = await completedOrder([largePizza]);
   const response = await submitForm(placed, { overall: 1, crust: 1 }, "Cold by the time I got home.");
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 201, await response.clone().text());
   const body = (await response.json()) as { reward: { offer: string; worth: string } | null };
   assert.ok(body.reward, "a bad rating earns the same thank-you as a good one");
   assert.equal(body.reward.worth, `${formatMoney(399)} off`);

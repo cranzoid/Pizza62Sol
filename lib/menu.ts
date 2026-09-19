@@ -29,7 +29,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-09-08-labor-day-wing-cap";
+export const MENU_SEED_VERSION = "2026-09-18-staff-pos-monday-wings";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -42,6 +42,9 @@ export const MENU_CATEGORIES = [
   ["drinks", "Drinks", "drinks", 80],
   ["desserts", "Sweet Treats", "sweet-treats", 90],
   ["pickup-specials", "Pickup Specials", "pickup-specials", 100],
+  ["weekday-specials", "Weekday Specials", "weekday-specials", 120],
+  ["staff-extras", "Counter Extras", "counter-extras", 130],
+  ["game-night-deals", "Game Night Deals", "game-night-deals", 140],
   ["hamilton-heroes", "Hamilton Heroes", "hamilton-heroes", 110],
 ] as const;
 
@@ -132,6 +135,16 @@ const toppings = (
   sharedIncluded,
 });
 
+export const WING_STYLE_SECTION: ModifierSectionSeed = {
+  id: "wing-style", label: "Wing style", options: ["Classic (non-breaded)", "Breaded"], min: 1, max: 1,
+};
+
+export function withWingStyle(sections: ModifierSectionSeed[]): ModifierSectionSeed[] {
+  if (!sections.some((section) => section.source === "wing_flavours") || sections.some((section) => section.id === "wing-style")) return sections;
+  const index = sections.findIndex((section) => section.source === "wing_flavours");
+  return [...sections.slice(0, index), WING_STYLE_SECTION, ...sections.slice(index)];
+}
+
 const wingFlavours = (max: number): ModifierSectionSeed => ({
   id: "wing-flavours",
   label: "Sauces & dry rubs",
@@ -214,7 +227,7 @@ const bundle = (
   basePriceCents: priceCents,
   pickupEligible: true,
   deliveryEligible: !pickupOnly,
-  configuration: { sections: orderModifierSections(sections), specialInstructionsEnabled: true },
+  configuration: { sections: orderModifierSections(withWingStyle(sections)), specialInstructionsEnabled: true },
 });
 
 // Delivery only, and one price per size: the customer picks one to four
@@ -325,7 +338,7 @@ const wings: MenuProductSeed[] = [
   id: String(id), categoryId: "wings", name: String(name),
   description: "Chicken wings with your choice from all sauces and dry rubs.",
   productType: "configurable" as const, basePriceCents: Number(price),
-  configuration: { sections: [wingFlavours(Number(maximum))], specialInstructionsEnabled: true },
+  configuration: { sections: withWingStyle([wingFlavours(Number(maximum))]), specialInstructionsEnabled: true },
 }));
 
 const sides: MenuProductSeed[] = [
@@ -478,7 +491,7 @@ const pickupSpecials: MenuProductSeed[] = [
     ]),
     configuration: {
       sections: orderModifierSections([
-        ...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3), includedDip(),
+        ...pizzaSections(null, 3, 230), WING_STYLE_SECTION, wingFlavours(1), ...drinks(3), includedDip(),
       ]),
       specialInstructionsEnabled: true,
       freeDelivery: true,
@@ -515,7 +528,7 @@ const laborDayWings: MenuProductSeed = {
   pickupEligible: true,
   deliveryEligible: false,
   configuration: {
-    sections: [wingFlavours(1)],
+    sections: withWingStyle([wingFlavours(1)]),
     specialInstructionsEnabled: true,
     availability: LABOR_DAY_AVAILABILITY,
     featured: true,
@@ -591,7 +604,7 @@ const gameDaySpecial: MenuProductSeed = {
     gameDaySections,
   ),
   configuration: {
-    sections: orderModifierSections(gameDaySections),
+    sections: orderModifierSections(withWingStyle(gameDaySections)),
     specialInstructionsEnabled: true,
     availability: GAME_DAY_AVAILABILITY,
     // Leads the homepage offers strip and is drawn in its own colour while it is
@@ -618,8 +631,46 @@ const heroes: MenuProductSeed[] = [
   },
 ];
 
+export const MONDAY_WINGS_PRODUCT_ID = "monday-dollar-wings";
+export const MONDAY_WINGS_AVAILABILITY: WeeklyAvailability = {
+  weekdays: [1], startMinute: 0, endMinute: 1440, timeZone: "America/Toronto", label: "Mondays · pickup only",
+};
+const mondayWings: MenuProductSeed = {
+  ...laborDayWings, id: MONDAY_WINGS_PRODUCT_ID, name: "Monday Wings · $1 Each",
+  description: "$1 per wing, up to 40 wings. Choose Classic (non-breaded) or Breaded and your sauce. Mondays, pickup only.",
+  configuration: { ...laborDayWings.configuration, availability: MONDAY_WINGS_AVAILABILITY },
+};
+
+// Only genuinely missing Loyverse items are added. Existing public prices remain authoritative.
+const staffOnly = (product: MenuProductSeed): MenuProductSeed => ({
+  ...product, configuration: { ...product.configuration, staffOnly: true },
+});
+const weekday = (product: MenuProductSeed, day: number, label: string) => staffOnly({
+  ...product, categoryId: "weekday-specials", pickupEligible: true, deliveryEligible: false,
+  configuration: { ...product.configuration, availability: { weekdays: [day], startMinute: 0, endMinute: 1440, timeZone: "America/Toronto", label } },
+});
+export const STAFF_IMPORTED_PRODUCTS: MenuProductSeed[] = [
+  ...([
+    ["buffalo-chicken-wrap", "Buffalo Chicken Wrap", 999],
+    ["chicken-burger", "Chicken Burger", 649],
+    ["chicken-fingers-fries", "Chicken Fingers with Fries", 899],
+    ["fried-chicken-dumplings", "Fried Chicken Dumplings", 999],
+    ["shawarma-style-wrap", "Shawarma Style Wrap", 1099],
+    ["free-garlic-bread", "Free Garlic Bread", 0],
+  ] as const).map(([id, name, price]) => staffOnly({ id, name, categoryId: id === "free-garlic-bread" ? "staff-extras" : "sides", description: "Counter menu item imported from Loyverse.", productType: "simple", basePriceCents: price })),
+  staffOnly({ ...wings[0], id: "12-wings", name: "12 Wings", basePriceCents: 1499 }),
+  staffOnly({ id: "nachos-salsa", name: "Nachos with Salsa Sauce", categoryId: "sides", description: "Large nachos with salsa sauce.", productType: "simple", basePriceCents: 1449 }),
+  staffOnly(pickupPizza("dollar-medium-pizza", "$1 Medium Pizza", 100, "Medium", 160, 0)),
+  weekday(bundle("monday-large-special", "weekday-specials", "Monday Special · Large 3-Topping Pizza", 1149, "One large pizza with 3 toppings.", pizzaSections(null, 3, 230)), 1, "Mondays"),
+  weekday(bundle("tuesday-medium-special", "weekday-specials", "Tuesday Special · 2 Medium 1-Topping Pizzas", 1349, "Two medium pizzas with 1 topping each.", [...pizzaSections(1, 1, 210), ...pizzaSections(2, 1, 210)]), 2, "Tuesdays"),
+  weekday(bundle("wednesday-pizza-wings", "weekday-specials", "Wednesday Special · Medium Pepperoni & 1 lb Wings", 1599, "Medium pepperoni pizza and 1 lb wings.", [...pizzaSections(null, 1, 210).map((section) => section.source === "toppings" ? { ...section, source: undefined, options: ["Pepperoni"], min: 1, max: 1 } : section), wingFlavours(1)]), 3, "Wednesdays"),
+  staffOnly(bundle("game-night-large-wings", "game-night-deals", "Game Night · Large Pizza, 1 lb Wings & 3 Pops", 2499, "Large 3-topping pizza, 1 lb wings and 3 pops.", [...pizzaSections(null, 3, 230), wingFlavours(1), ...drinks(3)])),
+  staffOnly(bundle("game-night-two-medium", "game-night-deals", "Game Night · 2 Medium Pizzas & 4 Pops", 2699, "Two medium 3-topping pizzas and 4 pops.", [...pizzaSections(1, 3, 210), ...pizzaSections(2, 3, 210), ...drinks(4)])),
+];
+
 export const MENU_PRODUCTS: MenuProductSeed[] = [
   laborDayWings,
+  mondayWings,
   gameDaySpecial,
   ...standalonePizzas,
   ...specialtyPizzas,
@@ -651,6 +702,7 @@ export const MENU_PRODUCTS: MenuProductSeed[] = [
   { id: "chocolate-brownie", categoryId: "desserts", name: "Chocolate Brownie", description: "A rich chocolate brownie for a sweet finish.", productType: "simple", basePriceCents: 299 },
   ...pickupSpecials,
   ...heroes,
+  ...STAFF_IMPORTED_PRODUCTS,
 ];
 
 /** Products explicitly confirmed for the 2026-08-27 menu release. */

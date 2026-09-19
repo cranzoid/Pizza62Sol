@@ -1687,3 +1687,31 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .feedback-reply__actions { align-items:stretch; flex-direction:column; }
   .feedback-reply__actions .staff-button { width:100%; }
 }
+
+/* Touch-friendly category-first POS; scoped to the counter screen. */
+.till-pos .staff-panel { border-radius: 16px; }
+.till-pos .till-workspace { grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr); align-items: start; }
+.till-ticket { position: sticky; top: 20px; }
+.till-ticket .till-lines { max-height: 32vh; overflow-y: auto; }
+.till-categories { display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 12px; }
+.till-category { min-height: 136px; border: 1px solid #dce4df; border-radius: 12px; padding: 18px; text-align: left; display: flex; flex-direction: column; gap: 12px; background: #edf4ee; color: #203f2d; cursor: pointer; font: inherit; }
+.till-category--1 { background: #fff1dd; color: #654615; border-color: #eddfc8; }
+.till-category--2 { background: #eaf1fb; color: #274773; border-color: #d5e0ef; }
+.till-category--3 { background: #f7e9e7; color: #793a32; border-color: #ecd6d2; }
+.till-category--4 { background: #eeeafa; color: #514078; border-color: #dfd8ef; }
+.till-category:hover { filter: brightness(.97); transform: translateY(-2px); }
+.till-category-icon { font-size: 12px; font-weight: 900; opacity: .65; letter-spacing: 2px; }
+.till-category strong { font-size: 16px; }
+.till-category small { display: flex; justify-content: space-between; margin-top: auto; font-size: 12px; }
+.till-category-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 14px; }
+.till-category-tabs button { flex: none; min-height: 44px; padding: 10px 14px; border: 1px solid #dce4df; border-radius: 8px; background: #f7faf7; font: inherit; font-size: 12px; cursor: pointer; }
+.till-category-tabs button[aria-pressed="true"] { background: #244d34; border-color: #244d34; color: white; }
+.till-pos .till-button { min-height: 120px; padding: 16px; gap: 10px; }
+.till-pos .till-button strong { font-size: 14px; }
+.till-pos .till-button b { font-size: 16px; }
+.till-pos .till-search { min-height: 48px; font-size: 15px; padding: 12px 16px; }
+.till-customer summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 700; font-size: 13px; }
+.till-customer summary small { margin-left: 12px; color: #77807a; font-weight: 400; }
+.till-pos button:focus-visible { outline: 3px solid #d79526; outline-offset: 3px; }
+@media (max-width: 900px) { .till-pos .till-workspace { grid-template-columns: minmax(0, 1fr); } .till-ticket { position: static; } }
+@media (max-width: 480px) { .till-categories { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .till-category { padding: 14px; } }

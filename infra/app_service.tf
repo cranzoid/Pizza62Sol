@@ -84,7 +84,8 @@ locals {
       SEO_INDEXABLE   = var.custom_domain != "" ? "true" : "false"
 
       # Public identifiers, not secrets. Empty values make each integration a
-      # no-op; the browser still requires explicit consent before loading one.
+      # no-op — which is how the staging slot below stays out of the production
+      # pixel while sharing every other setting.
       GOOGLE_SITE_VERIFICATION    = var.google_site_verification
       META_PIXEL_ID               = var.meta_pixel_id
       GA4_MEASUREMENT_ID          = var.ga4_measurement_id

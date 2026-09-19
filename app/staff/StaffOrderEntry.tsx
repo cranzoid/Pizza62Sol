@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { cashChange, compareMenuPrice, formatMoney } from "@/lib/domain";
+import { cashChange, compareMenuPrice, formatMoney, isWithinWeeklyAvailability, type WeeklyAvailability } from "@/lib/domain";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
 import {
@@ -131,6 +131,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   // Read out over the phone as often as typed at a keyboard — the thank-you
   // email tells customers to do exactly that, and until now there was nowhere
   // at the counter to put it, so a code the website honours was refused by the
@@ -162,7 +163,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const categoryOrder = new Map(dashboard.categories.map((category) => [category.id, category.display_order]));
   const sellable = dashboard.products
     .filter((product) => {
-      if (!product.active || product.sold_out || product.setup_required) return false;
+      if (!product.active || product.sold_out || product.setup_required || !isWithinWeeklyAvailability(product.configuration.availability as WeeklyAvailability | undefined)) return false;
       return Boolean(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible);
     })
     // Same order the website shows: categories in menu order, cheapest first
@@ -183,9 +184,12 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     ? dashboard.variations.filter((variation) => variation.product_id === building.id && variation.active)
     : [];
 
+  const categories = dashboard.categories.filter((category) => category.active && sellable.some((product) => product.category_id === category.id));
+  const selectedCategory = categories.find((category) => category.id === categoryId);
+  // Searching crosses categories so staff can find an item without knowing its group.
   const matching = search.trim()
-    ? sellable.filter((product) => product.name.toLowerCase().includes(search.trim().toLowerCase()))
-    : sellable;
+    ? sellable.filter((product) => `${product.name} ${dashboard.categories.find((category) => category.id === product.category_id)?.name ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()))
+    : selectedCategory ? sellable.filter((product) => product.category_id === categoryId) : [];
 
   const body = useCallback(
     (extra: Record<string, unknown> = {}) => ({
@@ -415,7 +419,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     : [];
 
   return (
-    <div className="admin-stack admin-controls">
+    <div className="admin-stack admin-controls till-pos">
       <section className="staff-panel">
         <div className="staff-panel-head">
           <h2>Take an order</h2>
@@ -424,15 +428,13 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             <button className={channel === "phone" ? "active" : ""} aria-pressed={channel === "phone"} onClick={() => setChannel("phone")}>Phone</button>
           </div>
         </div>
-        <p className="editor-hint">
-          Rung in here, an order is priced and taxed exactly like a website order and goes straight to the kitchen
-          board. Only a name is needed — add an email if the customer wants a confirmation and the updates that
-          follow it. A delivery needs a phone number and an address inside the delivery area.
-        </p>
+        <p className="editor-hint">Choose a category, tap an item, then send the ticket to the kitchen.</p>
         <div className="segmented-range till-fulfilment" role="group" aria-label="Pickup or delivery">
           <button className={fulfilment === "pickup" ? "active" : ""} aria-pressed={fulfilment === "pickup"} onClick={() => setFulfilment("pickup")}>Pickup</button>
           <button className={fulfilment === "delivery" ? "active" : ""} aria-pressed={fulfilment === "delivery"} onClick={() => setFulfilment("delivery")}>Delivery</button>
         </div>
+        <details className="till-customer" open={fulfilment === "delivery" || channel === "phone"}>
+        <summary>Customer details <small>{name || "Counter"}{phone ? ` · ${phone}` : ""}</small></summary>
         <div className="settings-form">
           <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" /></label>
           <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
@@ -452,12 +454,14 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             <p className="editor-hint">Hamilton, ON only — that is the whole delivery area, so the city is filled in for you. The address is checked against the delivery radius when the order is placed.</p>
           </>
         ) : null}
+        </details>
       </section>
 
-      <div className="staff-grid">
+      <div className="staff-grid till-workspace">
         <section className="staff-panel">
-          <div className="staff-panel-head"><h2>Menu</h2><span className="live-chip">{matching.length} items</span></div>
+          <div className="staff-panel-head"><h2>{search.trim() ? "Search results" : selectedCategory?.name ?? "Categories"}</h2>{selectedCategory || search.trim() ? <button className="staff-button" onClick={() => { setCategoryId(null); setSearch(""); }}>All categories</button> : <span className="live-chip">{sellable.length} items</span>}</div>
           <input className="till-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search the menu" aria-label="Search the menu" />
+          {selectedCategory || search.trim() ? <nav className="till-category-tabs" aria-label="Menu categories">{categories.map((category) => <button key={category.id} aria-pressed={category.id === categoryId && !search.trim()} onClick={() => { setCategoryId(category.id); setSearch(""); }}>{category.name}</button>)}</nav> : <div className="till-categories">{categories.map((category, index) => <button className={`till-category till-category--${index % 5}`} key={category.id} onClick={() => setCategoryId(category.id)}><span className="till-category-icon" aria-hidden="true">{category.name.slice(0, 2).toUpperCase()}</span><strong>{category.name}</strong><small>{sellable.filter((product) => product.category_id === category.id).length} items <span aria-hidden="true">→</span></small></button>)}</div>}
           <div className="till-grid">
             {matching.map((product) => {
               const variations = dashboard.variations.filter((variation) => variation.product_id === product.id && variation.active);
@@ -472,7 +476,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                 return (
                   <button className="till-button till-button--choices" key={product.id} onClick={() => setBuilding(product)}>
                     <strong>{product.name}</strong>
-                    <span>Choices…</span>
+                    <span>{product.configuration.staffOnly ? "Staff only · " : ""}Choose options</span>
                     <b>{variations.length > 1 ? `from ${formatMoney(from)}` : formatMoney(from)}</b>
                   </button>
                 );
@@ -489,15 +493,16 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
               return (
                 <button className="till-button" key={product.id} onClick={() => addPlain(product)}>
                   <strong>{product.name}</strong>
+                  {product.configuration.staffOnly ? <span>Staff only</span> : null}
                   <b>{formatMoney(product.base_price_cents)}</b>
                 </button>
               );
             })}
-            {!matching.length ? <div className="staff-empty">Nothing matches that.</div> : null}
+            {!matching.length && (selectedCategory || search.trim()) ? <div className="staff-empty">No items found. Try another search or category.</div> : null}
           </div>
         </section>
 
-        <aside className="staff-panel">
+        <aside className="staff-panel till-ticket">
           <div className="staff-panel-head"><h2>This order</h2><span className="live-chip">{lines.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
           <div className="till-lines">
             {lines.map((line) => (

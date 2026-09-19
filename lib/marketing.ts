@@ -42,16 +42,6 @@ export const OPEN_CONSENT_EVENT = "p62:open-consent";
  */
 const ATTRIBUTION_KEY = "p62_campaign_attribution_v2";
 const PURCHASE_KEY_PREFIX = "p62_marketing_purchase_";
-const pendingExternal: Array<{ eventName: string; context: EventContext }> = [];
-const externalEventNames = new Set([
-  "product_viewed",
-  "add_to_cart",
-  "remove_from_cart",
-  "cart_viewed",
-  "checkout_started",
-  "purchase_completed",
-  "phone_clicked",
-]);
 
 const allowedEventNames = new Set([
   "website_visit",
@@ -119,9 +109,16 @@ export function marketingConfigured(): boolean {
   return Boolean(current.metaPixelId || current.ga4Id || current.googleAdsId);
 }
 
+/**
+ * Implied consent, with the privacy policy as the notice: measurement runs
+ * unless this browser has explicitly opted out. Pizza 62 operates in Ontario
+ * under PIPEDA, which does not require the prior opt-in that an EU cookie
+ * banner exists to collect — so there is no "undecided" state to wait on, only
+ * a recorded "no". `revokeMarketing` is what writes that "no".
+ */
 export function hasMarketingConsent(): boolean {
   if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(MARKETING_CONSENT_KEY) === "granted";
+  return window.localStorage.getItem(MARKETING_CONSENT_KEY) !== "denied";
 }
 
 /**
@@ -263,14 +260,10 @@ export function initializeMarketing(): void {
   const current = config();
   initializeMeta(current.metaPixelId);
   initializeGoogle(current.ga4Id, current.googleAdsId);
-  if (pendingExternal.length) {
-    const queued = pendingExternal.splice(0);
-    queued.forEach(({ eventName, context }) => sendExternal(eventName, context));
-  }
 }
 
 export function revokeMarketing(): void {
-  pendingExternal.length = 0;
+  window.localStorage.setItem(MARKETING_CONSENT_KEY, "denied");
   window.fbq?.("consent", "revoke");
   window.gtag?.("consent", "update", {
     ad_storage: "denied",
@@ -370,10 +363,6 @@ export function trackEvent(eventName: string, context: EventContext = {}): void 
     keepalive: true,
   });
   if (hasMarketingConsent()) sendExternal(eventName, context);
-  else if (marketingConfigured() && externalEventNames.has(eventName)) {
-    pendingExternal.push({ eventName, context });
-    if (pendingExternal.length > 30) pendingExternal.shift();
-  }
 }
 
 export function openCookieChoices(): void {

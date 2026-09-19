@@ -86,7 +86,7 @@ export async function POST(request: Request) {
     // same number the order will be created for — so it comes from the same
     // pricing path rather than being added up on the till screen.
     if (body.quoteOnly) {
-      return Response.json(await quoteOrder(body), { status: 200 });
+      return Response.json(await quoteOrder(body, { staffEntry: true }), { status: 200 });
     }
 
     const result = await createOrder(body, { channel, staffEntry: true, staffUserId: user.id });
