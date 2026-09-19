@@ -26,13 +26,19 @@ generated from `db/schema.ts`.
 - `PUBLIC_BASE_URL` and `SEO_INDEXABLE=true` — canonical public origin and the production-only indexing gate
 - `GOOGLE_SITE_VERIFICATION` — optional Search Console verification token
 - `META_PIXEL_ID` — optional numeric Meta Pixel ID
-- `GA4_MEASUREMENT_ID` — legacy optional GA4 web stream ID (`G-...`); the public site no longer loads third-party measurement tags
+- `GA4_MEASUREMENT_ID` — optional GA4 web stream ID (`G-...`)
 - `GOOGLE_ADS_ID` and `GOOGLE_ADS_CONVERSION_LABEL` — optional direct Google Ads purchase conversion identifiers
 
-The marketing IDs are public identifiers, not credentials. They remain documented
-for deployment compatibility, but the public site no longer loads Meta or Google
-advertising-measurement tags. First-party service analytics still records product
-views, bag additions, checkout starts, phone-link clicks, and confirmed purchases.
+The marketing IDs are public identifiers, not credentials, and each is read from
+`<html data-*>` in the root layout. A blank value disables that integration, so
+staging and local development load no tags. When an ID is set, the tag loads for
+every storefront visitor under implied consent — `lib/marketing.ts` skips staff,
+kitchen and order-tracking paths, and honours a stored opt-out. Product views,
+bag additions, checkout starts, phone-link clicks, and confirmed purchases are
+mapped to commerce events. Purchase events use the server-generated order number
+as the transaction ID and CAD order value, including after the customer returns
+from Clover Hosted Checkout. Changing this behaviour means changing
+`app/privacy/page.tsx` too — it is the consent notice.
 
 The home page server-renders the live menu and emits `Restaurant`, `WebSite`, and
 `Menu` JSON-LD. Production exposes a canonical sitemap and crawler policy; Azure
