@@ -1775,7 +1775,7 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 }
 .giftcard-step > p { margin: 0 0 16px 38px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
-.giftcard-amounts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+.giftcard-amounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .giftcard-amounts button {
   border: 1px solid var(--line);
   background: white;

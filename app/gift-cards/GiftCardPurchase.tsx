@@ -59,7 +59,7 @@ function freshKey(): string {
 }
 
 export default function GiftCardPurchase({ available, cardForm }: GiftCardPurchaseProps) {
-  const [amountCents, setAmountCents] = useState<number>(GIFT_CARD_PRESET_CENTS[1]);
+  const [amountCents, setAmountCents] = useState<number>(GIFT_CARD_PRESET_CENTS[0]);
   const [customAmount, setCustomAmount] = useState("");
   const [custom, setCustom] = useState(false);
   const [recipientName, setRecipientName] = useState("");

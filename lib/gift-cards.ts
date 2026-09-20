@@ -46,7 +46,7 @@ const CODE_LENGTH = 16;
 const CODE_PREFIX = "P62";
 
 /** Presets on the purchase page. The custom field is bounded by the pair below. */
-export const GIFT_CARD_PRESET_CENTS = [1_500, 2_500, 5_000, 7_500] as const;
+export const GIFT_CARD_PRESET_CENTS = [2_500, 5_000, 7_500] as const;
 
 /**
  * The floor and the ceiling, enforced server-side as well as in the form.
