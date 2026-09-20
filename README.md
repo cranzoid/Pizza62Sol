@@ -52,7 +52,9 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
 
 ## Validation
 
-- `npm test` — pricing, topping allocation, promotions, delivery boundaries, tax, tips, hours, order status, permissions, timekeeping, refunds, and secure tokens
+- `npm test` — pricing, topping allocation, promotions, gift card redemption and
+  its hold/capture/release pairing, delivery boundaries, tax, tips, hours, order
+  status, permissions, timekeeping, refunds, and secure tokens
 - `npx tsc --noEmit` — strict TypeScript validation
 - `npm run lint` — React, accessibility-oriented, and Next.js lint checks
 - `npm run build` — production build
@@ -87,6 +89,28 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   is no penny; the bill itself never moves), the change owed, and the notes and
   coins to count out. It stays on screen after the ticket prints, because that
   is when the money actually changes hands.
+- **Gift cards** are sold at `/gift-cards`, emailed to a named recipient with a
+  personal message, and redeemed at the website checkout or the counter till. A
+  gift card is a **tender, not a discount**: the sale carries no HST (a gift card
+  is not a taxable supply in Canada), and HST is charged in full on the food when
+  the card is spent. So `total_cents` is untouched by a redemption and what the
+  customer's card is charged is `total_cents − gift_card_applied_cents`. A card
+  that covers the bill outright skips Clover entirely and the order is live the
+  moment it commits.
+- The code is stored only as a SHA-256 digest, with the last four characters kept
+  in clear for staff lookup, so a database dump contains no spendable money. The
+  consequence is that a lost code cannot be re-sent: staff void the card and
+  reissue whatever is left as a new one (**Admin → Gift cards**), which is better
+  practice anyway because the lost code dies with it.
+- Ontario's Consumer Protection Act is enforced by the schema rather than by
+  convention: `gift_cards_purchase_never_expires` refuses an expiry date on any
+  card somebody paid for, and there is no fee logic anywhere. Only a free
+  promotional card issued by the owner may carry one.
+- Redemption takes a **hold** inside the transaction that creates the order, and
+  exactly one of a capture (payment cleared) or a release (declined, expired,
+  cancelled before payment) must follow. A hold with neither is a customer who
+  has permanently lost money, so all four paths that can end an unpaid order
+  release it, and `tests/gift-cards.test.ts` asserts the pairing.
 - Feedback asks about the crust, the sauce and the toppings when the order
   contained pizza, and about the wings when it contained wings. A five-star
   rating is thanked and walked to the Google review page; every other rating is

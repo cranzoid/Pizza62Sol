@@ -99,8 +99,8 @@ function buildFilters(url: URL): Filters {
 
 const ORDER_COLUMNS = `id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel,
    status, payment_status, payment_method, schedule_type, scheduled_for, created_at,
-   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents, pricing_json,
-   attribution_json`;
+   subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents,
+   gift_card_applied_cents, pricing_json, attribution_json`;
 
 export async function GET(request: Request) {
   try {
@@ -272,6 +272,13 @@ const CSV_HEADERS = [
   "HST collected",
   "Tip",
   "Final order total",
+  // The tender split. "Final order total" stays the bill — the figure HST was
+  // charged on — and these two say how it was settled. A bookkeeper needs both:
+  // the first is revenue, the second is the money that came in today, and a
+  // gift card redemption is the difference between them because that money
+  // arrived on the day the card was sold.
+  "Paid by gift card",
+  "Charged to card or cash",
 ];
 
 /**
@@ -347,6 +354,8 @@ function toCsv(rows: Array<Record<string, unknown>>, canViewContact: boolean): s
         money(row.tax_cents),
         money(row.tip_cents),
         money(row.total_cents),
+        money(row.gift_card_applied_cents),
+        money(Math.max(0, Number(row.total_cents ?? 0) - Number(row.gift_card_applied_cents ?? 0))),
       ]
         .map(csvField)
         .join(","),

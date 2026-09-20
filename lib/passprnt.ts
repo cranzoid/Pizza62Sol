@@ -98,6 +98,8 @@ export function buildPassPrntTicketHtml(
       ? `<div class="note">ORDER NOTE: ${escapeHtml(order.instructions)}</div>`
       : "";
 
+  const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
+  const amountDueCents = Math.max(0, Number(order.total_cents ?? 0) - giftCardCents);
   const moneyMarkup = totalRows({
     subtotal_cents: Number(order.subtotal_cents ?? 0),
     discount_cents: Number(order.discount_cents ?? 0),
@@ -105,8 +107,13 @@ export function buildPassPrntTicketHtml(
     delivery_fee_cents: Number(order.delivery_fee_cents ?? 0),
     tip_cents: Number(order.tip_cents ?? 0),
     total_cents: Number(order.total_cents ?? 0),
+    gift_card_applied_cents: giftCardCents,
   })
-    .filter((row) => !row.strong)
+    // The emphasised bottom line is drawn separately below, so whichever row it
+    // is gets dropped here. With a gift card that is `Amount due`, and `Total`
+    // moves up into the small rows — a ticket that showed only what is left to
+    // collect could not be reconciled against the day's HST.
+    .filter((row) => (giftCardCents > 0 ? row.kind !== "due" : !row.strong))
     .map((row) => `<div class="money-row"><span>${escapeHtml(row.label)}</span><span>${escapeHtml(row.value)}</span></div>`)
     .join("");
 
@@ -133,7 +140,7 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
   ${addressMarkup}
   ${addressMarkup ? `<div class="rule"></div>` : ""}
   <section>${moneyMarkup}</section>
-  <div class="total"><span>${paid ? "PAID ONLINE" : "COLLECT"}</span><span>${escapeHtml(formatMoney(Number(order.total_cents ?? 0)))}</span></div>
+  <div class="total"><span>${giftCardCents > 0 && amountDueCents === 0 ? "PAID BY GIFT CARD" : paid ? "PAID ONLINE" : "COLLECT"}</span><span>${escapeHtml(formatMoney(amountDueCents))}</span></div>
   <footer class="footer">Pizza 62 &middot; printed ${escapeHtml(ticketTime(printedAt))}</footer>
 </body></html>`;
 }

@@ -23,7 +23,8 @@ import { snapshotDetails, snapshotFlags, type ItemSnapshot } from "@/lib/order-p
 const ORDER_COLUMNS = `id, order_number, customer_id, customer_name, customer_phone, customer_email,
    fulfilment, channel, status, payment_status, payment_method, schedule_type, scheduled_for,
    estimated_for, address_json, instructions, attribution_json, subtotal_cents, discount_cents,
-   tax_cents, delivery_fee_cents, tip_cents, total_cents, created_at, updated_at, acknowledged_at`;
+   tax_cents, delivery_fee_cents, tip_cents, total_cents, gift_card_applied_cents, gift_card_id,
+   created_at, updated_at, acknowledged_at`;
 
 async function toppingNameMap(): Promise<Map<string, string>> {
   const rows = await getD1().prepare("SELECT id, name FROM toppings").all<{ id: string; name: string }>();

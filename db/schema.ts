@@ -102,6 +102,40 @@ export const OUTBOX_STATUSES = [
 /** H-11b: matched by `applyPromotions`; anything else would never apply. */
 export const PROMOTION_TYPES = ["percentage", "fixed", "free_delivery"] as const;
 
+/**
+ * Gift cards. `voided` is the only way a card stops being spendable — there is
+ * deliberately no `expired`, because under Ontario's Consumer Protection Act a
+ * purchased single-merchant gift card cannot expire at all. See `giftCards`.
+ */
+export const GIFT_CARD_STATUSES = ["active", "voided"] as const;
+
+/** How a card came to exist. Only `staff_issue` may ever carry an expiry. */
+export const GIFT_CARD_ORIGINS = ["purchase", "staff_issue"] as const;
+
+/**
+ * The money-movement vocabulary of `gift_card_transactions`.
+ *
+ * `hold` reserves money against an order that has not been paid for yet;
+ * exactly one of `capture` (the payment cleared) or `release` (it did not) must
+ * follow it, or the customer has lost the balance permanently.
+ */
+export const GIFT_CARD_TRANSACTION_TYPES = [
+  "issue",
+  "hold",
+  "capture",
+  "release",
+  "adjust",
+  "void",
+] as const;
+
+/** The sale of a gift card, which is not an order and has its own lifecycle. */
+export const GIFT_CARD_PURCHASE_STATUSES = [
+  "awaiting_payment",
+  "paid",
+  "cancelled",
+  "failed",
+] as const;
+
 const inList = (column: string, values: readonly string[]) =>
   sql.raw(`${column} IN (${values.map((value) => `'${value}'`).join(", ")})`);
 
@@ -326,6 +360,130 @@ export const orderSequences = pgTable("order_sequences", {
   currentNumber: integer("current_number").notNull(),
 });
 
+/**
+ * The sale of a gift card — deliberately not an order.
+ *
+ * `orders` carries a NOT NULL `fulfilment` constrained to pickup or delivery, a
+ * check that a delivery has an address, a `P62-` number, a place on the kitchen
+ * board, a PassPRNT ticket, a phone call to the restaurant and an automatic
+ * feedback request. Every one of those is wrong for a gift card, and suppressing
+ * them all is more code and more risk than this small parallel table.
+ *
+ * What it does share is the payment contract: a Clover session id in
+ * `provider_reference` (Clover has no metadata passthrough, so that column is
+ * the only link back from a webhook) and an idempotency key scoped the same way
+ * payments are.
+ */
+export const giftCardPurchases = pgTable(
+  "gift_card_purchases",
+  {
+    id: text("id").primaryKey(),
+    /** `GC-1001`, from the `gift_card` key in `order_sequences`. */
+    reference: text("reference").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    buyerName: text("buyer_name").notNull(),
+    buyerEmail: text("buyer_email").notNull(),
+    recipientName: text("recipient_name").notNull(),
+    recipientEmail: text("recipient_email").notNull(),
+    message: text("message"),
+    status: text("status").notNull(),
+    provider: text("provider").notNull(),
+    providerReference: text("provider_reference"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    failureReason: text("failure_reason"),
+    /** Which ad, if any, sold this card. Same shape as `orders`. */
+    attributionJson: text("attribution_json"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("gift_card_purchases_reference_uq").on(table.reference),
+    // The same reasoning as `payments_idempotency_uq`, and for the same reason:
+    // when a checkout session cannot be created the purchase is marked failed
+    // and the key has to be released so the buyer can retry, while the row
+    // stays behind for reconciliation. Under an unconditional unique index that
+    // leftover row makes every retry collide and locks the buyer out for good.
+    uniqueIndex("gift_card_purchases_idempotency_uq")
+      .on(table.idempotencyKey)
+      .where(sql`${table.status} <> 'failed'`),
+    index("gift_card_purchases_provider_ref_idx").on(table.providerReference),
+    index("gift_card_purchases_created_idx").on(table.createdAt),
+    check("gift_card_purchases_status", inList("status", GIFT_CARD_PURCHASE_STATUSES)),
+    check("gift_card_purchases_amount_positive", sql`amount_cents > 0`),
+  ],
+);
+
+/**
+ * One row per card.
+ *
+ * **The code is stored only as a SHA-256 hash**, exactly like the tracking and
+ * feedback tokens above, and for a stronger reason: a gift card code *is* money,
+ * so a database dump must not contain a single spendable one. `code_suffix`
+ * holds the last four characters in clear so staff can find a card the customer
+ * is reading out and so an email can say "the card ending 7Q4K" — the same
+ * trade `integration_secrets.hint` makes.
+ *
+ * The consequence is that a lost code cannot be re-sent, because nothing here
+ * can reconstruct it. Staff void the card and reissue the remaining balance as a
+ * new one, which is better practice anyway: the lost code dies with it.
+ *
+ * **`expires_at` is NULL for anything anyone paid for**, enforced by
+ * `gift_cards_purchase_never_expires` rather than left to application code.
+ * Ontario's Consumer Protection Act forbids an expiry date and dormancy fees on
+ * a single-merchant gift card; a promotional card given away free may expire,
+ * which is the only reason the column exists at all. There is no fee logic
+ * anywhere in this schema, deliberately.
+ */
+export const giftCards = pgTable(
+  "gift_cards",
+  {
+    id: text("id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    /** Last four characters, in clear, for staff lookup. Never enough to spend. */
+    codeSuffix: text("code_suffix").notNull(),
+    initialCents: integer("initial_cents").notNull(),
+    /**
+     * What is left to spend, with any in-flight hold already deducted.
+     *
+     * A hold subtracts here and a release adds back, so "available" needs no
+     * second column and no join: the one number is the truth, and the
+     * `gift_cards_balance_nonneg` check below is what makes two simultaneous
+     * orders against the last dollar impossible rather than merely unlikely.
+     */
+    balanceCents: integer("balance_cents").notNull(),
+    currency: text("currency").notNull().default("CAD"),
+    status: text("status").notNull().default("active"),
+    origin: text("origin").notNull(),
+    purchaseId: text("purchase_id").references(() => giftCardPurchases.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    recipientName: text("recipient_name").notNull(),
+    recipientEmail: text("recipient_email").notNull(),
+    senderName: text("sender_name").notNull(),
+    message: text("message"),
+    expiresAt: bigint("expires_at", { mode: "number" }),
+    issuedAt: bigint("issued_at", { mode: "number" }).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("gift_cards_code_hash_uq").on(table.codeHash),
+    // Staff search by what the customer can read off their phone.
+    index("gift_cards_suffix_idx").on(table.codeSuffix),
+    index("gift_cards_recipient_idx").on(table.recipientEmail),
+    // The outstanding-liability total scans this.
+    index("gift_cards_status_idx").on(table.status),
+    check("gift_cards_status", inList("status", GIFT_CARD_STATUSES)),
+    check("gift_cards_origin", inList("origin", GIFT_CARD_ORIGINS)),
+    check("gift_cards_initial_positive", sql`initial_cents > 0`),
+    // Load-bearing, not bookkeeping. `holdGiftCard` decrements unconditionally
+    // and lets this constraint abort the transaction when two orders race for
+    // the same last dollar — which is why the hold, the order and every row
+    // beside them either all commit or none do.
+    check("gift_cards_balance_nonneg", nonNegative("balance_cents")),
+    check("gift_cards_purchase_never_expires", sql`origin <> 'purchase' OR expires_at IS NULL`),
+  ],
+);
+
 export const orders = pgTable(
   "orders",
   {
@@ -365,6 +523,31 @@ export const orders = pgTable(
     deliveryFeeCents: integer("delivery_fee_cents").notNull(),
     tipCents: integer("tip_cents").notNull(),
     totalCents: integer("total_cents").notNull(),
+    /**
+     * A gift card is a tender, not a discount: it pays a bill rather than
+     * reducing one.
+     *
+     * That distinction is the whole reason these two columns exist here instead
+     * of the redemption being folded into `discount_cents`. HST is charged in
+     * full on the food — a gift card sale is not a taxable supply, the tax is
+     * collected when the card is *spent* — so `total_cents` is untouched by a
+     * redemption and `subtotal_cents`, `tax_cents` and `tip_cents` keep meaning
+     * exactly what they meant before gift cards existed.
+     *
+     * What the customer's card is actually charged is
+     * `total_cents - gift_card_applied_cents`, and that is what the `payments`
+     * row records — which is what keeps the existing refund ceiling honest:
+     * you can only refund to a card what went onto it.
+     */
+    giftCardAppliedCents: integer("gift_card_applied_cents").notNull().default(0),
+    /**
+     * Which card paid. Null on every order that used none, which is almost all
+     * of them, and on every order placed before gift cards existed.
+     */
+    giftCardId: text("gift_card_id").references(() => giftCards.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
     acknowledgedAt: bigint("acknowledged_at", { mode: "number" }),
     ...timestamps,
   },
@@ -392,7 +575,16 @@ export const orders = pgTable(
         "delivery_fee_cents",
         "tip_cents",
         "total_cents",
+        "gift_card_applied_cents",
       ),
+    ),
+    // A card cannot pay more than the bill, and money taken off a bill has to
+    // name the card it came from — otherwise the ledger and the order disagree
+    // about who is owed what, with no way to tell which is right.
+    check(
+      "orders_gift_card_consistent",
+      sql`gift_card_applied_cents <= total_cents
+          AND (gift_card_applied_cents = 0 OR gift_card_id IS NOT NULL)`,
     ),
     // A scheduled order with no time is unfulfillable and an ASAP order with one
     // is a contradiction the kitchen board would render wrong.
@@ -467,6 +659,53 @@ export const payments = pgTable(
     check("payments_status", inList("status", PAYMENT_STATUSES)),
     check("payments_method", inList("method", ["online", "pay_at_store"])),
     check("payments_amount_nonneg", nonNegative("amount_cents")),
+  ],
+);
+
+/**
+ * Every movement of gift card money, in order.
+ *
+ * The ledger is the audit trail, not the reporting source — "what did gift
+ * cards pay for this month" is answered from `orders.gift_card_applied_cents`,
+ * which is the committed fact. What this answers is the question a customer
+ * standing at the counter asks: *where did my balance go*.
+ *
+ * `amount_cents` is the signed change to `gift_cards.balance_cents`, which is
+ * why a `capture` row is zero: the hold already took the money, and capture only
+ * records that the hold became permanent. A card with a hold and no matching
+ * capture or release is money the customer has lost, so that pairing is the
+ * thing to look for when something has gone wrong.
+ */
+export const giftCardTransactions = pgTable(
+  "gift_card_transactions",
+  {
+    id: text("id").primaryKey(),
+    giftCardId: text("gift_card_id")
+      .notNull()
+      .references(() => giftCards.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    type: text("type").notNull(),
+    /** Signed delta to the card's balance. Zero for `capture` — see above. */
+    amountCents: integer("amount_cents").notNull(),
+    balanceAfterCents: integer("balance_after_cents").notNull(),
+    // Restrict, like `refunds.payment_id`: money that moved against an order
+    // must not be able to lose the order it moved against.
+    orderId: text("order_id").references(() => orders.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    actorType: text("actor_type").notNull(),
+    /** A staff id only when `actor_type` is 'staff'; null otherwise. */
+    actorId: text("actor_id"),
+    note: text("note"),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("gift_card_tx_card_idx").on(table.giftCardId, table.createdAt),
+    // How `applyPaymentApproved` and the reaper find the hold to resolve.
+    index("gift_card_tx_order_idx").on(table.orderId),
+    check("gift_card_tx_type", inList("type", GIFT_CARD_TRANSACTION_TYPES)),
+    check("gift_card_tx_actor", inList("actor_type", ["customer", "staff", "system"])),
+    check("gift_card_tx_balance_nonneg", nonNegative("balance_after_cents")),
   ],
 );
 

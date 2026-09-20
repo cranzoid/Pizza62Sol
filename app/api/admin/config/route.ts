@@ -19,6 +19,11 @@ const PERMISSIONS = new Set([
   "issue_refunds",
   "manage_menu",
   "manage_promotions",
+  // Search cards, read the ledger, adjust a balance, void and reissue. Issuing
+  // a free promotional card is owner-only on top of this — see the gift cards
+  // route: everything else here moves money a customer already paid for, while
+  // issuing creates it.
+  "manage_gift_cards",
   "manage_content",
   "manage_employees",
   "edit_time_records",

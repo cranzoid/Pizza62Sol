@@ -14,9 +14,12 @@
  *   dispatch fires on every order, so this is the sweeper that catches whatever
  *   the inline attempt missed — a replica that died mid-send, a provider that was
  *   briefly down, a row parked before credentials existed.
- * - **Reap abandoned checkouts.** Clover sends no expiry event and its sessions
- *   last 15 minutes, so an abandoned checkout would otherwise sit in the staff
- *   queue looking live forever.
+ * - **Reap abandoned checkouts**, both food orders and gift card sales. Clover
+ *   sends no expiry event and its sessions last 15 minutes, so an abandoned
+ *   order would otherwise sit in the staff queue looking live forever, and an
+ *   abandoned gift card purchase would hold its idempotency key against the
+ *   buyer's next attempt. A cancelled order also releases any gift card balance
+ *   it had reserved — one of the three places a hold must be resolved.
  * - **Re-call the restaurant** about an order nobody has acknowledged.
  *
  * ## Why this is safe to expose
@@ -31,7 +34,7 @@
  * notifications is a way to make the restaurant's phone ring from the internet.
  */
 import { dispatchOutbox, requeueUnacknowledgedOrders } from "@/lib/notifications/dispatcher";
-import { reapStalePayments } from "@/scripts/reap-payments";
+import { reapStaleGiftCardPurchases, reapStalePayments } from "@/scripts/reap-payments";
 import { PostgresDatabase, getPool } from "@/db/pg-driver";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
 import { env } from "@/lib/runtime-env";
@@ -88,8 +91,14 @@ export async function POST(request: Request) {
 
   await run("outbox", () => dispatchOutbox({ limit: 50 }));
   await run("payments", async () => {
-    const cancelled = await reapStalePayments(new PostgresDatabase(getPool()));
-    return { cancelled };
+    const database = new PostgresDatabase(getPool());
+    const cancelled = await reapStalePayments(database);
+    // Gift card sales are not orders and live in their own table, so the sweep
+    // above does not see them. An abandoned one strands no money — no card is
+    // minted until capture — but it does keep hold of its idempotency key, and
+    // the buyer coming back would collide with their own abandoned attempt.
+    const giftCardCheckouts = await reapStaleGiftCardPurchases(database);
+    return { cancelled, giftCardCheckouts };
   });
   await run("unacknowledged", async () => ({ requeued: await requeueUnacknowledgedOrders() }));
 

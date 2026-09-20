@@ -96,16 +96,36 @@ function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): st
 
 type Quote = {
   ok: boolean;
-  totals: { menuSubtotalCents: number; discountCents: number; taxCents: number; deliveryFeeCents: number; totalCents: number };
+  totals: {
+    menuSubtotalCents: number;
+    discountCents: number;
+    taxCents: number;
+    deliveryFeeCents: number;
+    totalCents: number;
+    giftCardAppliedCents: number;
+    amountDueCents: number;
+  };
   issues: Array<{ index: number | null; message: string }>;
   /** Null until a code is entered. `message` says why one did not come off. */
   coupon: { code: string; accepted: boolean; message: string | null } | null;
+  /** Null until a gift card code is entered. Never carries the code itself. */
+  giftCard: {
+    suffix: string;
+    accepted: boolean;
+    balanceCents: number;
+    appliedCents: number;
+    remainingAfterCents: number;
+    message: string | null;
+  } | null;
 };
 
 type PlacedOrder = {
   duplicate?: boolean;
   orderNumber?: string;
   totalCents?: number;
+  /** What is left to collect once a gift card has paid its part. */
+  amountDueCents?: number;
+  giftCardAppliedCents?: number;
   printOrder?: Record<string, unknown> | null;
   error?: string;
 };
@@ -138,6 +158,11 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // one person the customer was talking to.
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
+  // Read out over the phone or off a phone screen at the counter. Its own box
+  // beside the promo one for the same reason as on the website: a promo code
+  // comes off the food before HST, a gift card pays the finished bill.
+  const [giftCardInput, setGiftCardInput] = useState("");
+  const [giftCardCode, setGiftCardCode] = useState("");
   // Cash handed over, in dollars as typed. Kept as the raw string so someone
   // half way through "20" is not shown change for C$2.
   const [cashGiven, setCashGiven] = useState("");
@@ -149,7 +174,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
    * change from disappears at the exact moment someone needs it. Held until the
    * next order is started.
    */
-  const [settled, setSettled] = useState<{ orderNumber: string; totalCents: number } | null>(null);
+  const [settled, setSettled] = useState<{ orderNumber: string; dueCents: number; giftCardCents: number } | null>(null);
 
   /**
    * What is on the menu right now, for this kind of order.
@@ -207,6 +232,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       // apply comes back as a message rather than a silent full-price total, so
       // the counter can say why before the customer hands over money.
       ...(couponCode ? { couponCode } : {}),
+      // Priced by the server here too. The till never works out what a card is
+      // worth: it shows what the quote came back with.
+      ...(giftCardCode ? { giftCardCode } : {}),
       // City and province are fixed rather than asked for: the delivery area is
       // a radius around one Hamilton store, so any other answer is an address
       // the radius check would reject anyway, and two more fields to mistype
@@ -225,7 +253,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         : {}),
       ...extra,
     }),
-    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines, couponCode],
+    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines, couponCode, giftCardCode],
   );
 
   // Re-priced by the server on every change. Sequenced so a slow earlier reply
@@ -251,7 +279,15 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     };
   }, [serialized, lines.length]);
 
-  const totals = quote?.totals ?? { menuSubtotalCents: 0, discountCents: 0, taxCents: 0, deliveryFeeCents: 0, totalCents: 0 };
+  const totals = quote?.totals ?? {
+    menuSubtotalCents: 0,
+    discountCents: 0,
+    taxCents: 0,
+    deliveryFeeCents: 0,
+    totalCents: 0,
+    giftCardAppliedCents: 0,
+    amountDueCents: 0,
+  };
 
   /**
    * Puts a built item on the receipt.
@@ -360,7 +396,11 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     // the order was actually created for.
     setSettled({
       orderNumber: result.orderNumber ?? "",
-      totalCents: Number(result.totalCents ?? totals.totalCents),
+      // **Amount due, not the order total.** A gift card has already paid its
+      // part, and change counted against the full bill would hand back money
+      // the customer never put on the counter.
+      dueCents: Number(result.amountDueCents ?? totals.amountDueCents),
+      giftCardCents: Number(result.giftCardAppliedCents ?? totals.giftCardAppliedCents),
     });
     setMessage({
       tone: "ok",
@@ -371,6 +411,8 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     setLines([]);
     setCouponInput("");
     setCouponCode("");
+    setGiftCardInput("");
+    setGiftCardCode("");
     setName("");
     setPhone("");
     setEmail("");
@@ -395,7 +437,15 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
    * be worked out before the order is sent, which is how a phone order taken and
    * paid at the door is handled.
    */
-  const cashDueCents = settled ? settled.totalCents : totals.totalCents;
+  /**
+   * What the customer still owes in cash.
+   *
+   * The amount due, never the order total — and the nickel rounding below
+   * applies to *this*, because rounding is a property of handing over coins,
+   * not of the bill. A gift card pays to the cent; only what is left over can
+   * be rounded.
+   */
+  const cashDueCents = settled ? settled.dueCents : totals.amountDueCents;
   const tenderedCents = Math.round(Number(cashGiven.replace(/[^0-9.]/g, "")) * 100);
   const cash =
     cashDueCents > 0 && cashGiven.trim() && Number.isSafeInteger(tenderedCents) && tenderedCents >= 0
@@ -552,12 +602,63 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             </p>
           ) : null}
 
+          {/* The gift card, in its own box. Someone on the phone reads a code
+              out and the counter has to be able to tell, before taking any
+              money, whether it covers the bill and what is left on it. */}
+          {quote?.giftCard?.accepted ? (
+            <div className="giftcard-applied" role="status">
+              <strong><span aria-hidden="true">✓</span> Gift card ending {quote.giftCard.suffix}</strong>
+              <div><span>Balance on the card</span><b>{formatMoney(quote.giftCard.balanceCents)}</b></div>
+              <div><span>Applied to this order</span><b>−{formatMoney(quote.giftCard.appliedCents)}</b></div>
+              <div><span>Left after this order</span><b>{formatMoney(quote.giftCard.remainingAfterCents)}</b></div>
+              <button type="button" className="text-button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>
+                Remove gift card
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="coupon-row">
+                <input
+                  value={giftCardInput}
+                  onChange={(event) => setGiftCardInput(event.target.value.toUpperCase())}
+                  placeholder="Gift card code"
+                  aria-label="Gift card code"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                />
+                {giftCardCode ? (
+                  <button type="button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>Remove</button>
+                ) : (
+                  <button type="button" disabled={!giftCardInput.trim()} onClick={() => setGiftCardCode(giftCardInput.trim())}>Apply</button>
+                )}
+              </div>
+              {quote?.giftCard && !quote.giftCard.accepted ? (
+                <p className="coupon-bad" role="status">{quote.giftCard.message}</p>
+              ) : null}
+            </>
+          )}
+
           <div className="checkout-totals">
             <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
             {totals.discountCents > 0 ? <div className="checkout-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
             {totals.deliveryFeeCents > 0 ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}
             <div><span>HST</span><b>{formatMoney(totals.taxCents)}</b></div>
+            {/* The bill, then the tender. `Total` is what the HST was worked out
+                on and what prints on the ticket; it does not move when a card is
+                applied. `Amount due` is what changes hands. */}
             <div className="checkout-grand-total"><span>Total</span><b>{formatMoney(totals.totalCents)}</b></div>
+            {totals.giftCardAppliedCents > 0 ? (
+              <>
+                <div className="checkout-giftcard">
+                  <span>Gift card{quote?.giftCard ? ` ending ${quote.giftCard.suffix}` : ""}</span>
+                  <b>−{formatMoney(totals.giftCardAppliedCents)}</b>
+                </div>
+                <div className="checkout-grand-total checkout-amount-due">
+                  <span>Amount due</span><b>{formatMoney(totals.amountDueCents)}</b>
+                </div>
+              </>
+            ) : null}
           </div>
 
           {quote?.issues.map((issue, index) => (
@@ -565,7 +666,11 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           ))}
 
           <button className="primary-button" disabled={!lines.length || submitting || (quote !== null && !quote.ok)} onClick={() => void place(Date.now())}>
-            {submitting ? "Sending to the kitchen…" : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.totalCents)}`}
+            {submitting
+              ? "Sending to the kitchen…"
+              : totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
+                ? `${fulfilment === "delivery" ? "Send & print" : "Print"} · paid by gift card`
+                : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.amountDueCents)}`}
           </button>
           <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
           {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
@@ -594,6 +699,12 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                 <h3>Cash</h3>
                 <span>{settled ? `${settled.orderNumber || "Last order"} · ${formatMoney(cashDueCents)}` : `This order · ${formatMoney(cashDueCents)}`}</span>
               </div>
+              {(settled ? settled.giftCardCents : totals.giftCardAppliedCents) > 0 ? (
+                <p className="till-cash-note">
+                  Gift card already paid {formatMoney(settled ? settled.giftCardCents : totals.giftCardAppliedCents)} of this order.
+                  Only the {formatMoney(cashDueCents)} below is collected.
+                </p>
+              ) : null}
               {cashRounded.roundingCents !== 0 ? (
                 <p className="till-cash-note">
                   Cash rounds to {formatMoney(cashRounded.roundedTotalCents)} — there is no penny.

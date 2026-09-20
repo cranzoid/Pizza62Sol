@@ -44,6 +44,8 @@ import {
   renderFeedbackReply,
   renderFeedbackRequest,
   renderFeedbackReward,
+  renderGiftCardDelivery,
+  renderGiftCardReceipt,
   renderLowRatingAlert,
   renderRestaurantNewOrder,
   type OrderSnapshot,
@@ -147,11 +149,65 @@ async function loadOrder(orderId: string): Promise<OrderSnapshot | null> {
       `SELECT id, order_number, customer_name, customer_email, customer_phone, fulfilment,
               channel, status, payment_status, payment_method, schedule_type, scheduled_for,
               estimated_for, subtotal_cents, discount_cents, tax_cents, delivery_fee_cents,
-              tip_cents, total_cents, address_json, instructions, acknowledged_at
+              tip_cents, total_cents, gift_card_applied_cents, address_json, instructions,
+              acknowledged_at
        FROM orders WHERE id = ?`,
     )
     .bind(orderId)
     .first<OrderSnapshot>();
+}
+
+type GiftCardPurchaseSnapshot = {
+  id: string;
+  reference: string;
+  amount_cents: number;
+  buyer_name: string;
+  buyer_email: string;
+  recipient_name: string;
+  recipient_email: string;
+  message: string | null;
+  status: string;
+  created_at: number;
+};
+
+/**
+ * The gift card sale behind a delivery or a receipt.
+ *
+ * The sibling of `loadOrder`, against the other table. Everything except the
+ * code itself is read here at send time rather than carried in the payload, for
+ * the reason given at the top of messages.ts: a message assembled from the
+ * database describes itself correctly even if something changed while it queued.
+ * The code is the one exception, because nothing can reconstruct it.
+ */
+async function loadGiftCardPurchase(purchaseId: string): Promise<GiftCardPurchaseSnapshot | null> {
+  return getD1()
+    .prepare(
+      `SELECT id, reference, amount_cents, buyer_name, buyer_email, recipient_name,
+              recipient_email, message, status, created_at
+       FROM gift_card_purchases WHERE id = ?`,
+    )
+    .bind(purchaseId)
+    .first<GiftCardPurchaseSnapshot>();
+}
+
+type GiftCardDeliverySnapshot = {
+  initial_cents: number;
+  recipient_name: string;
+  recipient_email: string;
+  sender_name: string;
+  message: string | null;
+  status: string;
+};
+
+/** The card itself, for a staff-issued one that has no sale behind it. */
+async function loadGiftCardForDelivery(giftCardId: string): Promise<GiftCardDeliverySnapshot | null> {
+  return getD1()
+    .prepare(
+      `SELECT initial_cents, recipient_name, recipient_email, sender_name, message, status
+       FROM gift_cards WHERE id = ?`,
+    )
+    .bind(giftCardId)
+    .first<GiftCardDeliverySnapshot>();
 }
 
 /** Thrown when a row can never succeed — bad kind, missing order, no recipient. */
@@ -336,6 +392,103 @@ async function deliver(row: OutboxRow): Promise<void> {
       return;
     }
 
+    /**
+     * The gift card itself, to whoever it was bought for.
+     *
+     * The only kind here whose payload carries something irreplaceable. The
+     * plaintext code is in the outbox row because nothing can regenerate it —
+     * `gift_cards` holds a digest and nothing else — exactly as the tracking
+     * token is, and with the same trade: it sits in the queue for the life of
+     * the row and `markSent` scrubs it the moment the message is gone.
+     *
+     * Note what is *not* here: no `loadOrder`. A gift card sale is not an order
+     * and has no row in `orders`, so this kind carries a purchase id instead and
+     * the switch reads it straight out of the payload.
+     */
+    case "gift_card_delivery": {
+      const code = typeof payload.code === "string" ? payload.code : "";
+      // A scrubbed or malformed payload can never become a card on a retry, so
+      // it fails once instead of looping six times against an empty code.
+      if (!code) throw new PermanentFailure("gift card payload has no code");
+
+      /**
+       * Two kinds of card arrive here, and the difference is where the facts
+       * live. A purchased card has a sale behind it, so the amount and the two
+       * names come from `gift_card_purchases`. A staff-issued promotional card
+       * has no sale at all, so they come from the card row itself.
+       *
+       * The status guard matters more than it looks in both cases: emailing a
+       * spendable code for a sale that has since been refunded, or for a card
+       * staff have already voided, is the one mistake on this path that gives
+       * money away.
+       */
+      const purchaseId = typeof payload.giftCardPurchaseId === "string" ? payload.giftCardPurchaseId : null;
+      const giftCardId = typeof payload.giftCardId === "string" ? payload.giftCardId : null;
+      let details: { amountCents: number; recipientName: string; recipientEmail: string; senderName: string; message: string | null };
+
+      if (purchaseId) {
+        const purchase = await loadGiftCardPurchase(purchaseId);
+        if (!purchase) throw new PermanentFailure(`gift card purchase ${purchaseId} no longer exists`);
+        if (purchase.status !== "paid") throw new PermanentFailure("gift card purchase is not paid");
+        details = {
+          amountCents: Number(purchase.amount_cents),
+          recipientName: purchase.recipient_name,
+          recipientEmail: purchase.recipient_email,
+          senderName: purchase.buyer_name,
+          message: purchase.message,
+        };
+      } else if (giftCardId) {
+        const card = await loadGiftCardForDelivery(giftCardId);
+        if (!card) throw new PermanentFailure(`gift card ${giftCardId} no longer exists`);
+        if (card.status !== "active") throw new PermanentFailure("gift card is not active");
+        details = {
+          // `initial_cents`, not the balance: this is the card as issued, and a
+          // retry after a first spend must not quote a smaller card than the one
+          // the recipient was given.
+          amountCents: Number(card.initial_cents),
+          recipientName: card.recipient_name,
+          recipientEmail: card.recipient_email,
+          senderName: card.sender_name,
+          message: card.message,
+        };
+      } else {
+        throw new PermanentFailure("gift card payload identifies no card");
+      }
+
+      const to = row.recipient ?? details.recipientEmail;
+      if (!to) throw new PermanentFailure("no recipient address");
+      const message = await renderGiftCardDelivery({
+        amountCents: details.amountCents,
+        code,
+        recipientName: details.recipientName,
+        senderName: details.senderName,
+        message: details.message,
+      });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
+    /** The buyer's receipt. Carries no code — see `renderGiftCardReceipt`. */
+    case "gift_card_receipt": {
+      const purchaseId = typeof payload.giftCardPurchaseId === "string" ? payload.giftCardPurchaseId : null;
+      if (!purchaseId) throw new PermanentFailure("gift card receipt payload has no purchase id");
+      const purchase = await loadGiftCardPurchase(purchaseId);
+      if (!purchase) throw new PermanentFailure(`gift card purchase ${purchaseId} no longer exists`);
+      if (purchase.status !== "paid") throw new PermanentFailure("gift card purchase is not paid");
+      const to = row.recipient ?? purchase.buyer_email;
+      if (!to) throw new PermanentFailure("no recipient address");
+      const message = await renderGiftCardReceipt({
+        reference: purchase.reference,
+        amountCents: Number(purchase.amount_cents),
+        recipientName: purchase.recipient_name,
+        recipientEmail: purchase.recipient_email,
+        buyerName: purchase.buyer_name,
+        sentAt: Number(purchase.created_at),
+      });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
     default:
       throw new PermanentFailure(`unknown notification kind "${row.kind}"`);
   }
@@ -348,9 +501,17 @@ async function markSent(row: OutboxRow, now: number): Promise<void> {
   // enough to reconcile "did this order get its confirmation?" without holding a
   // credential that grants access to the order.
   const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+  // Note what survives: identifiers only. The tracking token, the feedback
+  // token and — the one that is literally money — the gift card code are all
+  // dropped by being absent from this object rather than deleted from the old
+  // one, so a payload field added later is scrubbed by default instead of
+  // having to be remembered here.
   const redacted = JSON.stringify({
     orderId: payload.orderId ?? null,
     orderNumber: payload.orderNumber ?? null,
+    giftCardPurchaseId: payload.giftCardPurchaseId ?? null,
+    giftCardId: payload.giftCardId ?? null,
+    reference: payload.reference ?? null,
     redacted: true,
   });
   await getD1()

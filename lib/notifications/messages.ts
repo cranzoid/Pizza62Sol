@@ -65,6 +65,8 @@ export type OrderSnapshot = {
   delivery_fee_cents: number;
   tip_cents: number;
   total_cents: number;
+  /** What a gift card paid. Zero on almost every order, and on every old one. */
+  gift_card_applied_cents: number;
   address_json: string | null;
   instructions: string | null;
   acknowledged_at: number | null;
@@ -177,6 +179,8 @@ export async function renderCustomerConfirmation(
     loadOrderItemDetails(order.id),
   ]);
   const paid = order.payment_status === "paid";
+  const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
+  const amountDueCents = Math.max(0, Number(order.total_cents ?? 0) - giftCardCents);
   const address = deliveryAddress(order);
 
   const sections: Section[] = [
@@ -192,7 +196,20 @@ export async function renderCustomerConfirmation(
       type: "facts",
       rows: [
         { label: order.fulfilment === "delivery" ? "Delivery" : "Pickup", value: whenLine(order).replace(/^(Delivery|Pickup) /, "") },
-        { label: "Payment", value: paid ? "Paid online" : "Pay at the store" },
+        {
+          label: "Payment",
+          // Three answers, not two. Someone who paid with a gift card and owes
+          // nothing should not be told to "pay at the store", and someone whose
+          // card covered half of it needs to know what is still owed.
+          value:
+            giftCardCents > 0 && amountDueCents === 0
+              ? "Paid in full by gift card"
+              : giftCardCents > 0
+                ? `${money(giftCardCents)} by gift card · ${money(amountDueCents)} ${paid ? "paid online" : "at the store"}`
+                : paid
+                  ? "Paid online"
+                  : "Pay at the store",
+        },
         ...(address ? [] : [{ label: "Collect from", value: "55 Parkdale Ave N, Hamilton" }]),
       ],
     },
@@ -219,7 +236,7 @@ export async function renderCustomerConfirmation(
     eyebrow: "Order confirmed",
     heading: "You're all set.",
     tone: "confirmation",
-    preheader: `${order.order_number} · ${money(order.total_cents)} · ${whenLine(order)}`,
+    preheader: `${order.order_number} · ${money(order.total_cents)}${giftCardCents > 0 ? " · paid by gift card" : ""} · ${whenLine(order)}`,
     signoff: "Something not right? Call us and we will fix it before it goes in the oven.",
     baseUrl: base,
     sections,
@@ -669,5 +686,162 @@ export async function renderFeedbackReply(
     emailText,
     emailHtml,
     smsBody: `Pizza 62 has replied to your feedback on order ${orderNumber} — it is in your email.`,
+  };
+}
+
+// --- gift cards --------------------------------------------------------------
+
+/**
+ * What the recipient opens. This one is the product.
+ *
+ * Everything else in this file is a message *about* something that happened.
+ * This one is the thing itself: the card exists nowhere but here, because the
+ * code is stored only as a hash and cannot be reconstructed or re-sent. If this
+ * email does not arrive and does not look right, there is no gift card.
+ *
+ * Three consequences run through the copy:
+ *
+ * - **The code is the payload**, so it gets its own panel in a monospace face
+ *   and appears in the plain-text part too — not only in the HTML a text-mode
+ *   client or an aggressive filter would throw away.
+ * - **There is no "spend it" button carrying the code in a URL.** A link like
+ *   `/order?giftcard=P62-…` would be genuinely convenient, and it would put the
+ *   money in a URL — in browser history, in a `Referer` header, in every proxy
+ *   log between here and there. The recipient copies the code and pastes it,
+ *   which is one extra action and the reason this is safe to email at all.
+ * - **"No expiry" is stated plainly**, because it is true (Ontario's Consumer
+ *   Protection Act forbids one on a purchased card) and because everyone has
+ *   been trained by every other gift card to assume the opposite.
+ */
+export async function renderGiftCardDelivery(payload: {
+  amountCents: number;
+  code: string;
+  recipientName: string;
+  senderName: string;
+  message?: string | null;
+}): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const amount = money(payload.amountCents);
+
+  const sections: Section[] = [
+    {
+      type: "paragraph",
+      text: `${payload.senderName} has sent you a Pizza 62 gift card. Here it is.`,
+    },
+    {
+      type: "giftcard",
+      amount,
+      code: payload.code,
+      recipient: payload.recipientName,
+      sender: payload.senderName,
+      message: payload.message ?? null,
+    },
+    {
+      type: "facts",
+      rows: [
+        { label: "How to use it", value: "Paste the code into the Gift card box at checkout." },
+        { label: "Expires", value: "Never. This card has no expiry date and no fees." },
+        { label: "Where", value: "Online at pizza62.ca, or at the counter — just read the code out." },
+      ],
+    },
+  ];
+
+  // The button goes to the menu, never to a redemption link carrying the code.
+  if (base) {
+    sections.push({ type: "button", label: "See the menu", href: base });
+    sections.push({
+      type: "paragraph",
+      text: `You can check the balance any time at ${base.replace(/^https?:\/\//, "")}/gift-cards/balance.`,
+    });
+  }
+  sections.push({
+    type: "note",
+    title: "Keep this email",
+    lines: [
+      "This code is the card. Treat it like cash — anyone who has it can spend it.",
+      "We store it only in a scrambled form, so we cannot send it to you again. If you lose it, call us and we will cancel it and issue a replacement for whatever is left.",
+    ],
+  });
+
+  const { emailHtml, emailText } = build({
+    eyebrow: "A gift for you",
+    heading: `${payload.senderName} sent you ${amount} at Pizza 62.`,
+    tone: "confirmation",
+    preheader: `${amount} gift card — no expiry. Your code is inside.`,
+    signoff: "Questions about this card? Call us and we will help.",
+    baseUrl: base,
+    sections,
+  });
+
+  return {
+    emailSubject: `${payload.senderName} sent you a ${amount} Pizza 62 gift card`,
+    emailText,
+    emailHtml,
+    // Never sent — there is no phone number for a gift card recipient — but the
+    // type requires it and a code in an SMS would be the wrong thing anyway.
+    smsBody: `${payload.senderName} sent you a ${amount} Pizza 62 gift card. The code is in your email.`,
+  };
+}
+
+/**
+ * The buyer's receipt, which deliberately does **not** contain the code.
+ *
+ * A receipt is the thing people forward — to whoever is splitting the cost, to
+ * an accountant, into a shared inbox. A forwarded receipt must not be a
+ * spendable card, so the money stays in the recipient's message and this one
+ * carries only the amount, who it went to, and the reference.
+ */
+export async function renderGiftCardReceipt(payload: {
+  reference: string;
+  amountCents: number;
+  recipientName: string;
+  recipientEmail: string;
+  buyerName: string;
+  sentAt: number;
+}): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const amount = money(payload.amountCents);
+
+  const { emailHtml, emailText } = build({
+    eyebrow: "Gift card sent",
+    heading: `Your ${amount} gift card is on its way.`,
+    tone: "confirmation",
+    preheader: `${payload.reference} · ${amount} · delivered to ${payload.recipientName}`,
+    signoff: "Need to change something? Call us and quote the reference above.",
+    baseUrl: base,
+    sections: [
+      {
+        type: "paragraph",
+        text: `Hi ${firstName(payload.buyerName)}, thank you. We have emailed the card straight to ${payload.recipientName}.`,
+      },
+      { type: "callout", label: "Gift card reference", value: payload.reference, note: `Sent ${clockTime(payload.sentAt)}`, tone: "good" },
+      {
+        type: "facts",
+        rows: [
+          { label: "Amount", value: amount },
+          { label: "Sent to", value: `${payload.recipientName} · ${payload.recipientEmail}` },
+          { label: "Expires", value: "Never. Ontario gift cards carry no expiry and no fees." },
+        ],
+      },
+      {
+        type: "note",
+        title: "Why the code is not in this email",
+        lines: [
+          "The card number went only to the recipient. Anyone holding it can spend it, so a receipt that carried it would be spendable the moment it was forwarded.",
+          `If it has not arrived, check that ${payload.recipientEmail} is right and look in their junk folder — then call us.`,
+        ],
+      },
+      // No HST line, and that is not an omission: buying a gift card is not a
+      // taxable supply in Canada. The tax is charged in full when the card is
+      // spent, on the food. A receipt showing HST here would be wrong.
+      { type: "totals", rows: [{ label: "Paid today", value: amount, strong: true }] },
+    ],
+  });
+
+  return {
+    emailSubject: `Your Pizza 62 gift card ${payload.reference}`,
+    emailText,
+    emailHtml,
+    smsBody: `Pizza 62: your ${amount} gift card for ${payload.recipientName} has been sent. Reference ${payload.reference}.`,
   };
 }

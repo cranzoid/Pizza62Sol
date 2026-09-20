@@ -1715,3 +1715,225 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .till-pos button:focus-visible { outline: 3px solid #d79526; outline-offset: 3px; }
 @media (max-width: 900px) { .till-pos .till-workspace { grid-template-columns: minmax(0, 1fr); } .till-ticket { position: static; } }
 @media (max-width: 480px) { .till-categories { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .till-category { padding: 14px; } }
+
+/* ---------------------------------------------------------------------------
+   Gift cards.
+
+   Three surfaces share this block: the purchase page, the balance checker, and
+   the redemption box inside the checkout summary. They are kept together
+   because the card face is drawn twice — once on the purchase page as a live
+   preview, once on the balance page as the result — and two copies of it drifting
+   apart is exactly the thing customers notice about a product whose whole job is
+   to look like a real present.
+
+   The face deliberately mirrors `renderGiftCardSection` in
+   lib/notifications/email-template.ts: same green panel, same yellow rule, same
+   Georgia amount, same monospace code. What arrives in the inbox has to be
+   recognisably the thing that was on screen when it was bought.
+--------------------------------------------------------------------------- */
+
+.giftcard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.giftcard-form { display: grid; gap: 26px; }
+
+.giftcard-step {
+  background: white;
+  border: 1px solid var(--line);
+  box-shadow: 8px 8px 0 var(--yellow);
+  padding: 26px 24px;
+}
+.giftcard-step > h2 {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 0 0 4px;
+  font-family: Georgia, serif;
+  font-size: 23px;
+  letter-spacing: -.6px;
+}
+/* The step number as a chip rather than an ordered list: the steps are not
+   sequential gates, they are four things to fill in, and a list implies you
+   cannot do the fourth before the second. */
+.giftcard-step > h2 > i {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--green);
+  color: var(--paper);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+}
+.giftcard-step > p { margin: 0 0 16px 38px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.giftcard-amounts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+.giftcard-amounts button {
+  border: 1px solid var(--line);
+  background: white;
+  padding: 15px 6px;
+  font-family: Georgia, serif;
+  font-size: 21px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.giftcard-amounts button:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--ink); }
+.giftcard-amounts button.active {
+  background: var(--green);
+  border-color: var(--ink);
+  color: var(--paper);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.giftcard-custom { display: grid; gap: 7px; margin-top: 13px; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: .7px; }
+.giftcard-custom input {
+  border: 1px solid var(--line);
+  padding: 13px 14px;
+  font-family: Georgia, serif;
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.giftcard-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.giftcard-fields label,
+.giftcard-message {
+  display: grid;
+  gap: 7px;
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+}
+.giftcard-fields input,
+.giftcard-message textarea {
+  border: 1px solid var(--line);
+  background: white;
+  padding: 13px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.giftcard-message { margin-top: 0; }
+.giftcard-message textarea { resize: vertical; min-height: 92px; font-family: Georgia, serif; font-size: 15px; line-height: 1.5; }
+.giftcard-counter { justify-self: end; font-size: 9px; font-weight: 700; color: var(--muted); letter-spacing: .4px; }
+.giftcard-counter[data-full="true"] { color: var(--red); }
+
+/* The preview column sticks, because the whole point of it is to be visible
+   while the fields that change it are being filled in. */
+.giftcard-aside { position: sticky; top: 24px; display: grid; gap: 15px; }
+
+/* A soft drop shadow rather than the hard offset the rest of the page uses.
+   Everything else here is a card *on* the page; this one is pretending to be a
+   physical object, and the flat offset reads as a sticker. It also sits directly
+   above the near-black summary panel, where a hard ink shadow visually welds the
+   two together. */
+.giftcard-face {
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.giftcard-face__top { background: var(--green); color: var(--paper); padding: 30px 22px 26px; text-align: center; }
+.giftcard-face__brand { font-size: 9px; font-weight: 900; letter-spacing: 2.4px; text-transform: uppercase; color: var(--yellow); }
+.giftcard-face__amount {
+  font-family: Georgia, serif;
+  font-size: clamp(42px, 8vw, 54px);
+  font-weight: 700;
+  letter-spacing: -2px;
+  line-height: 1.04;
+  padding: 9px 0 2px;
+}
+.giftcard-face__rule { width: 56px; height: 3px; margin: 10px auto 13px; background: var(--yellow); }
+.giftcard-face__for { font-size: 12px; line-height: 1.6; color: var(--cream); }
+.giftcard-face__for b { color: var(--paper); }
+.giftcard-face__from { font-size: 12px; line-height: 1.6; color: rgba(245, 235, 215, .62); }
+.giftcard-face__note {
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  padding: 16px 20px;
+  font-family: Georgia, serif;
+  font-size: 15px;
+  font-style: italic;
+  line-height: 1.5;
+  text-align: center;
+}
+.giftcard-face__code { background: var(--cream); padding: 16px 12px 18px; text-align: center; }
+.giftcard-face__code span { display: block; font-size: 9px; font-weight: 900; letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
+.giftcard-face__code b {
+  display: block;
+  padding-top: 7px;
+  font-family: Consolas, "Courier New", Courier, monospace;
+  font-size: 17px;
+  letter-spacing: 1.4px;
+  word-break: break-all;
+}
+.giftcard-face__code b[data-placeholder="true"] { color: rgba(23, 20, 15, .3); }
+
+.giftcard-summary { background: var(--ink); color: var(--paper); padding: 20px 22px; display: grid; gap: 11px; }
+.giftcard-summary > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 11px; }
+.giftcard-summary > div:last-of-type { border-top: 1px solid rgba(255, 255, 255, .25); padding-top: 11px; font-weight: 900; }
+.giftcard-summary > div:last-of-type b { font-family: Georgia, serif; font-size: 21px; }
+.giftcard-summary small { color: rgba(245, 235, 215, .6); font-size: 10px; line-height: 1.55; }
+.giftcard-summary .primary-button { background: var(--yellow); color: var(--ink); margin-top: 3px; }
+
+.giftcard-terms { border: 1px dashed var(--line); padding: 18px 20px; }
+.giftcard-terms h2 { margin: 0 0 9px; font-family: Georgia, serif; font-size: 19px; }
+.giftcard-terms ul { margin: 0; padding-left: 19px; display: grid; gap: 7px; }
+.giftcard-terms li { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.giftcard-terms li b { color: var(--ink); }
+
+/* The balance checker. Deliberately plain: one field, one answer. */
+.giftcard-balance-form { display: grid; gap: 13px; }
+.giftcard-balance-form label { display: grid; gap: 7px; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: .7px; }
+.giftcard-balance-form input {
+  border: 1px solid var(--line);
+  padding: 16px 15px;
+  font-family: Consolas, "Courier New", Courier, monospace;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+}
+.giftcard-balance-result { text-align: center; padding: 30px 22px; background: var(--green); color: var(--paper); }
+.giftcard-balance-result span { font-size: 9px; font-weight: 900; letter-spacing: 2.2px; text-transform: uppercase; color: var(--yellow); }
+.giftcard-balance-result b { display: block; font-family: Georgia, serif; font-size: clamp(46px, 10vw, 62px); font-weight: 700; letter-spacing: -2.5px; padding: 8px 0 4px; }
+.giftcard-balance-result small { display: block; font-size: 12px; color: var(--cream); }
+
+/* Redemption, inside the dark checkout summary and on the till. The applied
+   state is a panel rather than a line of text because it carries three numbers
+   the customer has to be able to check: what was on the card, what came off
+   this order, and what is left for next time. */
+.giftcard-applied { border: 1px solid var(--yellow); padding: 12px 13px; display: grid; gap: 6px; margin: 8px 0; }
+.giftcard-applied > strong { display: flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 900; letter-spacing: .6px; text-transform: uppercase; color: var(--yellow); }
+.giftcard-applied > div { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.giftcard-applied > div b { font-weight: 700; }
+.giftcard-applied .text-button { margin: 2px 0 0; padding: 4px 0; text-align: left; font-size: 10px; }
+/* Two folded boxes now sit side by side — promo code, then gift card — and
+   `border-block` on each would draw the shared edge twice. */
+.summary-extra + .summary-extra { border-top: 0; }
+.checkout-amount-due { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 10px; }
+.checkout-summary .checkout-amount-due { border-top-color: rgba(255, 255, 255, .28); }
+.checkout-giftcard b { color: var(--yellow); }
+.till-ticket .checkout-giftcard b { color: #2f7d4f; }
+.till-ticket .giftcard-applied { border-color: #2f7d4f; }
+.till-ticket .giftcard-applied > strong { color: #2f7d4f; }
+
+@media (max-width: 900px) {
+  .giftcard-layout { grid-template-columns: 1fr; }
+  /* Unsticking on a phone: a sticky preview above a long form eats the screen. */
+  .giftcard-aside { position: static; }
+}
+@media (max-width: 620px) {
+  .giftcard-amounts { grid-template-columns: repeat(2, 1fr); }
+  .giftcard-fields { grid-template-columns: 1fr; }
+  .giftcard-step { padding: 20px 17px; box-shadow: 5px 5px 0 var(--yellow); }
+  .giftcard-step > p { margin-left: 0; }
+}

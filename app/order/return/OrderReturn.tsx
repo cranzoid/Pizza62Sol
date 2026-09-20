@@ -59,8 +59,36 @@ function readPending(): Pending | null {
   }
 }
 
+/**
+ * True when this browser is mid-purchase of a gift card rather than an order.
+ *
+ * A return URL configured in the Clover *dashboard* silently overrides the
+ * per-session one we send (see the header of lib/clover.ts), so a gift card
+ * buyer can land here instead of `/gift-cards/return` — and this page, finding
+ * no pending order, would tell them we had no record of their payment. Rather
+ * than depend on the dashboard being right, the two pages hand off to each
+ * other. The stash is written immediately before leaving for Clover.
+ */
+function pendingGiftCardPurchase(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return Boolean(JSON.parse(window.localStorage.getItem("p62_pending_gift_card") ?? "null"));
+  } catch {
+    return false;
+  }
+}
+
 export default function OrderReturn() {
   const [pending] = useState(readPending);
+  // Before anything else, and only when there is no order of our own to show:
+  // a customer who has both an abandoned order stash and a live gift card
+  // purchase should still see the order they just paid for.
+  useEffect(() => {
+    if (pending || !pendingGiftCardPurchase()) return;
+    const search = window.location.search;
+    window.location.replace(`/gift-cards/return${search}`);
+  }, [pending]);
+
   const [state, setState] = useState<"waiting" | "paid" | "cancelled" | "timeout" | "unknown" | "failed">(
     () => (arrivedFromFailure() ? "failed" : readPending() ? "waiting" : "unknown"),
   );

@@ -43,6 +43,16 @@ export const BRAND = {
 
 const SERIF = "Georgia, 'Times New Roman', serif";
 const SANS = "Arial, Helvetica, sans-serif";
+/**
+ * The code is set in this, and nothing else is.
+ *
+ * A gift card code is transcribed, not read — off a phone into a checkout, or
+ * down a telephone line to the counter. A monospaced face is what makes every
+ * character the same width and the groups of four line up, which is most of what
+ * stops a transcription error. Courier New is the one monospace on every client
+ * that will open this; the others are a bonus where they exist.
+ */
+const MONO = "Consolas, 'Courier New', Courier, monospace";
 
 export const RESTAURANT = {
   name: "Pizza 62",
@@ -104,6 +114,20 @@ export type Section =
   | { type: "button"; label: string; href: string }
   /** A quiet aside — the delivery address, a note to the kitchen. */
   | { type: "note"; title?: string; lines: string[] }
+  /**
+   * The face of a gift card. The one section that *is* the message rather than
+   * describing one — see `giftCard()` below.
+   */
+  | {
+      type: "giftcard";
+      /** Already formatted, e.g. "C$50.00". */
+      amount: string;
+      /** `P62-XXXX-XXXX-XXXX-XXXX`, in full. */
+      code: string;
+      recipient: string;
+      sender: string;
+      message?: string | null;
+    }
   | { type: "divider" };
 
 export type EmailItem = {
@@ -240,6 +264,51 @@ function note(section: Extract<Section, { type: "note" }>): string {
 </table>`;
 }
 
+/**
+ * The card itself.
+ *
+ * This section is the product. Everywhere else in this file the email describes
+ * something that exists in the world; here the email *is* the thing, and the
+ * recipient will judge whether a Pizza 62 gift card is a real present by how
+ * this looks in their inbox. So it is given the restaurant's own colours rather
+ * than a generic voucher treatment: the deep green of the masthead, the yellow
+ * rule, the amount set large in the same Georgia as the headings.
+ *
+ * **Everything meaningful is live text.** No background image, no web font, no
+ * picture of a card. Most clients block remote images by default, and a gift
+ * card whose amount and code live inside a blocked image is a gift card nobody
+ * trusts and nobody can spend. The cost is that this is nested tables with
+ * inline styles and a spacer row for the rule — which is what the rest of this
+ * file already is, and for the same reasons (see the header).
+ */
+function giftCard(section: Extract<Section, { type: "giftcard" }>): string {
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 22px;border-collapse:collapse;">
+  <tr><td align="center" bgcolor="${BRAND.green}" style="background-color:${BRAND.green};padding:34px 24px 30px;">
+    <div style="font-family:${SANS};font-size:10px;font-weight:bold;letter-spacing:2.4px;text-transform:uppercase;color:${BRAND.yellow};">${RESTAURANT.name} Gift Card</div>
+    <div style="font-family:${SERIF};font-size:52px;line-height:1.05;font-weight:bold;letter-spacing:-2px;color:${BRAND.paper};padding:10px 0 4px;">${escapeHtml(section.amount)}</div>
+    <!-- The rule as a table rather than a bordered div: Outlook's Word engine
+         drops \`margin:0 auto\` on a div, and an off-centre rule under a centred
+         amount looks like a mistake rather than a detail. -->
+    <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:8px auto 14px;">
+      <tr><td bgcolor="${BRAND.yellow}" style="background-color:${BRAND.yellow};width:56px;height:3px;font-size:0;line-height:0;">&nbsp;</td></tr>
+    </table>
+    <div style="font-family:${SANS};font-size:13px;line-height:1.6;color:${BRAND.cream};">For <strong style="color:${BRAND.paper};">${escapeHtml(section.recipient)}</strong></div>
+    <div style="font-family:${SANS};font-size:13px;line-height:1.6;color:#b9c7bf;">from ${escapeHtml(section.sender)}</div>
+  </td></tr>
+  ${
+    section.message
+      ? `<tr><td align="center" style="background-color:${BRAND.paper};border-left:1px solid ${BRAND.line};border-right:1px solid ${BRAND.line};padding:20px 26px;">
+    <div style="font-family:${SERIF};font-size:17px;line-height:1.55;font-style:italic;color:${BRAND.ink};">&ldquo;${escapeHtml(section.message)}&rdquo;</div>
+  </td></tr>`
+      : ""
+  }
+  <tr><td align="center" bgcolor="${BRAND.cream}" style="background-color:${BRAND.cream};border:1px solid ${BRAND.line};border-top:0;padding:20px 16px 22px;">
+    <div style="font-family:${SANS};font-size:10px;font-weight:bold;letter-spacing:1.6px;text-transform:uppercase;color:${BRAND.muted};padding-bottom:8px;">Your gift card code</div>
+    <div style="font-family:${MONO};font-size:21px;line-height:1.4;font-weight:bold;letter-spacing:1.5px;color:${BRAND.ink};word-break:break-all;">${escapeHtml(section.code)}</div>
+  </td></tr>
+</table>`;
+}
+
 function divider(): string {
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;border-collapse:collapse;"><tr><td style="border-top:1px solid ${BRAND.line};font-size:0;line-height:0;">&nbsp;</td></tr></table>`;
 }
@@ -260,6 +329,8 @@ function renderSection(section: Section): string {
       return button(section.label, section.href);
     case "note":
       return note(section);
+    case "giftcard":
+      return giftCard(section);
     case "divider":
       return divider();
   }
@@ -408,6 +479,19 @@ export function renderEmailText(document: EmailDocument): string {
       case "note":
         if (section.title) lines.push(section.title.toUpperCase());
         lines.push(...section.lines.filter(Boolean), "");
+        break;
+      // The plain-text arm matters more here than anywhere else in this file:
+      // this is the copy a recipient reading in text mode, or forwarding to
+      // someone, actually gets — and it has to contain a spendable code, or the
+      // present does not arrive.
+      case "giftcard":
+        lines.push(
+          `${RESTAURANT.name.toUpperCase()} GIFT CARD`,
+          section.amount,
+          `For ${section.recipient}, from ${section.sender}`,
+        );
+        if (section.message) lines.push(`"${section.message}"`);
+        lines.push(`Gift card code: ${section.code}`, "");
         break;
       case "divider":
         lines.push("—".repeat(40), "");

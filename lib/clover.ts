@@ -185,6 +185,18 @@ export async function createCloverCheckout(input: {
   customerPhone: string;
   totalCents: number;
   summary: string;
+  /**
+   * Where Clover sends the customer afterwards, as a path on this site.
+   *
+   * Defaults to the food-order return. A gift card purchase is not an order and
+   * has its own return page — but note the caveat in this module's header: a
+   * return URL configured in the Clover dashboard silently overrides whatever is
+   * sent here. `/order/return` therefore forwards a pending gift card purchase
+   * on to `/gift-cards/return` rather than trusting this to be honoured.
+   */
+  returnPath?: string;
+  /** The line item's name on Clover's page. Defaults to the order wording. */
+  lineItemName?: string;
 }): Promise<CloverCheckoutSession> {
   const { CLOVER_MERCHANT_ID: merchantId, CLOVER_API_TOKEN: apiToken } = await readIntegrationSecrets([
     "CLOVER_MERCHANT_ID",
@@ -208,10 +220,11 @@ export async function createCloverCheckout(input: {
   // non-guessable key that a return-page lookup can be built on later, where a
   // sequential order number in a URL would be enumerable.
   const baseUrl = await publicBaseUrl();
+  const returnPath = input.returnPath ?? "/order/return";
   const redirectUrls = baseUrl
     ? {
-        success: `${baseUrl}/order/return?session_id={CHECKOUT_SESSION_ID}`,
-        failure: `${baseUrl}/order/return?status=failed`,
+        success: `${baseUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
+        failure: `${baseUrl}${returnPath}?status=failed`,
       }
     : undefined;
   const response = await fetch(`${await cloverApiBase()}/invoicingcheckoutservice/v1/checkouts`, {
@@ -234,7 +247,7 @@ export async function createCloverCheckout(input: {
       shoppingCart: {
         lineItems: [
           {
-            name: `Pizza 62 order ${input.orderNumber}`,
+            name: input.lineItemName ?? `Pizza 62 order ${input.orderNumber}`,
             price: input.totalCents,
             unitQty: 1,
             note: input.summary.slice(0, 250),
@@ -303,6 +316,12 @@ export async function createCloverCharge(input: {
   idempotencyKey: string;
   orderNumber: string;
   customerEmail: string;
+  /**
+   * What the charge is called in the Clover dashboard. Defaults to the order
+   * wording; a gift card sale overrides it so the two are distinguishable when
+   * a refund has to be reconciled by hand months later.
+   */
+  description?: string;
 }): Promise<CloverChargeResult> {
   const { CLOVER_MERCHANT_ID: merchantId, CLOVER_API_TOKEN: apiToken } = await readIntegrationSecrets([
     "CLOVER_MERCHANT_ID",
@@ -326,7 +345,7 @@ export async function createCloverCharge(input: {
       amount: input.amountCents,
       currency: CURRENCY,
       source: input.sourceToken,
-      description: `Pizza 62 order ${input.orderNumber}`,
+      description: input.description ?? `Pizza 62 order ${input.orderNumber}`,
       receipt_email: input.customerEmail,
       // Clover's charge object does carry metadata, unlike a hosted checkout
       // session — so the order number travels with the payment and shows up in

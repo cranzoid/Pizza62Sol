@@ -38,7 +38,8 @@ export async function GET(request: Request) {
           `SELECT id, order_number, customer_name, customer_phone, customer_email, fulfilment, channel, status,
                   payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
                   address_json, instructions, subtotal_cents, discount_cents, tax_cents,
-                  delivery_fee_cents, tip_cents, total_cents, created_at, acknowledged_at
+                  delivery_fee_cents, tip_cents, total_cents, gift_card_applied_cents,
+                  created_at, acknowledged_at
            FROM orders WHERE status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
            ORDER BY created_at DESC LIMIT 60`,
         )
