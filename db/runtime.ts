@@ -191,6 +191,13 @@ export async function seedLaunchData(database: D1Database): Promise<void> {
   operations.push(
     database
       .prepare("INSERT INTO order_sequences (key, current_number) VALUES ('public_order', 1000) ON CONFLICT (key) DO NOTHING"),
+    // Gift card sales get their own counter and their own `GC-` prefix rather
+    // than sharing the order numbers. They are not orders — nothing is cooked,
+    // no HST is charged, and the owner's bookkeeper has to be able to separate
+    // the two in an export without reading a `fulfilment` column that does not
+    // apply. The distinct prefix does that on sight.
+    database
+      .prepare("INSERT INTO order_sequences (key, current_number) VALUES ('gift_card', 1000) ON CONFLICT (key) DO NOTHING"),
   );
   /**
    * The offer behind the feedback thank-you code.

@@ -26,7 +26,7 @@
  */
 import { AuthError, authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
-import { hasPermission, validateRefundAmount } from "@/lib/domain";
+import { formatMoney, hasPermission, validateRefundAmount } from "@/lib/domain";
 import { logFailure } from "@/lib/log";
 
 type Body =
@@ -112,9 +112,19 @@ export async function POST(request: Request) {
 
     const orderId = String(body.orderId ?? "");
     const order = await getD1()
-      .prepare("SELECT id, order_number, payment_method, payment_status, total_cents FROM orders WHERE id = ?")
+      .prepare(
+        `SELECT id, order_number, payment_method, payment_status, total_cents, gift_card_applied_cents
+         FROM orders WHERE id = ?`,
+      )
       .bind(orderId)
-      .first<{ id: string; order_number: string; payment_method: string; payment_status: string; total_cents: number }>();
+      .first<{
+        id: string;
+        order_number: string;
+        payment_method: string;
+        payment_status: string;
+        total_cents: number;
+        gift_card_applied_cents: number;
+      }>();
     if (!order) return Response.json({ error: "Order not found." }, { status: 404 });
 
     const payment = await getD1()
@@ -140,9 +150,27 @@ export async function POST(request: Request) {
 
     const amountCents = Number(body.amountCents);
     const already = await refundedSoFar(orderId);
+    const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
     try {
+      // The ceiling is `payments.amount_cents`, which is what was *charged* —
+      // the order total less whatever a gift card paid. That is the right
+      // ceiling and it needs no special case: money can only go back the way it
+      // came, and a gift card's share never touched the customer's card.
       validateRefundAmount(Number(payment.amount_cents), already, amountCents);
     } catch (error) {
+      // Which is a bewildering thing to be told when the answer is "that order
+      // was paid with a gift card", so say that instead of the arithmetic.
+      if (giftCardCents > 0) {
+        return Response.json(
+          {
+            error:
+              `${formatMoney(giftCardCents)} of this order was paid with a gift card, and only the ` +
+              `${formatMoney(Number(payment.amount_cents))} charged to a card or taken in cash can be refunded here. ` +
+              "To put the gift card's share back, adjust that card's balance in Admin → Gift cards.",
+          },
+          { status: 400 },
+        );
+      }
       return Response.json({ error: (error as Error).message }, { status: 400 });
     }
 

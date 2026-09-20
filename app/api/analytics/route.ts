@@ -19,6 +19,11 @@ const ALLOWED_EVENTS = new Set([
   "purchase_completed",
   "promotion_used",
   "coupon_used",
+  // Kept in step with `allowedEventNames` in lib/marketing.ts. A name present in
+  // one list and missing from the other is dropped in silence by whichever is
+  // missing it, which is the sort of bug nobody notices until a campaign report
+  // is empty.
+  "gift_card_purchased",
   "feedback_submitted",
   "google_review_clicked",
   // Inline card entry could not start and the checkout fell back to Clover's

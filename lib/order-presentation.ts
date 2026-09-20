@@ -160,7 +160,32 @@ export function summariseItems(details: OrderItemDetail[]): string[] {
   });
 }
 
-/** Money rows for an order, skipping the lines that are zero. */
+/**
+ * One money row on a receipt, a ticket or an email.
+ *
+ * `kind` exists so the four surfaces that render these can tell the bill apart
+ * from the tender without matching on the label text. The printed ticket, in
+ * particular, draws its own emphasised bottom line and needs to know which row
+ * that is — and the answer changed when gift cards arrived, because the last
+ * row is no longer always the total.
+ */
+export type MoneyRow = {
+  label: string;
+  value: string;
+  strong?: boolean;
+  kind?: "line" | "total" | "tender" | "due";
+};
+
+/**
+ * Money rows for an order, skipping the lines that are zero.
+ *
+ * **A gift card appears below the total, not above it.** It is a tender, not a
+ * discount: it pays the bill rather than reducing it, so `Total` — the figure
+ * the HST was calculated on, and the figure on the customer's receipt — is
+ * identical whether a card was used or not. What changes is `Amount due`
+ * underneath. Putting a redemption up with the discount would be a different
+ * claim about tax, and the wrong one.
+ */
 export function totalRows(order: {
   subtotal_cents: number;
   discount_cents: number;
@@ -168,8 +193,9 @@ export function totalRows(order: {
   delivery_fee_cents: number;
   tip_cents: number;
   total_cents: number;
-}): Array<{ label: string; value: string; strong?: boolean }> {
-  const rows: Array<{ label: string; value: string; strong?: boolean }> = [
+  gift_card_applied_cents?: number;
+}): MoneyRow[] {
+  const rows: MoneyRow[] = [
     { label: "Subtotal", value: formatMoney(Number(order.subtotal_cents ?? 0)) },
   ];
   if (Number(order.discount_cents ?? 0) > 0) {
@@ -182,6 +208,17 @@ export function totalRows(order: {
   if (Number(order.tip_cents ?? 0) > 0) {
     rows.push({ label: "Tip", value: formatMoney(Number(order.tip_cents)) });
   }
-  rows.push({ label: "Total", value: formatMoney(Number(order.total_cents ?? 0)), strong: true });
+  const totalCents = Number(order.total_cents ?? 0);
+  const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
+  rows.push({ label: "Total", value: formatMoney(totalCents), strong: true, kind: "total" });
+  if (giftCardCents > 0) {
+    rows.push({ label: "Gift card", value: `−${formatMoney(giftCardCents)}`, kind: "tender" });
+    rows.push({
+      label: "Amount due",
+      value: formatMoney(Math.max(0, totalCents - giftCardCents)),
+      strong: true,
+      kind: "due",
+    });
+  }
   return rows;
 }

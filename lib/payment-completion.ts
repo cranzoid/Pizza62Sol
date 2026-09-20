@@ -13,6 +13,7 @@
  * webhook used to own.
  */
 import { getD1 } from "@/db/runtime";
+import { captureGiftCardStatements } from "@/lib/gift-card-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 
@@ -73,6 +74,21 @@ export async function applyPaymentApproved(input: {
            AND payload_json::jsonb->>'orderId' = ?`,
       )
       .bind(releasedStatus, now, input.orderId),
+    /**
+     * The gift card half of "this order has been paid for".
+     *
+     * A partly gift-carded order holds a reservation on the card from the moment
+     * it was created; this is the point at which that reservation becomes a
+     * spend. It belongs in *this* batch rather than beside it because the two
+     * facts — the payment captured and the hold captured — have to be true
+     * together or the ledger disagrees with the order about what the customer
+     * still has.
+     *
+     * A no-op for the overwhelming majority of orders, which used no gift card,
+     * and idempotent for the rest: Clover redelivers webhooks, and the statement
+     * refuses to write a second capture for an order that already has one.
+     */
+    ...captureGiftCardStatements(input.orderId, now),
   ]);
 
   // The order is live now, so tell the customer and the kitchen immediately

@@ -61,6 +61,7 @@ const allowedEventNames = new Set([
   "purchase_completed",
   "promotion_used",
   "coupon_used",
+  "gift_card_purchased",
   "feedback_submitted",
   "google_review_clicked",
   "card_form_unavailable",
@@ -290,7 +291,7 @@ function sendExternal(eventName: string, context: EventContext): void {
   const value = Number(context.value ?? 0);
   const items = context.items ?? [];
   const transactionId = clean(String(context.transactionId ?? ""), 64);
-  if (eventName === "purchase_completed" && transactionId) {
+  if ((eventName === "purchase_completed" || eventName === "gift_card_purchased") && transactionId) {
     const key = `${PURCHASE_KEY_PREFIX}${transactionId}`;
     if (window.localStorage.getItem(key) === "sent") return;
     window.localStorage.setItem(key, "sent");
@@ -301,6 +302,11 @@ function sendExternal(eventName: string, context: EventContext): void {
     add_to_cart: "AddToCart",
     checkout_started: "InitiateCheckout",
     purchase_completed: "Purchase",
+    // A gift card sale is a real purchase and the pixel should learn from it.
+    // The `GC-` transaction id keeps it separable from food orders in whatever
+    // the platforms report back, which matters because the two behave nothing
+    // alike: one is bought once in December for somebody else.
+    gift_card_purchased: "Purchase",
     phone_clicked: "Contact",
   };
   const googleName: Record<string, string> = {
@@ -310,6 +316,7 @@ function sendExternal(eventName: string, context: EventContext): void {
     cart_viewed: "view_cart",
     checkout_started: "begin_checkout",
     purchase_completed: "purchase",
+    gift_card_purchased: "purchase",
     phone_clicked: "generate_lead",
   };
   if (window.fbq && metaName[eventName]) {
@@ -335,7 +342,7 @@ function sendExternal(eventName: string, context: EventContext): void {
       items: ecommerceItems(items),
     });
     const current = config();
-    if (eventName === "purchase_completed" && current.googleAdsId && current.googleAdsLabel) {
+    if ((eventName === "purchase_completed" || eventName === "gift_card_purchased") && current.googleAdsId && current.googleAdsLabel) {
       window.gtag("event", "conversion", {
         send_to: `${current.googleAdsId}/${current.googleAdsLabel}`,
         currency,

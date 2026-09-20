@@ -24,6 +24,19 @@ import {
   type WeeklyAvailability,
 } from "@/lib/domain";
 import { normalizeAttribution } from "@/lib/attribution";
+import {
+  evaluateGiftCard,
+  normalizeGiftCardCode,
+  unknownGiftCardQuote,
+  type GiftCardQuote,
+} from "@/lib/gift-cards";
+import {
+  captureGiftCardStatements,
+  holdGiftCardStatements,
+  lookupGiftCard,
+  releaseGiftCardStatements,
+  toRedeemable,
+} from "@/lib/gift-card-store";
 import { resolveDeliveryPoint } from "@/lib/delivery-area";
 import { closureFor, closureMessage, loadActiveClosures } from "@/lib/closures";
 import {
@@ -61,6 +74,23 @@ export type OrderRequest = {
   }>;
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
+  /**
+   * What the review screen said the customer would be charged.
+   *
+   * A consent check, not a price: the server still works the total out for
+   * itself and simply refuses to exceed this. Absent from staff entry, where
+   * someone is looking at the screen. See `createOrder`.
+   */
+  expectedAmountDueCents?: number;
+  /**
+   * A gift card code, which is a completely different thing from a coupon and
+   * is deliberately a separate field rather than a second meaning for
+   * `couponCode`. A coupon reduces the taxable food subtotal; a gift card pays
+   * a tax-inclusive total and is never allowed near `priceCart`. Sharing one
+   * input would be one keystroke's convenience bought with the chance of a
+   * redemption being processed as a discount, which under-collects HST.
+   */
+  giftCardCode?: string;
   paymentMethod?: "pay_at_store" | "online";
   /**
    * A single-use card token minted by Clover's iframe in the customer's browser.
@@ -652,6 +682,47 @@ function normalizeCouponCode(code: string | undefined): string | null {
   return clean;
 }
 
+/**
+ * True when a failed order batch failed *because of the gift card*.
+ *
+ * Two constraints can fire, and they are the two races the hold is designed to
+ * lose safely: `gift_cards_balance_nonneg` when someone else spent the balance
+ * first, and the NOT NULL on `balance_after_cents` when the card was voided
+ * between the quote and the commit. Matched on the constraint names rather than
+ * the message text, which is localised by the server's `lc_messages`.
+ */
+function isGiftCardConflict(error: unknown): boolean {
+  const detail = error as { constraint?: string; column?: string; table?: string } | null;
+  if (detail?.constraint === "gift_cards_balance_nonneg") return true;
+  return detail?.table === "gift_card_transactions" && detail?.column === "balance_after_cents";
+}
+
+/**
+ * What a gift card code is worth against a priced total.
+ *
+ * Shared by `quoteOrder` and `createOrder` so the review screen and the commit
+ * cannot disagree about how much the card pays — the same reason the two run
+ * one `priceCart`. Returns null when no code was supplied at all, which is the
+ * ordinary case and is different from a code that was supplied and refused.
+ *
+ * Read-only. No hold is taken here: this runs on every keystroke of the
+ * checkout's debounced quote, and reserving money on each one would strand a
+ * balance on every abandoned cart.
+ */
+async function resolveGiftCard(
+  rawCode: string | undefined,
+  totalCents: number,
+): Promise<{ quote: GiftCardQuote; giftCardId: string | null } | null> {
+  if (typeof rawCode !== "string" || !rawCode.trim()) return null;
+  const body = normalizeGiftCardCode(rawCode);
+  // A code that is not even the right shape is refused without a database read.
+  if (!body) return { quote: unknownGiftCardQuote(""), giftCardId: null };
+  const card = await lookupGiftCard(body);
+  if (!card) return { quote: unknownGiftCardQuote(body.slice(-4)), giftCardId: null };
+  const quote = evaluateGiftCard(toRedeemable(card), totalCents);
+  return { quote, giftCardId: quote.accepted ? card.id : null };
+}
+
 // C-02: coded promotions must never apply automatically. Promotions with a `code`
 // are only eligible when the customer supplies that exact code; promotions without
 // a code remain automatic. A supplied code that matches nothing is rejected so the
@@ -831,11 +902,21 @@ export type OrderQuote = {
     deliveryFeeCents: number;
     tipCents: number;
     totalCents: number;
+    /**
+     * The tender, applied after `totalCents` rather than inside it. HST and the
+     * tip are computed on the whole bill and are not reduced by a penny of it —
+     * see lib/gift-cards.ts on why that is a tax rule, not a preference.
+     */
+    giftCardAppliedCents: number;
+    /** What the customer's card is actually charged. Zero is a valid answer. */
+    amountDueCents: number;
   };
   taxRateBps: number;
   deliveryFeeTaxable: boolean;
   appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
   coupon: { code: string; accepted: boolean; message: string | null } | null;
+  /** Null until a gift card code is entered. Never carries the code itself. */
+  giftCard: GiftCardQuote | null;
   delivery: {
     minimumCents: number;
     /** How much more food is needed to reach the minimum. Zero once it is met. */
@@ -1000,6 +1081,34 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
     }
   }
 
+  // The gift card, priced against the finished total — after HST, after the
+  // delivery fee, after the tip. Reported rather than thrown, so a customer
+  // whose card turns out to be empty finds out on this screen rather than at the
+  // counter, and sees the rest of their total while they deal with it.
+  const giftCardResult = await resolveGiftCard(body.giftCardCode, price.totalCents);
+  const giftCardAppliedCents = giftCardResult?.quote.appliedCents ?? 0;
+  /**
+   * A refused card blocks the order, unlike a refused coupon.
+   *
+   * The two differ because `createOrder` treats them differently, and `ok` has
+   * to mean "this will be accepted". A coupon that comes off nothing still
+   * leaves a placeable order at full price; a gift card that cannot be used is
+   * refused outright there, rather than quietly charging the customer the whole
+   * bill. Without this the checkout would enable a button guaranteed to fail —
+   * the same class of problem as quoting a time the store is shut.
+   *
+   * The message is the card's own, and the box it appears beside has a Remove
+   * button, so clearing it is one tap rather than a puzzle.
+   */
+  if (giftCardResult && !giftCardResult.quote.accepted) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "GIFT_CARD_UNAVAILABLE",
+      message: giftCardResult.quote.message ?? "That gift card could not be used on this order.",
+    });
+  }
+
   // The delivery minimum is checked against the pre-tax menu subtotal, so a
   // customer cannot reach it with the fee or a tip. Reported as a shortfall
   // rather than a refusal: "add $4.01 more" is actionable, "not eligible" is not.
@@ -1136,6 +1245,8 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
       deliveryFeeCents: price.deliveryFeeCents,
       tipCents: price.tipCents,
       totalCents: price.totalCents,
+      giftCardAppliedCents,
+      amountDueCents: Math.max(0, price.totalCents - giftCardAppliedCents),
     },
     taxRateBps: taxTips.taxRateBps,
     deliveryFeeTaxable: Boolean(delivery.feeTaxable),
@@ -1145,6 +1256,7 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
       discountCents: entry.discountCents,
     })),
     coupon,
+    giftCard: giftCardResult?.quote ?? null,
     delivery: deliveryQuote,
     estimateMinutes,
     issues,
@@ -1396,6 +1508,50 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
     }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
+
+    /**
+     * The gift card, resolved last — immediately before anything is written.
+     *
+     * Deliberately after every other check, so the window between reading the
+     * balance and reserving it is as short as it can be. The reservation itself
+     * is what actually makes this safe; this only keeps the common case from
+     * needing it.
+     */
+    const giftCardResult = await resolveGiftCard(body.giftCardCode, price.totalCents);
+    if (giftCardResult && !giftCardResult.quote.accepted) {
+      // Refused rather than quietly ignored. The review screen said the card
+      // would pay part of this bill; charging the full amount because the card
+      // turned out to be empty is charging someone more than they agreed to.
+      throw new OrderValidationError(
+        giftCardResult.quote.message ?? "That gift card could not be used on this order.",
+        422,
+        "GIFT_CARD_UNAVAILABLE",
+      );
+    }
+    const giftCardId = giftCardResult?.giftCardId ?? null;
+    const giftCardAppliedCents = giftCardResult?.quote.appliedCents ?? 0;
+    const amountDueCents = Math.max(0, price.totalCents - giftCardAppliedCents);
+
+    /**
+     * The customer consented to a number. This is the check that they are not
+     * charged a different one.
+     *
+     * A checkout left open while a promotion expires, or a gift card drained by
+     * whoever else holds the code, both end with a total higher than the one on
+     * the review screen. Without this the order would simply be created at the
+     * new price and the card charged for it. Optional, because the till has a
+     * person looking at the screen and does not need it; when the browser sends
+     * it, an increase is refused rather than absorbed.
+     */
+    const expectedAmountDueCents = Number(body.expectedAmountDueCents);
+    if (Number.isSafeInteger(expectedAmountDueCents) && amountDueCents > expectedAmountDueCents) {
+      throw new OrderValidationError(
+        "The total for this order changed while you were checking out. Please review it and try again.",
+        409,
+        "TOTAL_CHANGED",
+      );
+    }
+
     const sequence = await getD1()
       .prepare(
         "UPDATE order_sequences SET current_number = current_number + 1 WHERE key = 'public_order' RETURNING current_number",
@@ -1415,9 +1571,28 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // counter order has nothing to attribute and the till sends nothing; a
     // website order carries whatever campaign brought the customer here.
     const attribution = context.staffEntry ? null : normalizeAttribution(body.attribution);
-    const orderStatus = paymentMethod === "online" ? "awaiting_payment" : "received";
-    const paymentStatus = paymentMethod === "online" ? "awaiting_checkout" : "pending_at_store";
-    const paymentProvider = paymentMethod === "online" ? "clover" : "store";
+    /**
+     * A gift card that covers the whole bill leaves nothing for Clover to do.
+     *
+     * There is no card to charge, no session to create, no webhook to wait for
+     * and nothing for the reaper to cancel through — so the order is live the
+     * moment it commits, exactly like the pay-at-store path. Sending a zero to
+     * Clover instead would be a call that can only fail, and an order stuck in
+     * `awaiting_payment` waiting for a confirmation that can never arrive.
+     */
+    const fullyCoveredByGiftCard = giftCardAppliedCents > 0 && amountDueCents === 0;
+    const settledOnCreation = paymentMethod !== "online" || fullyCoveredByGiftCard;
+    const orderStatus = settledOnCreation ? "received" : "awaiting_payment";
+    const paymentStatus = fullyCoveredByGiftCard
+      ? "paid"
+      : paymentMethod === "online"
+        ? "awaiting_checkout"
+        : "pending_at_store";
+    const paymentProvider = fullyCoveredByGiftCard
+      ? "gift_card"
+      : paymentMethod === "online"
+        ? "clover"
+        : "store";
     // An online order's notifications are parked until Clover confirms payment:
     // confirming an order nobody paid for, and calling the kitchen about it, are
     // both worse than saying nothing. The webhook releases them.
@@ -1426,7 +1601,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // deployment without a provider does not burn every row's retry budget and
     // bury real notifications in `failed` — the dispatcher leaves these alone
     // until something can actually deliver.
-    const outboxStatus = paymentMethod === "online"
+    const outboxStatus = !settledOnCreation
       ? "waiting_payment"
       : (await anyProviderConfigured())
         ? "pending"
@@ -1439,8 +1614,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
             customer_email, fulfilment, channel, status, payment_status, payment_method, schedule_type,
             scheduled_for, estimated_for, address_json, instructions, attribution_json, pricing_json,
             subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents, total_cents,
-            acknowledged_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            gift_card_applied_cents, gift_card_id, acknowledged_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           orderId,
@@ -1467,7 +1642,11 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           price.taxCents,
           price.deliveryFeeCents,
           price.tipCents,
+          // Unchanged by the gift card: the bill is the bill, and the HST on it
+          // is charged in full. What the card pays sits in its own column.
           price.totalCents,
+          giftCardAppliedCents,
+          giftCardId,
           // The employee who entered a walk-in is already standing in front of
           // that order. Treating it as unseen creates a false acknowledgement
           // alarm for an order the restaurant itself just accepted.
@@ -1486,8 +1665,15 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           orderId,
           paymentProvider,
           paymentMethod,
-          paymentMethod === "online" ? "pending" : "pending",
-          price.totalCents,
+          // A bill a gift card has already settled has nothing left to capture.
+          fullyCoveredByGiftCard ? "captured" : "pending",
+          // **What is actually charged**, not what the order costs. This is the
+          // number the existing refund ceiling is measured against
+          // (`validateRefundAmount`), and it must be, or a partly gift-carded
+          // order could be refunded to a card for more than that card ever paid.
+          // `payments_amount_nonneg` permits the zero a fully covered order
+          // writes; the row exists so the reconciliation trail is unbroken.
+          amountDueCents,
           idempotencyKey,
           now,
           now,
@@ -1502,9 +1688,11 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           crypto.randomUUID(),
           orderId,
           orderStatus,
-          paymentMethod === "online"
-            ? "Order validated; waiting for Clover payment"
-            : "Order accepted after server validation",
+          fullyCoveredByGiftCard
+            ? `Order paid in full by gift card ending ${giftCardResult?.quote.suffix ?? "????"}`
+            : settledOnCreation
+              ? "Order accepted after server validation"
+              : "Order validated; waiting for Clover payment",
           now,
         ),
       // H-09: the post-order feedback request. Queued here rather than when the
@@ -1522,6 +1710,43 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         )
         .bind(orderId, keyHash),
     ];
+    /**
+     * Reserving the gift card balance, inside the transaction that creates the
+     * order.
+     *
+     * It has to be this batch and no other. A hold taken before it would strand
+     * money if the order failed to commit; one taken after would leave a window
+     * in which the order exists against a balance somebody else could spend
+     * first. `holdGiftCardStatements` deliberately has no `WHERE balance >= ?`
+     * guard — the `gift_cards_balance_nonneg` constraint aborts this whole batch
+     * instead, which is the only outcome that keeps the order and the money in
+     * agreement. See lib/gift-card-store.ts.
+     */
+    if (giftCardId && giftCardAppliedCents > 0) {
+      operationsBatch.push(
+        ...holdGiftCardStatements({
+          giftCardId,
+          orderId,
+          amountCents: giftCardAppliedCents,
+          actorType: context.staffEntry ? "staff" : "customer",
+          actorId: context.staffUserId ?? null,
+          note: `Held against order ${orderNumber}`,
+          now,
+        }),
+      );
+      // An order that is live the instant it commits — pay at store, or a bill
+      // the card covered outright — never passes through `applyPaymentApproved`,
+      // so its hold has to be resolved here or it is never resolved at all.
+      //
+      // A millisecond after the hold, not the same instant. The ledger is read
+      // by timestamp, and two rows sharing one fall back to sorting by their
+      // random UUIDs — which puts "spent" above "reserved" about half the time,
+      // on the one screen whose entire job is explaining where a balance went.
+      if (settledOnCreation) {
+        operationsBatch.push(...captureGiftCardStatements(orderId, now + 1));
+      }
+    }
+
     // A customer order needs to get the restaurant's attention. A walk-in order
     // was entered by the restaurant itself and is printed from that same tap, so
     // ringing the kitchen phone to tell staff about their own action is both
@@ -1647,15 +1872,38 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           ),
       );
     }
-    await getD1().batch(operationsBatch);
-    if (paymentMethod === "online" && paymentToken && (await cloverIframeEnabled())) {
+    try {
+      await getD1().batch(operationsBatch);
+    } catch (error) {
+      /**
+       * The gift card was spent out from under this order between the balance
+       * being read a few lines above and this transaction committing — someone
+       * else holding the same code got there first, or staff voided the card.
+       *
+       * The constraint did its job: nothing committed, so there is no order, no
+       * payment and no hold. All that is left is to say so in a sentence the
+       * customer can act on, rather than letting a database error surface as
+       * "we could not safely create the order".
+       */
+      if (giftCardId && isGiftCardConflict(error)) {
+        throw new OrderValidationError(
+          "That gift card's balance was spent while you were checking out. Check the balance and try again.",
+          409,
+          "GIFT_CARD_CONFLICT",
+        );
+      }
+      throw error;
+    }
+    if (paymentMethod === "online" && !fullyCoveredByGiftCard && paymentToken && (await cloverIframeEnabled())) {
       // The inline path. Unlike the hosted one, the outcome is known inside this
       // request: the order is paid before the customer is answered, so there is
       // no `awaiting_payment` window for the reaper to cancel through and no
       // dependence on a webhook arriving for anyone to be told what happened.
       try {
         const charge = await createCloverCharge({
-          amountCents: price.totalCents,
+          // The amount due, not the order total: a gift card has already paid
+          // part of this bill and Clover must charge only the remainder.
+          amountCents: amountDueCents,
           sourceToken: paymentToken,
           // The browser's durable checkout key, not a fresh one. It survives a
           // refresh, a double tap and a retry after an ambiguous failure, so a
@@ -1681,6 +1929,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           paymentStatus: "paid",
           estimateAt: schedule.estimatedFor,
           price,
+          giftCardAppliedCents,
+          amountDueCents,
         };
       } catch (error) {
         const declined = error instanceof CloverDeclinedError;
@@ -1725,6 +1975,15 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           // the Clover key. Only a confirmed decline renews the browser's key;
           // the declined payment stays in the audit trail under the old key.
           getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ?").bind(keyHash),
+          // Nobody paid, so the money reserved on the gift card goes back. One
+          // of the three places a hold must be resolved: miss it and a customer
+          // whose card was declined silently loses their gift card balance too.
+          ...releaseGiftCardStatements({
+            orderId,
+            actorType: "system",
+            note: declined ? "Card declined; gift card hold released" : "Payment failed; gift card hold released",
+            now: Date.now(),
+          }),
         ]);
         throw new OrderValidationError(
           declined
@@ -1736,14 +1995,14 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       }
     }
 
-    if (paymentMethod === "online") {
+    if (paymentMethod === "online" && !fullyCoveredByGiftCard) {
       try {
         const checkout = await createCloverCheckout({
           orderNumber,
           customerName: customer.name,
           customerEmail: customer.email,
           customerPhone: customer.phone,
-          totalCents: price.totalCents,
+          totalCents: amountDueCents,
           summary: items
             .map((item) => `${item.quantity}x ${item.productName}`)
             .join(", "),
@@ -1767,6 +2026,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           paymentStatus,
           estimateAt: schedule.estimatedFor,
           price,
+          giftCardAppliedCents,
+          amountDueCents,
           checkoutUrl: checkout.href,
         };
       } catch (error) {
@@ -1791,6 +2052,14 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           getD1()
             .prepare("DELETE FROM idempotency_keys WHERE key_hash = ?")
             .bind(keyHash),
+          // As above: this order will never be paid for, so the gift card
+          // balance it reserved has to go back to the customer.
+          ...releaseGiftCardStatements({
+            orderId,
+            actorType: "system",
+            note: "Checkout could not start; gift card hold released",
+            now: Date.now(),
+          }),
         ]);
         throw new OrderValidationError(
           "Clover checkout could not start. No payment was taken; please try again.",
@@ -1799,11 +2068,12 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         );
       }
     }
-    // A pay-at-store order is real the instant it commits, so it is dispatched
-    // now rather than waiting up to a minute for the cron floor. Deliberately not
+    // An order that is already settled — pay at store, or a bill a gift card
+    // covered outright — is real the instant it commits, so it is dispatched now
+    // rather than waiting up to a minute for the cron floor. Deliberately not
     // awaited: the outbox row is already durable, so a crash here loses nothing
-    // and the sweeper will pick it up. An online order is dispatched by the
-    // webhook instead, once payment is confirmed.
+    // and the sweeper will pick it up. An order still owing money is dispatched
+    // by the webhook instead, once payment is confirmed.
     dispatchSoon();
     return {
       duplicate: false,
@@ -1815,6 +2085,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       paymentStatus,
       estimateAt: schedule.estimatedFor,
       price,
+      giftCardAppliedCents,
+      amountDueCents,
     };
   } catch (error) {
     await getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ? AND status = 'pending'").bind(keyHash).run();

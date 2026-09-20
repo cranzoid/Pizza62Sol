@@ -58,11 +58,23 @@ type Quote = {
     deliveryFeeCents: number;
     tipCents: number;
     totalCents: number;
+    /** The tender, applied after the total. Never reduces HST or the tip. */
+    giftCardAppliedCents: number;
+    /** What the card is charged. The button and the summary both read this. */
+    amountDueCents: number;
   };
   taxRateBps: number;
   deliveryFeeTaxable: boolean;
   appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
   coupon: { code: string; accepted: boolean; message: string | null } | null;
+  giftCard: {
+    suffix: string;
+    accepted: boolean;
+    balanceCents: number;
+    appliedCents: number;
+    remainingAfterCents: number;
+    message: string | null;
+  } | null;
   delivery: { minimumCents: number; shortfallCents: number; feeCents: number; meetsMinimum: boolean } | null;
   estimateMinutes: number;
   issues: Array<{ index: number | null; productId: string | null; code: string; message: string }>;
@@ -78,6 +90,8 @@ const EMPTY_TOTALS: Quote["totals"] = {
   deliveryFeeCents: 0,
   tipCents: 0,
   totalCents: 0,
+  giftCardAppliedCents: 0,
+  amountDueCents: 0,
 };
 
 
@@ -94,16 +108,17 @@ function useOrderQuote(input: {
   fulfilment: "pickup" | "delivery";
   tip?: { type: "none" } | { type: "percentage"; valueBps: number } | { type: "custom"; amountCents: number };
   couponCode?: string;
+  giftCardCode?: string;
   schedule?: { type: "asap" | "scheduled"; scheduledFor?: number };
   enabled?: boolean;
 }): { quote: Quote | null; loading: boolean; failed: boolean } {
-  const { cart, fulfilment, tip, couponCode, schedule, enabled = true } = input;
+  const { cart, fulfilment, tip, couponCode, giftCardCode, schedule, enabled = true } = input;
   const [quote, setQuote] = useState<Quote | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   // Serialised so the body is a stable dependency rather than a new object each
   // render, which would re-fetch forever.
-  const body = JSON.stringify({ fulfilment, items: toOrderItems(cart), tip, couponCode, schedule });
+  const body = JSON.stringify({ fulfilment, items: toOrderItems(cart), tip, couponCode, giftCardCode, schedule });
   const empty = cart.length === 0;
 
   useEffect(() => {
@@ -550,7 +565,13 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         orderNumber: result.orderNumber,
         transactionId: String(result.orderNumber ?? ""),
         currency: "CAD",
-        value: Number(price.totalCents ?? 0) / 100,
+        // The money that actually moved today, not what the order cost.
+        //
+        // A gift card was already reported as revenue when it was bought (see
+        // `gift_card_purchased`), so counting the full food total again when it
+        // is spent would report the same dollar twice and teach the ad
+        // platforms to bid on it. What is left after the card is the new money.
+        value: Number(result.amountDueCents ?? price.totalCents ?? 0) / 100,
         items: commerceItems(cart),
       });
     }
@@ -856,6 +877,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           <a href="#offers">Offers</a>
           <a href="#menu">Menu</a>
           <a href="#hours">Hours</a>
+          <Link href="/gift-cards">Gift cards</Link>
           <Link href="/track">Track order</Link>
         </nav>
         <div className="header-actions">
@@ -966,7 +988,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
 
       <footer className="public-footer">
         <div className="footer-brand"><BrandLogo src={logoUrl} name={businessName} chip /><p>{String(content.footerTagline ?? "Hamilton pizza made for real life.")}</p></div>
-        <div><b>Order</b><a href="#offers">Offers</a><a href="#menu">Menu</a><Link href="/track">Track an order</Link></div>
+        <div><b>Order</b><a href="#offers">Offers</a><a href="#menu">Menu</a><Link href="/gift-cards">Gift cards</Link><Link href="/track">Track an order</Link></div>
         <div><b>Information</b><a href="#hours">Hours & delivery</a><Link href="/privacy">Privacy</Link><Link href="/accessibility">Accessibility</Link></div>
         <div><b>Restaurant</b><a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} onClick={() => trackEvent("phone_clicked", { location: "footer" })}>{phone}</a>{String(content.socialInstagram ?? "").trim() ? <a href={String(content.socialInstagram)} rel="noreferrer">Instagram</a> : null}{String(content.socialFacebook ?? "").trim() ? <a href={String(content.socialFacebook)} rel="noreferrer">Facebook</a> : null}<Link href="/admin">Staff portal</Link></div>
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
@@ -1215,6 +1237,11 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
   const [tip, setTip] = useState(0); const [customTip, setCustomTip] = useState(""); const [tipMode, setTipMode] = useState<"preset" | "custom">("preset");
   const [couponInput, setCouponInput] = useState(""); const [couponCode, setCouponCode] = useState("");
+  // A second, separate box. Never merged with the promo one: a coupon reduces
+  // the taxable food subtotal and a gift card pays a tax-inclusive total, so
+  // they are different money doing different things, and one input that had to
+  // guess which had been typed would sometimes guess wrong about HST.
+  const [giftCardInput, setGiftCardInput] = useState(""); const [giftCardCode, setGiftCardCode] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">(store.open ? "asap" : "scheduled"); const [scheduledFor, setScheduledFor] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
@@ -1272,6 +1299,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
     fulfilment,
     tip: tipRequest,
     couponCode: couponCode || undefined,
+    giftCardCode: giftCardCode || undefined,
     schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" && scheduledFor ? Number(scheduledFor) : undefined },
   });
   const totals = quote?.totals ?? EMPTY_TOTALS;
@@ -1303,9 +1331,11 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   const readyAt = scheduleType === "scheduled"
     ? scheduledFor ? slotLabel(Number(scheduledFor)) : ""
     : `As soon as possible · about ${String(estimate)} min`;
-  const payingWith = paymentMethod === "online"
-    ? inlineCardAvailable ? "Card, entered on this page" : "Card, on Clover's secure page"
-    : "Cash, debit or card at the store";
+  const payingWith = totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
+    ? "Gift card — nothing else to pay"
+    : paymentMethod === "online"
+      ? inlineCardAvailable ? "Card, entered on this page" : "Card, on Clover's secure page"
+      : "Cash, debit or card at the store";
 
   const submit = async () => {
     setSubmitting(true); setError(""); trackEvent("payment_attempted", { paymentMethod });
@@ -1314,7 +1344,10 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
       // a card the customer mistyped fails here — with the form still in front of
       // them and nothing created — rather than after an order row exists.
       let paymentToken: string | undefined;
-      if (paymentMethod === "online" && cardForm) {
+      // Nothing is owed, so there is no card to tokenise. Asking Clover for a
+      // token here would fail on the empty fields of a form the customer was
+      // never given a reason to fill in.
+      if (paymentMethod === "online" && cardForm && totals.amountDueCents > 0) {
         try {
           paymentToken = await cardForm.tokenize();
         } catch (caught) {
@@ -1324,7 +1357,13 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         }
       }
       const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, paymentToken, tip: tipRequest, couponCode: couponCode || undefined, address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
+        idempotencyKey, fulfilment, customer: { name, phone, email }, items: toOrderItems(cart), schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" ? Number(scheduledFor) : undefined }, paymentMethod, paymentToken, tip: tipRequest, couponCode: couponCode || undefined, giftCardCode: giftCardCode || undefined,
+        // What this screen said would be charged. The server prices the order
+        // itself and simply refuses to exceed this — so a promotion that expired
+        // or a gift card someone else drained while this sat open is a refusal
+        // to review, not a silently larger charge.
+        expectedAmountDueCents: totals.amountDueCents,
+        address: fulfilment === "delivery" ? { line1, unit, city: "Hamilton", province: "ON", postalCode, instructions: deliveryInstructions } : undefined,
         // Which ad, if any, brought this customer here. Sent with the order
         // rather than only on an analytics event, because "did the Meta
         // campaign pay for itself" is a question about orders, and an analytics
@@ -1358,7 +1397,9 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         window.localStorage.setItem("p62_pending_order", JSON.stringify({
           orderNumber: result.orderNumber, trackingToken: result.trackingToken,
           feedbackToken: result.feedbackToken, estimateAt: result.estimateAt, startedAt: Date.now(),
-          value: Number((result.price as Record<string, unknown> | undefined)?.totalCents ?? 0) / 100,
+          // Same rule as above: what Clover is about to charge, which is the
+          // order total minus anything a gift card already covered.
+          value: Number(result.amountDueCents ?? (result.price as Record<string, unknown> | undefined)?.totalCents ?? 0) / 100,
           items: commerceItems(cart),
         }));
         window.location.assign(result.checkoutUrl);
@@ -1386,7 +1427,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
       <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
-      {paymentMethod === "online" && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
+      {paymentMethod === "online" && totals.amountDueCents > 0 && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
         ? <CloverCardForm
             publicToken={cloverIframe.publicToken}
             merchantId={cloverIframe.merchantId}
@@ -1453,12 +1494,12 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             else to go looking for one. Opens by itself once a code is applied,
             so an applied discount is never hidden behind a summary row. */}
         <details className="summary-extra" open={Boolean(couponCode)}>
-          <summary>Promo code</summary>
+          <summary>Have a promo code?</summary>
           <div className="coupon-row">
             <input
               value={couponInput}
               onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
-              placeholder="Have a code?"
+              placeholder="Enter promo code"
               aria-label="Promo code"
               autoComplete="off"
               spellCheck={false}
@@ -1474,6 +1515,57 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
               {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
             </p>
           ) : null}
+        </details>
+
+        {/*
+          The gift card, in its own box beside the promo one rather than sharing
+          it. The two behave differently with real money: a promo code comes off
+          the food before HST is worked out, a gift card pays the finished bill
+          including HST and the tip. One combined input would have to guess which
+          had been typed, and guessing wrong about that is guessing wrong about
+          tax.
+
+          Once applied it shows three numbers, not one. "Gift card applied" over
+          a total that went down by an amount the customer cannot see is the same
+          problem as an unexplained discount — what they actually want to know is
+          what was on the card, what this order used, and what is left for next
+          time. All three come from the server.
+        */}
+        <details className="summary-extra" open={Boolean(giftCardCode)}>
+          <summary>Have a gift card?</summary>
+          {quote?.giftCard?.accepted ? (
+            <div className="giftcard-applied" role="status">
+              <strong><span aria-hidden="true">✓</span> Gift card ending {quote.giftCard.suffix}</strong>
+              <div><span>Available balance</span><b>{formatMoney(quote.giftCard.balanceCents)}</b></div>
+              <div><span>Applied to this order</span><b>−{formatMoney(quote.giftCard.appliedCents)}</b></div>
+              <div><span>Remaining balance</span><b>{formatMoney(quote.giftCard.remainingAfterCents)}</b></div>
+              <button type="button" className="text-button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>
+                Remove gift card
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="coupon-row">
+                <input
+                  value={giftCardInput}
+                  onChange={(event) => setGiftCardInput(event.target.value.toUpperCase())}
+                  placeholder="P62-ABCD-EFGH-JKLM-NPQR"
+                  aria-label="Gift card code"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                />
+                {giftCardCode ? (
+                  <button type="button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>Remove</button>
+                ) : (
+                  <button type="button" disabled={!giftCardInput.trim()} onClick={() => setGiftCardCode(giftCardInput.trim())}>Apply</button>
+                )}
+              </div>
+              {quote?.giftCard && !quote.giftCard.accepted ? (
+                <p className="coupon-bad" role="status">{quote.giftCard.message}</p>
+              ) : null}
+            </>
+          )}
         </details>
 
         <div className="summary-tip">
@@ -1510,14 +1602,31 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             <b>{formatMoney(totals.taxCents)}</b>
           </div>
           {totals.tipCents > 0 ? <div><span>Tip</span><b>{formatMoney(totals.tipCents)}</b></div> : null}
-          {/* Named for what happens next rather than "Total to pay": on a pickup
-              order paid at the counter, nothing is charged when this button is
-              pressed, and a customer expecting a card charge is a customer
-              phoning to ask whether the order went through. */}
+          {/*
+            With a gift card on the order there are two figures, and both have
+            to be on screen. `Total` is what the order costs — the number the
+            HST was worked out on, the number on the receipt and the number the
+            kitchen's ticket shows — and it does not move when a card is
+            applied. `Amount due` is what actually gets charged. Showing only
+            the second would hide the tax base; showing only the first would
+            surprise someone at the card reader.
+          */}
           <div className="checkout-grand-total">
-            <span>{paymentMethod === "online" ? "Total charged now" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
+            <span>{totals.giftCardAppliedCents > 0 ? "Total" : paymentMethod === "online" ? "Total charged now" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
             <b>{formatMoney(totals.totalCents)}</b>
           </div>
+          {totals.giftCardAppliedCents > 0 ? (
+            <>
+              <div className="checkout-giftcard">
+                <span>Gift card{quote?.giftCard ? ` ending ${quote.giftCard.suffix}` : ""}</span>
+                <b>−{formatMoney(totals.giftCardAppliedCents)}</b>
+              </div>
+              <div className="checkout-grand-total checkout-amount-due">
+                <span>{totals.amountDueCents === 0 ? "Amount due" : paymentMethod === "online" ? "Amount charged now" : "Amount due at the store"}</span>
+                <b>{formatMoney(totals.amountDueCents)}</b>
+              </div>
+            </>
+          ) : null}
         </div>
 
         {blockingIssues.map((issue) => <p className="cart-blocker" role="status" key={`${issue.code}-${issue.index ?? "order"}`}>{issue.message}</p>)}
@@ -1540,19 +1649,29 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             !termsAccepted ||
             !contactComplete ||
             !addressComplete ||
-            (paymentMethod === "online" && !integrations.clover) ||
+            (paymentMethod === "online" && totals.amountDueCents > 0 && !integrations.clover) ||
             (scheduleType === "scheduled" && !scheduledFor)
           }
           onClick={submit}
         >
-          {submitting ? "Confirming…" : paymentMethod === "online" ? `Pay ${formatMoney(totals.totalCents)}` : `Place order · ${formatMoney(totals.totalCents)}`} <ArrowIcon />
+          {/* A bill a gift card covers outright takes no card payment at all, so
+              a button reading "Pay C$0.00" would be both wrong and alarming. */}
+          {submitting
+            ? "Confirming…"
+            : totals.amountDueCents === 0 && totals.totalCents > 0
+              ? "Place order · paid by gift card"
+              : paymentMethod === "online"
+                ? `Pay ${formatMoney(totals.amountDueCents)}`
+                : `Place order · ${formatMoney(totals.amountDueCents)}`} <ArrowIcon />
         </button>
         {!contactComplete ? <small className="checkout-hint">Add your name, phone and email above to continue.</small> : null}
         {contactComplete && !addressComplete ? <small className="checkout-hint">Add your delivery address above to continue.</small> : null}
         {contactComplete && addressComplete && scheduleType === "scheduled" && !scheduledFor ? <small className="checkout-hint">Choose a {fulfilment === "delivery" ? "delivery" : "pickup"} time above to continue.</small> : null}
-        <small className="summary-note">This total is calculated by Pizza 62 and is what you will be charged. {paymentMethod === "online" && inlineCardAvailable
-          ? "Card details go straight to Clover and never reach this site."
-          : "Card details are entered on Clover\u2019s secure page and never reach this site."}</small>
+        <small className="summary-note">This total is calculated by Pizza 62 and is what you will be charged. {totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
+          ? "Your gift card covers this order in full \u2014 no card is charged."
+          : paymentMethod === "online" && inlineCardAvailable
+            ? "Card details go straight to Clover and never reach this site."
+            : "Card details are entered on Clover\u2019s secure page and never reach this site."}</small>
       </aside></div>
   </section></div>;
 }

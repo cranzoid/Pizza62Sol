@@ -17,6 +17,7 @@
  * paying for is far worse than reaping it five minutes late.
  */
 import { PostgresDatabase, closePool, getPool } from "@/db/pg-driver";
+import { releaseGiftCardStatements } from "@/lib/gift-card-store";
 
 /**
  * How long after creation an unpaid order is considered dead.
@@ -88,18 +89,73 @@ export async function reapStalePayments(
              AND payload_json::jsonb->>'orderId' = ?`,
         )
         .bind(now, order.id),
+      /**
+       * The third and last place a gift card hold must be resolved.
+       *
+       * This is the one that is easy to forget, because it is the only one that
+       * is nobody's action: the customer simply closed the tab. Without it, an
+       * abandoned checkout would take the gift card balance with it and the
+       * customer would have no way to find out why — the card would just be
+       * short, silently, forever.
+       *
+       * A no-op for the orders that used no gift card, which is almost all of
+       * them, and guarded against double-releasing one that a late webhook
+       * approved in the meantime.
+       */
+      ...releaseGiftCardStatements({
+        orderId: order.id,
+        actorType: "system",
+        note: "Checkout expired unpaid; gift card hold released",
+        now,
+        db: database,
+      }),
     ]);
   }
   return stale.results;
 }
 
+/**
+ * The same job for gift card sales, which are not orders and so are not in the
+ * sweep above.
+ *
+ * Nothing is stranded by an abandoned one — no card was minted, because a card
+ * is only minted on confirmed capture — but the purchase row still holds its
+ * idempotency key, and `gift_card_purchases_idempotency_uq` excludes only
+ * `failed` rows. So a buyer who closed the tab and came back would collide with
+ * their own abandoned attempt and be told their purchase was "already being
+ * processed", forever. Marking it failed is what releases the key.
+ */
+export async function reapStaleGiftCardPurchases(
+  database: PostgresDatabase,
+  now: number = Date.now(),
+): Promise<number> {
+  const result = await database
+    .prepare(
+      `UPDATE gift_card_purchases
+          SET status = 'failed', failure_reason = 'Checkout expired without payment', updated_at = ?
+        WHERE status = 'awaiting_payment'
+          AND created_at < ?
+          AND created_at > ?`,
+    )
+    .bind(now, now - STALE_AFTER_MS, now - LOOKBACK_MS)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 async function main(): Promise<void> {
   try {
-    const cancelled = await reapStalePayments(new PostgresDatabase(getPool()));
+    const database = new PostgresDatabase(getPool());
+    const cancelled = await reapStalePayments(database);
     console.log(
       cancelled.length
         ? `cancelled ${cancelled.length} unpaid order(s): ${cancelled.map((order) => order.order_number).join(", ")}`
         : "no stale awaiting_payment orders",
+    );
+    const giftCards = await reapStaleGiftCardPurchases(database);
+    console.log(
+      giftCards
+        ? `released ${giftCards} abandoned gift card checkout(s)`
+        : "no stale gift card checkouts",
     );
   } finally {
     await closePool();

@@ -14,6 +14,7 @@ import { EmployeeTimeClock } from "@/app/staff/TimeClock";
 import { ManagerTimeClock } from "@/app/staff/TimeClockManager";
 import { AdminRecordsPanel } from "@/app/staff/AdminRecords";
 import { AdminCustomersPanel } from "@/app/staff/AdminCustomers";
+import { AdminGiftCardsPanel } from "@/app/staff/AdminGiftCards";
 import { AdminIntegrationsPanel } from "@/app/staff/AdminIntegrations";
 import { StaffOrderEntry } from "@/app/staff/StaffOrderEntry";
 
@@ -45,7 +46,8 @@ const permissionLabels = [
   ["change_preparation_time", "Preparation time"], ["pause_online_ordering", "Pause ordering"],
   ["mark_products_unavailable", "Product availability"], ["cancel_orders", "Cancel orders"],
   ["issue_refunds", "Issue refunds"], ["manage_menu", "Manage menu"],
-  ["manage_promotions", "Manage promotions"], ["manage_employees", "Manage employees"],
+  ["manage_promotions", "Manage promotions"], ["manage_gift_cards", "Manage gift cards"],
+  ["manage_employees", "Manage employees"],
   ["edit_time_records", "Edit time records"], ["approve_correction_requests", "Approve corrections"],
   ["approve_time_off_requests", "Approve time off"], ["view_analytics", "View analytics"],
   ["export_payroll", "Export payroll"], ["manage_settings", "Manage settings"],
@@ -56,6 +58,7 @@ const SECTION_TITLES: Record<string, string> = {
   till: "Take an order",
   analytics: "Analytics",
   records: "History & offers",
+  giftcards: "Gift cards",
   customers: "Customers",
   website: "Website",
   settings: "Settings",
@@ -132,8 +135,12 @@ function OperationsPortal({ mode, user, onLogout }: { mode: "admin" | "kitchen";
   // information, so it is hidden at the door rather than shown with every row
   // redacted — see app/api/admin/customers/route.ts.
   const canViewCustomers = user.role === "owner" || user.permissions.includes("view_customer_contact");
-  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button aria-pressed={section === "overview"} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button aria-pressed={section === "orders"} className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button aria-pressed={section === "till"} className={section === "till" ? "active" : ""} onClick={() => setSection("till")}><span>Take an order</span></button><button aria-pressed={section === "analytics"} className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}><span>Analytics</span></button><button aria-pressed={section === "records"} className={section === "records" ? "active" : ""} onClick={() => setSection("records")}><span>History &amp; offers</span></button>{canViewCustomers ? <button aria-pressed={section === "customers"} className={section === "customers" ? "active" : ""} onClick={() => setSection("customers")}><span>Customers</span></button> : null}<button aria-pressed={section === "website"} className={section === "website" ? "active" : ""} onClick={() => setSection("website")}><span>Website</span></button><button aria-pressed={section === "settings"} className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button aria-pressed={section === "integrations"} className={section === "integrations" ? "active" : ""} onClick={() => setSection("integrations")}><span>Integrations</span></button><button aria-pressed={section === "menu"} className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button aria-pressed={section === "team"} className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><button aria-pressed={section === "timeclock"} className={section === "timeclock" ? "active" : ""} onClick={() => setSection("timeclock")}><span>Time clock</span></button><a href="/employee"><span>My clock</span></a></> : <><button aria-pressed="true" className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : SECTION_TITLES[section] ?? section}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}<button className="mobile-signout" onClick={logout}>Sign out</button></div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
-    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <>{mode === "kitchen" ? null : <AwaitingPaymentPanel dashboard={dashboard} />}<OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /></> : section === "till" ? <StaffOrderEntry dashboard={dashboard} onPlaced={load} /> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "customers" && canViewCustomers ? <AdminCustomersPanel /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "integrations" ? <AdminIntegrationsPanel /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
+  // Gated at the door, like the customer directory and for the same reason: the
+  // screen's whole content is card balances and the ledger behind them, so
+  // showing it with every row redacted would be showing nothing.
+  const canManageGiftCards = user.role === "owner" || user.permissions.includes("manage_gift_cards");
+  return <div className="staff-shell"><aside className="staff-sidebar"><StaffBrand /><nav className="staff-nav" aria-label="Operations sections">{mode === "admin" ? <><button aria-pressed={section === "overview"} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}><span>Overview</span></button><button aria-pressed={section === "orders"} className={section === "orders" ? "active" : ""} onClick={() => setSection("orders")}><span>Live orders</span></button><button aria-pressed={section === "till"} className={section === "till" ? "active" : ""} onClick={() => setSection("till")}><span>Take an order</span></button><button aria-pressed={section === "analytics"} className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}><span>Analytics</span></button><button aria-pressed={section === "records"} className={section === "records" ? "active" : ""} onClick={() => setSection("records")}><span>History &amp; offers</span></button>{canManageGiftCards ? <button aria-pressed={section === "giftcards"} className={section === "giftcards" ? "active" : ""} onClick={() => setSection("giftcards")}><span>Gift cards</span></button> : null}{canViewCustomers ? <button aria-pressed={section === "customers"} className={section === "customers" ? "active" : ""} onClick={() => setSection("customers")}><span>Customers</span></button> : null}<button aria-pressed={section === "website"} className={section === "website" ? "active" : ""} onClick={() => setSection("website")}><span>Website</span></button><button aria-pressed={section === "settings"} className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><span>Settings</span></button><button aria-pressed={section === "integrations"} className={section === "integrations" ? "active" : ""} onClick={() => setSection("integrations")}><span>Integrations</span></button><button aria-pressed={section === "menu"} className={section === "menu" ? "active" : ""} onClick={() => setSection("menu")}><span>Menu setup</span></button><button aria-pressed={section === "team"} className={section === "team" ? "active" : ""} onClick={() => setSection("team")}><span>Team</span></button><button aria-pressed={section === "timeclock"} className={section === "timeclock" ? "active" : ""} onClick={() => setSection("timeclock")}><span>Time clock</span></button><a href="/employee"><span>My clock</span></a></> : <><button aria-pressed="true" className="active"><span>Kitchen board</span></button><a href="/admin"><span>Admin</span></a></>}</nav><div className="staff-sidebar-footer"><strong>{user.name}</strong><small>{user.role}</small><button onClick={logout}>Sign out</button></div></aside><main className="staff-main"><div className="staff-topbar"><div><h1>{mode === "kitchen" ? "Kitchen command" : section === "overview" ? "Good service starts here" : SECTION_TITLES[section] ?? section}</h1><p>{new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Toronto" })} · Hamilton time</p></div><div className="sound-control"><span className="live-chip"><i /> Live</span>{mode === "kitchen" ? <button onClick={enableSound}>{sound ? "Sound on" : "Enable alerts"}</button> : null}<button className="mobile-signout" onClick={logout}>Sign out</button></div></div>{error ? <div className="form-error" role="alert">{error}</div> : null}{unacknowledged.length ? <div className="new-order-alert">{unacknowledged.length} new order{unacknowledged.length === 1 ? "" : "s"} waiting for acknowledgement</div> : null}
+    {!dashboard ? <div className="staff-panel" role="status">Loading live operations…</div> : section === "overview" ? <AdminOverview dashboard={dashboard} action={action} /> : section === "orders" ? <>{mode === "kitchen" ? null : <AwaitingPaymentPanel dashboard={dashboard} />}<OrdersPanel dashboard={dashboard} action={action} kitchen={mode === "kitchen"} /></> : section === "till" ? <StaffOrderEntry dashboard={dashboard} onPlaced={load} /> : section === "records" ? <AdminRecordsPanel dashboard={dashboard} onSaved={load} /> : section === "giftcards" && canManageGiftCards ? <AdminGiftCardsPanel isOwner={user.role === "owner"} /> : section === "customers" && canViewCustomers ? <AdminCustomersPanel /> : section === "timeclock" ? <ManagerTimeClock /> : section === "analytics" ? <AdminAnalyticsPanel /> : section === "website" ? <AdminWebsitePanel dashboard={dashboard} onSaved={load} /> : section === "settings" ? <AdminSettingsPanel dashboard={dashboard} onSaved={load} /> : section === "integrations" ? <AdminIntegrationsPanel /> : section === "menu" ? <AdminMenuPanel dashboard={dashboard} onSaved={load} /> : <AdminTeamPanel dashboard={dashboard} onSaved={load} />}
   </main></div>;
 }
 
@@ -174,6 +181,8 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
   const time = (value: number) =>
     new Date(value).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
   const paid = String(order.payment_status ?? "") === "paid";
+  const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
+  const amountDueCents = Math.max(0, Number(order.total_cents ?? 0) - giftCardCents);
 
   return <div className="print-root">
     <div className="pt-head">
@@ -247,15 +256,22 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
         delivery_fee_cents: Number(order.delivery_fee_cents ?? 0),
         tip_cents: Number(order.tip_cents ?? 0),
         total_cents: Number(order.total_cents ?? 0),
-      }).filter((row) => !row.strong).map((row) => <div className="pt-money-row" key={row.label}>
+        gift_card_applied_cents: giftCardCents,
+      })
+        // Same rule as the thermal ticket: the emphasised line below is drawn
+        // separately, and with a gift card that line is the amount due rather
+        // than the total.
+        .filter((row) => (giftCardCents > 0 ? row.kind !== "due" : !row.strong))
+        .map((row) => <div className="pt-money-row" key={row.label}>
         <span>{row.label}</span><span>{row.value}</span>
       </div>)}
     </div>
     {/* Whether to take money is the one thing a mistake on is expensive, so it
-        is stated in the imperative rather than as a status word. */}
+        is stated in the imperative rather than as a status word — and what is
+        stated is what is left to collect, not what the order cost. */}
     <div className="pt-total">
-      <span>{paid ? "PAID ONLINE" : "COLLECT"}</span>
-      <span>{formatMoney(Number(order.total_cents ?? 0))}</span>
+      <span>{giftCardCents > 0 && amountDueCents === 0 ? "PAID BY GIFT CARD" : paid ? "PAID ONLINE" : "COLLECT"}</span>
+      <span>{formatMoney(amountDueCents)}</span>
     </div>
     {/* Captured when the button was pressed, not read during render: the clock
         is impure, and "when this was sent to print" is the honest meaning. */}

@@ -19,9 +19,15 @@
  * - **No expiry event.** Stripe sent `checkout.session.expired`; Clover does
  *   not, and its sessions die after 15 minutes. Orders stranded in
  *   `awaiting_payment` are cleaned up by `scripts/reap-payments.ts` instead.
+ *
+ * A session id resolves to a food order *or* to a gift card sale, which lives in
+ * its own table for the reasons set out in db/schema.ts. Both are looked up
+ * here; an id matching neither is acknowledged rather than refused, because a
+ * non-2xx makes Clover retry a delivery we are never going to act on.
  */
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { cloverMerchantId, cloverWebhookSecret, verifyCloverSignature, type CloverWebhookEvent } from "@/lib/clover";
+import { completeGiftCardPurchase } from "@/lib/gift-card-purchase";
 import { applyPaymentApproved } from "@/lib/payment-completion";
 
 export async function POST(request: Request) {
@@ -62,6 +68,52 @@ export async function POST(request: Request) {
   if (event.type !== "PAYMENT" || !sessionId) return Response.json({ received: true });
 
   await ensureDatabase();
+
+  /**
+   * A session id now resolves to one of two things, so both are looked up.
+   *
+   * Gift card sales do not live in `orders` (see db/schema.ts), so their
+   * sessions are in `gift_card_purchases.provider_reference` instead. Checked
+   * first because it is the smaller table and because an order lookup that
+   * quietly returns nothing for a gift card session would fall through to the
+   * "unknown session" acknowledgement below — and a customer who had paid for a
+   * card would never receive one.
+   */
+  const purchase = await getD1()
+    .prepare("SELECT id, status FROM gift_card_purchases WHERE provider_reference = ?")
+    .bind(sessionId)
+    .first<{ id: string; status: string }>();
+  if (purchase) {
+    if (event.status === "APPROVED") {
+      // The card is minted here and nowhere earlier: this is the first moment
+      // anyone knows the money is real. `completeGiftCardPurchase` is guarded on
+      // the purchase still being unpaid, so a redelivered event cannot issue a
+      // second card for one payment.
+      await completeGiftCardPurchase(purchase.id, event.id ?? null);
+      return Response.json({ received: true });
+    }
+    if (event.status === "DECLINED") {
+      // Recorded, but the purchase is deliberately **not** marked failed — the
+      // same rule as an order, and for the same reason. Clover's checkout
+      // session stays valid for the rest of its fifteen minutes and the buyer
+      // may well retry with another card on that very session. Failing it here
+      // would mean the retry is approved, the money is taken, and
+      // `completeGiftCardPurchase` finds a purchase it is no longer allowed to
+      // claim — a customer charged for a gift card that was never issued.
+      //
+      // If no approval follows, the reaper fails it on the same timer as an
+      // abandoned checkout, which is what frees the key for the next attempt.
+      await getD1()
+        .prepare(
+          "UPDATE gift_card_purchases SET failure_reason = ?, updated_at = ? WHERE id = ? AND status = 'awaiting_payment'",
+        )
+        .bind(`Clover declined the payment (${event.id ?? "no payment id"})`, Date.now(), purchase.id)
+        .run();
+      return Response.json({ received: true });
+    }
+    return Response.json({ received: true });
+  }
+
   const record = await getD1()
     .prepare(
       `SELECT o.id, o.status, o.payment_status, p.amount_cents, p.status AS payment_row_status

@@ -7,7 +7,25 @@ export default function robots(): MetadataRoute.Robots {
   }
   return {
     rules: [
-      { userAgent: "*", allow: "/", disallow: ["/admin", "/kitchen", "/employee", "/kiosk", "/track", "/feedback", "/order/", "/api/"] },
+      {
+        userAgent: "*",
+        allow: "/",
+        // `/gift-cards` itself is public and in the sitemap; these two are the
+        // private half of it — a balance form has nothing to index, and a
+        // payment return page carries a session id.
+        disallow: [
+          "/admin",
+          "/kitchen",
+          "/employee",
+          "/kiosk",
+          "/track",
+          "/feedback",
+          "/order/",
+          "/gift-cards/balance",
+          "/gift-cards/return",
+          "/api/",
+        ],
+      },
     ],
     sitemap: `${safeBaseUrl()}/sitemap.xml`,
     host: safeBaseUrl(),

@@ -26,7 +26,25 @@ test("publishes the public routes only on the indexable production host", () => 
     assert.equal(result.sitemap, "https://pizza62.ca/sitemap.xml");
     assert.equal(result.host, "https://pizza62.ca");
     assert.deepEqual(result.rules, [
-      { userAgent: "*", allow: "/", disallow: ["/admin", "/kitchen", "/employee", "/kiosk", "/track", "/feedback", "/order/", "/api/"] },
+      {
+        userAgent: "*",
+        allow: "/",
+        // `/gift-cards` itself is public and in the sitemap; the two paths
+        // below are its private half — a balance form has nothing to index and
+        // a payment return page carries a session id.
+        disallow: [
+          "/admin",
+          "/kitchen",
+          "/employee",
+          "/kiosk",
+          "/track",
+          "/feedback",
+          "/order/",
+          "/gift-cards/balance",
+          "/gift-cards/return",
+          "/api/",
+        ],
+      },
     ]);
   } finally {
     if (previous === undefined) delete process.env.SEO_INDEXABLE;

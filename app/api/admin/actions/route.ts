@@ -1,6 +1,7 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, getSetting, writeAudit } from "@/db/runtime";
 import { canTransitionOrderStatus, generateOpaqueToken, hashOpaqueToken, type Fulfilment } from "@/lib/domain";
+import { releaseGiftCardStatements } from "@/lib/gift-card-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { isCustomerNotifiableStatus } from "@/lib/notifications/messages";
@@ -220,14 +221,33 @@ export async function POST(request: Request) {
       // A cancelled order must never confirm itself, ring the kitchen, or ask
       // the customer how their meal was.
       if (target === "cancelled") {
-        await getD1()
-          .prepare(
-            `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
-             WHERE status IN ('waiting_payment', 'waiting_completion', 'pending', 'retrying', 'pending_provider_setup')
-               AND payload_json::jsonb->>'orderId' = ?`,
-          )
-          .bind(now, order.id)
-          .run();
+        await getD1().batch([
+          getD1()
+            .prepare(
+              `UPDATE notification_outbox SET status = 'cancelled', updated_at = ?
+               WHERE status IN ('waiting_payment', 'waiting_completion', 'pending', 'retrying', 'pending_provider_setup')
+                 AND payload_json::jsonb->>'orderId' = ?`,
+            )
+            .bind(now, order.id),
+          /**
+           * A gift card hold on an order nobody is going to pay for.
+           *
+           * The reaper only looks at orders still in `awaiting_payment`, so
+           * cancelling one from this screen is the one route by which a hold
+           * could outlive the order it was taken for. Guarded on there being no
+           * capture yet, which is what makes it correct to run on *every*
+           * cancellation: an order that was genuinely paid keeps its captured
+           * balance, because putting that money back is a refund, and a refund
+           * is a decision for a person rather than a side effect of a button.
+           */
+          ...releaseGiftCardStatements({
+            orderId: order.id,
+            actorType: "staff",
+            actorId: user.id,
+            note: "Order cancelled before payment; gift card hold released",
+            now,
+          }),
+        ]);
       }
       await writeAudit({
         actorId: user.id,
