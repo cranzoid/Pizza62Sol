@@ -1493,20 +1493,73 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
    constrain it — an iframe's intrinsic height is 150px, so the fields rendered
    three times taller than every other input on the form. The height here is
    definite for that reason, and matches `.checkout-modal input`. */
-.clover-card-fields { display: block; }
-.clover-field {
-  height: 50px;
-  padding: 0 16px;
-  border: 1px solid var(--line);
-  background: white;
-  overflow: hidden;
+fieldset.clover-card-fields {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0 0;
+  padding: 18px;
+  border: 1px solid rgba(36, 75, 57, .28);
+  border-radius: 12px;
+  background: #fbf7ef;
 }
+.clover-card-fields .clover-card-legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.clover-card-heading { display: flex; align-items: center; gap: 11px; }
+.clover-card-heading > span:last-child { display: grid; gap: 2px; }
+.clover-card-heading b { font-size: 12px; line-height: 1.2; }
+.clover-card-heading small { color: var(--muted); font-size: 9px; line-height: 1.2; }
+.clover-secure-mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+}
+.clover-secure-mark svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.clover-card-status { margin: 0; padding: 10px 12px; border-radius: 7px; background: rgba(36, 75, 57, .08); color: var(--muted); font-size: 10px; line-height: 1.45; }
+.clover-card-body { display: grid; gap: 14px; }
+.clover-card-fields label,
+.checkout-modal .clover-card-fields label {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  color: #4f493f;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .65px;
+  text-transform: uppercase;
+}
+.clover-field {
+  height: 52px;
+  padding: 0 16px;
+  border: 1px solid rgba(23, 20, 15, .2);
+  border-radius: 8px;
+  background: white;
+  box-shadow: inset 0 1px 2px rgba(23, 20, 15, .04);
+  overflow: hidden;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.clover-field:focus-within { border-color: var(--green); box-shadow: 0 0 0 3px rgba(36, 75, 57, .12); }
 .clover-field > iframe { display: block; width: 100%; height: 100%; border: 0; }
 .clover-field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.clover-card-fields > label { margin: 12px 0; }
-.clover-card-fields .clover-field-row label { margin: 12px 0 0; }
-.clover-card-note { font-size: 9px; color: var(--muted); margin: 14px 0 0; line-height: 1.5; }
-@media (max-width: 30rem) { .clover-field-row { grid-template-columns: 1fr; } }
+.clover-card-note { padding-top: 2px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+@media (max-width: 30rem) {
+  fieldset.clover-card-fields { padding: 15px; }
+  .clover-field-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+  .clover-postal-field { grid-column: 1 / -1; }
+}
 
 /* Dimmed rather than `hidden` while Clover paints into the boxes: mounting a
    payment iframe inside display:none is a reliable way to get a frame that never
@@ -1739,14 +1792,17 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   align-items: start;
 }
 
-.giftcard-form { display: grid; gap: 26px; }
-
-.giftcard-step {
+.giftcard-form {
+  overflow: hidden;
   background: white;
   border: 1px solid var(--line);
   box-shadow: 8px 8px 0 var(--yellow);
+}
+
+.giftcard-step {
   padding: 26px 24px;
 }
+.giftcard-step + .giftcard-step { border-top: 1px solid var(--line); }
 .giftcard-step > h2 {
   display: flex;
   align-items: center;
@@ -1773,7 +1829,7 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   font-style: normal;
   font-weight: 900;
 }
-.giftcard-step > p { margin: 0 0 16px 38px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.giftcard-step > .giftcard-step__hint { margin: 0 0 17px 38px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 .giftcard-amounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .giftcard-amounts button {
@@ -1822,7 +1878,9 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   letter-spacing: 0;
   text-transform: none;
 }
-.giftcard-message { margin-top: 0; }
+.giftcard-message { margin-top: 19px; padding-top: 18px; border-top: 1px solid var(--line); }
+.giftcard-label-text { display: flex; align-items: center; gap: 7px; }
+.giftcard-label-text small { color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .3px; }
 .giftcard-message textarea { resize: vertical; min-height: 92px; font-family: Georgia, serif; font-size: 15px; line-height: 1.5; }
 .giftcard-counter { justify-self: end; font-size: 9px; font-weight: 700; color: var(--muted); letter-spacing: .4px; }
 .giftcard-counter[data-full="true"] { color: var(--red); }
@@ -1884,11 +1942,10 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 .giftcard-summary small { color: rgba(245, 235, 215, .6); font-size: 10px; line-height: 1.55; }
 .giftcard-summary .primary-button { background: var(--yellow); color: var(--ink); margin-top: 3px; }
 
-.giftcard-terms { border: 1px dashed var(--line); padding: 18px 20px; }
-.giftcard-terms h2 { margin: 0 0 9px; font-family: Georgia, serif; font-size: 19px; }
-.giftcard-terms ul { margin: 0; padding-left: 19px; display: grid; gap: 7px; }
-.giftcard-terms li { font-size: 12px; line-height: 1.6; color: var(--muted); }
-.giftcard-terms li b { color: var(--ink); }
+.giftcard-terms { margin-top: 34px; border-top: 1px solid var(--line); color: var(--muted); }
+.giftcard-terms summary { padding: 16px 2px; color: var(--ink); font-size: 10px; font-weight: 900; letter-spacing: .7px; text-transform: uppercase; cursor: pointer; }
+.giftcard-terms > div { max-width: 680px; padding: 0 2px 10px; }
+.giftcard-terms p { margin: 0 0 8px; font-size: 10px; line-height: 1.55; }
 
 /* The balance checker. Deliberately plain: one field, one answer. */
 .giftcard-balance-form { display: grid; gap: 13px; }
@@ -1930,10 +1987,20 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
   .giftcard-layout { grid-template-columns: 1fr; }
   /* Unsticking on a phone: a sticky preview above a long form eats the screen. */
   .giftcard-aside { position: static; }
+  /* Keep the action next to the payment fields. The preview remains available
+     just below it without making a phone user scroll past it to pay. */
+  .giftcard-summary { order: -1; }
 }
 @media (max-width: 620px) {
-  .giftcard-amounts { grid-template-columns: repeat(2, 1fr); }
   .giftcard-fields { grid-template-columns: 1fr; }
-  .giftcard-step { padding: 20px 17px; box-shadow: 5px 5px 0 var(--yellow); }
-  .giftcard-step > p { margin-left: 0; }
+  .giftcard-form { box-shadow: 5px 5px 0 var(--yellow); }
+  .giftcard-step { padding: 21px 17px; }
+  .giftcard-step > h2 { font-size: 21px; }
+  .giftcard-step > .giftcard-step__hint { margin: 4px 0 16px 38px; }
+  .giftcard-message textarea { min-height: 108px; }
+  .giftcard-summary { padding: 19px 18px; }
+  .giftcard-terms { margin-top: 28px; }
+}
+@media (max-width: 360px) {
+  .giftcard-amounts button { font-size: 18px; }
 }

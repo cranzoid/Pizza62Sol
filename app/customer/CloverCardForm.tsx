@@ -45,10 +45,10 @@ type CloverElements = { create: (kind: string, styles?: Record<string, unknown>)
  * working and only look generic.
  */
 const FIELD_STYLES = {
-  body: { fontFamily: "Arial, Helvetica, sans-serif" },
+  body: { fontFamily: "Arial, Helvetica, sans-serif", margin: "0" },
   input: {
     fontFamily: "Arial, Helvetica, sans-serif",
-    fontSize: "14px",
+    fontSize: "16px",
     fontWeight: "600",
     color: "#17140f",
     padding: "0",
@@ -195,29 +195,40 @@ export function CloverCardForm({
 
   return (
     <fieldset className="clover-card-fields">
-      <legend>Card details</legend>
-      {status === "loading" ? <p className="utility-help">Loading the secure card form…</p> : null}
+      <legend className="clover-card-legend">Secure card details</legend>
+      <div className="clover-card-heading" aria-hidden="true">
+        <span className="clover-secure-mark">
+          <svg viewBox="0 0 24 24" role="img">
+            <path d="M7 10V8a5 5 0 0 1 10 0v2M6 10h12v10H6z" />
+          </svg>
+        </span>
+        <span>
+          <b>Secure payment</b>
+          <small>Protected by Clover</small>
+        </span>
+      </div>
+      {status === "loading" ? <p className="clover-card-status">Loading secure card fields…</p> : null}
       {status === "failed" ? (
-        <p className="utility-help" role="status">
+        <p className="clover-card-status" role="status">
           The secure card form could not load. You can still pay on Clover&apos;s page.
         </p>
       ) : null}
-      <div className={status === "ready" ? undefined : "clover-fields-loading"}>
-        <label>
-          Card number
+      <div className={`clover-card-body${status === "ready" ? "" : " clover-fields-loading"}`}>
+        <label className="clover-field-wide">
+          <span>Card number</span>
           <div className="clover-field" id={ids.number} />
         </label>
         <div className="clover-field-row">
           <label>
-            Expiry
+            <span>Expiry</span>
             <div className="clover-field" id={ids.expiry} />
           </label>
           <label>
-            Security code
+            <span>Security code</span>
             <div className="clover-field" id={ids.cvv} />
           </label>
-          <label>
-            Postal code
+          <label className="clover-postal-field">
+            <span>Postal code</span>
             <div className="clover-field" id={ids.postal} />
           </label>
         </div>
@@ -226,7 +237,7 @@ export function CloverCardForm({
             {fieldError}
           </p>
         ) : null}
-        <p className="clover-card-note">Your card is entered directly with Clover. We never see or store it.</p>
+        <p className="clover-card-note">Your card details go directly to Clover. Pizza 62 never sees or stores them.</p>
       </div>
     </fieldset>
   );

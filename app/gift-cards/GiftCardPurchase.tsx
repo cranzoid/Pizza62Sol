@@ -182,16 +182,12 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
       <main className="utility-content" id="utility-content">
         <div className="utility-title">
           <p className="eyebrow dark" style={{ justifyContent: "center" }}><span /> A Pizza 62 gift card</p>
-          <h1>{sent ? "On its way." : "Send someone dinner."}</h1>
+          <h1>{sent ? "On its way." : "A gift that hits the spot."}</h1>
           <p>
             {sent ? (
               "The card has been emailed. Nothing else to do."
             ) : (
-              <>
-                Emailed straight to them, usually within a minute.
-                <br />
-                No expiry date, no fees, ever.
-              </>
+              "Choose an amount, add a message, and we’ll email it straight to them."
             )}
           </p>
         </div>
@@ -210,8 +206,8 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
           <div className="giftcard-layout">
             <div className="giftcard-form">
               <section className="giftcard-step">
-                <h2><i>1</i> How much?</h2>
-                <p>Any amount between {formatMoney(GIFT_CARD_MIN_CENTS)} and {formatMoney(GIFT_CARD_MAX_CENTS)}.</p>
+                <h2><i>1</i> Choose an amount</h2>
+                <p className="giftcard-step__hint">From {formatMoney(GIFT_CARD_MIN_CENTS)} to {formatMoney(GIFT_CARD_MAX_CENTS)}.</p>
                 <div className="giftcard-amounts">
                   {GIFT_CARD_PRESET_CENTS.map((preset) => (
                     <button
@@ -241,7 +237,7 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
 
               <section className="giftcard-step">
                 <h2><i>2</i> Who is it for?</h2>
-                <p>We email the card to them directly. Double-check the address — a card sent to the wrong inbox is spendable by whoever opens it.</p>
+                <p className="giftcard-step__hint">We’ll email the gift card directly to this address.</p>
                 <div className="giftcard-fields">
                   <label>
                     Their name
@@ -255,8 +251,8 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
               </section>
 
               <section className="giftcard-step">
-                <h2><i>3</i> Who is it from?</h2>
-                <p>Your name goes on the card. Your receipt comes to your address, without the card number on it.</p>
+                <h2><i>3</i> From you</h2>
+                <p className="giftcard-step__hint">Your name goes on the gift. We’ll send the receipt to your email.</p>
                 <div className="giftcard-fields">
                   <label>
                     Your name
@@ -267,13 +263,8 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
                     <input type="email" inputMode="email" value={buyerEmail} onChange={(event) => setBuyerEmail(event.target.value)} autoComplete="email" maxLength={200} />
                   </label>
                 </div>
-              </section>
-
-              <section className="giftcard-step">
-                <h2><i>4</i> Say something</h2>
-                <p>Optional, and it goes on the card itself rather than in a separate note.</p>
                 <label className="giftcard-message">
-                  Your message
+                  <span className="giftcard-label-text">Add a message <small>Optional</small></span>
                   <textarea
                     rows={4}
                     maxLength={GIFT_CARD_MESSAGE_MAX}
@@ -289,8 +280,7 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
 
               {inlineCard && cardForm.publicToken ? (
                 <section className="giftcard-step">
-                  <h2><i>5</i> Pay by card</h2>
-                  <p>Card details go straight to Clover and never reach this site.</p>
+                  <h2><i>4</i> Pay by card</h2>
                   <CloverCardForm
                     publicToken={cardForm.publicToken}
                     merchantId={cardForm.merchantId}
@@ -308,17 +298,6 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
                   />
                 </section>
               ) : null}
-
-              <section className="giftcard-terms">
-                <h2>The small print, in full</h2>
-                <ul>
-                  <li><b>No expiry date.</b> Ontario law does not allow one on a gift card you have paid for, and we do not use one.</li>
-                  <li><b>No fees.</b> Nothing is deducted for time passing, inactivity, or anything else.</li>
-                  <li><b>Spend it in any number of visits</b> — online or at the counter — until the balance runs out. Whatever is left stays on the card.</li>
-                  <li><b>Treat the code like cash.</b> Anyone holding it can spend it. We store it scrambled and cannot read it back, so if it is lost, call us: we will cancel it and reissue whatever is left.</li>
-                  <li><b>Not redeemable for cash</b>, and it cannot be reloaded. Gift cards are non-refundable once sent.</li>
-                </ul>
-              </section>
             </div>
 
             <aside className="giftcard-aside">
@@ -340,7 +319,6 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
                   <span>Total today</span>
                   <b>{payable && chosenCents !== null ? formatMoney(chosenCents) : formatMoney(0)}</b>
                 </div>
-                <small>No HST on a gift card — tax is charged on the food when the card is spent.</small>
                 {error ? <div className="form-error" role="alert">{error}</div> : null}
                 <button className="primary-button" disabled={!complete || submitting} onClick={() => void submit()}>
                   {submitting
@@ -360,6 +338,17 @@ export default function GiftCardPurchase({ available, cardForm }: GiftCardPurcha
             </aside>
           </div>
         )}
+
+        {!sent && available ? (
+          <details className="giftcard-terms">
+            <summary>Gift card details</summary>
+            <div>
+              <p>Use it online or at the counter, over as many visits as needed. Any remaining balance stays on the card.</p>
+              <p>Treat the code like cash. If it is lost, call us and we can cancel it and reissue the available balance.</p>
+              <p>Gift cards cannot be reloaded or redeemed for cash, and purchases are final once the card is sent. HST is charged on the food when the gift card is used.</p>
+            </div>
+          </details>
+        ) : null}
       </main>
     </div>
   );
