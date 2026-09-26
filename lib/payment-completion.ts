@@ -14,6 +14,7 @@
  */
 import { getD1 } from "@/db/runtime";
 import { captureGiftCardStatements } from "@/lib/gift-card-store";
+import { recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 
@@ -90,6 +91,14 @@ export async function applyPaymentApproved(input: {
      */
     ...captureGiftCardStatements(input.orderId, now),
   ]);
+
+  // Paid, so a qualifying order has earned its giveaway entry. Deliberately
+  // after the batch above and outside it: the payment is the business and the
+  // giveaway is a promotion, so nothing about the second may ever roll back the
+  // first. Awaited before the dispatch below so the receipt it releases can
+  // carry the entry number; it never throws, and the cron sweep catches any
+  // entry this misses. Idempotent against a redelivered webhook.
+  await recordGiveawayEntrySafely(input.orderId, now);
 
   // The order is live now, so tell the customer and the kitchen immediately
   // rather than waiting for the cron sweeper. Deliberately not awaited: the

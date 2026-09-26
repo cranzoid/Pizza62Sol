@@ -1100,6 +1100,131 @@ export const storeClosures = pgTable(
 );
 
 /**
+ * One row per order that earned a giveaway entry.
+ *
+ * **An entry is a fact about an order, not about a person.** Every qualifying
+ * order gets its own number, so a customer who orders three times holds three
+ * entries — which is what the receipts they are holding say, one number each.
+ *
+ * `entry_number` is allocated from `order_sequences` (key `giveaway:<id>`) in
+ * the same transaction that inserts the row, which is what keeps the numbers
+ * gapless and unique under concurrent orders: the sequence row's lock
+ * serialises them. The unique index on `(giveaway_id, entry_number)` is the
+ * backstop, not the mechanism.
+ *
+ * Whether an entry still counts is *not* stored here. It is read live from the
+ * order — a cancelled or refunded order's entry drops out of the pool the
+ * moment the order does — so there is no second status to fall out of step
+ * with the first.
+ *
+ * The contact columns are a snapshot at entry time: the winner is reached on
+ * the details they gave when they entered, even if a later order changes them.
+ */
+export const giveawayEntries = pgTable(
+  "giveaway_entries",
+  {
+    id: text("id").primaryKey(),
+    giveawayId: text("giveaway_id").notNull(),
+    entryNumber: integer("entry_number").notNull(),
+    // Cascade: an entry exists only as part of its order.
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    customerName: text("customer_name").notNull(),
+    customerEmail: text("customer_email").notNull().default(""),
+    customerPhone: text("customer_phone").notNull().default(""),
+    /** Food before tax, after discounts — the figure the minimum is measured on. */
+    qualifyingCents: integer("qualifying_cents").notNull(),
+    /** Set when this entry was picked as a winner, and by whom. */
+    pickedAt: bigint("picked_at", { mode: "number" }),
+    pickedBy: text("picked_by"),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("giveaway_entries_number_uq").on(table.giveawayId, table.entryNumber),
+    uniqueIndex("giveaway_entries_order_uq").on(table.orderId),
+    index("giveaway_entries_email_idx").on(table.customerEmail),
+    check("giveaway_entries_number_positive", sql`entry_number > 0`),
+    check("giveaway_entries_cents_nonneg", nonNegative("qualifying_cents")),
+  ],
+);
+
+/**
+ * People the restaurant knows about who are not (only) rows in `orders`.
+ *
+ * The customer directory is derived from order history, which is right for
+ * "who has ordered" and cannot answer three things this table does:
+ *
+ * - **Customers from the old POS**, imported from its CSV export, who have
+ *   never ordered through this system.
+ * - **Birthdays**, month and day only, given at the counter. No year is ever
+ *   stored: it is not needed for a birthday treat, and it is the part that
+ *   makes a birthday personal data worth protecting.
+ * - **Who has unsubscribed** from marketing email. Canada's anti-spam law
+ *   (CASL) requires every promotional email to carry a working unsubscribe and
+ *   the request to be honoured, so the opt-out has to outlive any one send.
+ *
+ * Keyed by email where there is one (unique, lower-cased) and otherwise by a
+ * digits-only phone, the same identity rule the directory groups orders by.
+ */
+export const CUSTOMER_CONTACT_SOURCES = ["import", "till", "unsubscribe"] as const;
+
+export const customerContacts = pgTable(
+  "customer_contacts",
+  {
+    id: text("id").primaryKey(),
+    email: text("email"),
+    phone: text("phone"),
+    name: text("name").notNull().default(""),
+    birthMonth: integer("birth_month"),
+    birthDay: integer("birth_day"),
+    source: text("source").notNull(),
+    notes: text("notes"),
+    /** Last visit as the old POS reported it, for imported customers. */
+    lastVisitAt: bigint("last_visit_at", { mode: "number" }),
+    marketingOptOutAt: bigint("marketing_opt_out_at", { mode: "number" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("customer_contacts_email_uq").on(table.email).where(sql`${table.email} IS NOT NULL`),
+    index("customer_contacts_phone_idx").on(table.phone),
+    check("customer_contacts_source", inList("source", CUSTOMER_CONTACT_SOURCES)),
+    check("customer_contacts_identity", sql`email IS NOT NULL OR phone IS NOT NULL`),
+    check(
+      "customer_contacts_birthday",
+      sql`(birth_month IS NULL AND birth_day IS NULL)
+          OR (birth_month BETWEEN 1 AND 12 AND birth_day BETWEEN 1 AND 31)`,
+    ),
+  ],
+);
+
+/**
+ * The record that a nudge went out: who pressed the button, when, and to how
+ * many people. The individual emails are `giveaway_nudge` rows in
+ * `notification_outbox`, which carry this row's id so progress can be counted.
+ */
+export const marketingSends = pgTable(
+  "marketing_sends",
+  {
+    id: text("id").primaryKey(),
+    campaign: text("campaign").notNull(),
+    nudge: text("nudge").notNull(),
+    recipientCount: integer("recipient_count").notNull(),
+    skippedCount: integer("skipped_count").notNull().default(0),
+    perDay: integer("per_day").notNull(),
+    firstSendAt: bigint("first_send_at", { mode: "number" }),
+    lastSendAt: bigint("last_send_at", { mode: "number" }),
+    createdBy: text("created_by").notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("marketing_sends_campaign_idx").on(table.campaign, table.createdAt),
+    check("marketing_sends_counts_nonneg", nonNegative("recipient_count", "skipped_count")),
+    check("marketing_sends_per_day_positive", sql`per_day > 0`),
+  ],
+);
+
+/**
  * Third-party credentials the owner can set without a developer or an Azure login.
  *
  * The value is AES-256-GCM ciphertext under `SETTINGS_ENCRYPTION_KEY`, which

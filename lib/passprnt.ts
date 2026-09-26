@@ -12,6 +12,7 @@
  */
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
+import { formatEntryNumber } from "@/lib/giveaway";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -98,6 +99,14 @@ export function buildPassPrntTicketHtml(
       ? `<div class="note">ORDER NOTE: ${escapeHtml(order.instructions)}</div>`
       : "";
 
+  // The one line on the ticket that is for the customer rather than the
+  // kitchen: a walk-in who gave no email learns their giveaway entry number
+  // from whoever hands them the bag.
+  const giveawayEntry = Number(order.giveaway_entry_number);
+  const giveawayMarkup = Number.isSafeInteger(giveawayEntry) && giveawayEntry > 0
+    ? `<div class="giveaway">THANKSGIVING GIVEAWAY<br><b>ENTRY #${escapeHtml(formatEntryNumber(giveawayEntry))}</b></div>`
+    : "";
+
   const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
   const amountDueCents = Math.max(0, Number(order.total_cents ?? 0) - giftCardCents);
   const moneyMarkup = totalRows({
@@ -129,6 +138,7 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
 .address{font-size:22px}.money-row,.total{display:flex;justify-content:space-between;gap:16px}.money-row{font-size:20px;margin:4px 0}
 .total{font-size:28px;font-weight:900;border-top:4px solid #000;border-bottom:4px solid #000;padding:10px 0;margin-top:10px}
 .footer{text-align:center;font-size:16px;margin-top:14px}
+.giveaway{border:3px dashed #000;text-align:center;font-size:20px;letter-spacing:1px;margin-top:14px;padding:8px}.giveaway b{font-size:30px;letter-spacing:2px}
 </style></head><body>
   <header class="head"><div class="number">${escapeHtml(String(order.order_number ?? "").replace("P62-", "#"))}</div><div class="type">${escapeHtml(String(order.fulfilment ?? "").toUpperCase())}</div></header>
   <div class="when">${scheduled ? `SCHEDULED ${escapeHtml(ticketTime(scheduled))}` : `ASAP &mdash; in by ${escapeHtml(ticketTime(Number(order.created_at)))}`}</div>
@@ -141,6 +151,7 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
   ${addressMarkup ? `<div class="rule"></div>` : ""}
   <section>${moneyMarkup}</section>
   <div class="total"><span>${giftCardCents > 0 && amountDueCents === 0 ? "PAID BY GIFT CARD" : paid ? "PAID ONLINE" : "COLLECT"}</span><span>${escapeHtml(formatMoney(amountDueCents))}</span></div>
+  ${giveawayMarkup}
   <footer class="footer">Pizza 62 &middot; printed ${escapeHtml(ticketTime(printedAt))}</footer>
 </body></html>`;
 }

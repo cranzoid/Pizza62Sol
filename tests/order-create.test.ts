@@ -28,6 +28,7 @@ process.env.TRUST_PROXY_HEADERS = "true";
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { POST: createOrderRoute } = await import("@/app/api/orders/route");
 const { nextOrderSlots } = await import("@/lib/domain");
+const { normalizeGiveaway, orderQualifies } = await import("@/lib/giveaway");
 
 const reachable = await getPool()
   .query("SELECT 1")
@@ -132,11 +133,27 @@ withDb("lands every side effect of an accepted order", async () => {
   );
   // The audit's finding was that nothing drained the outbox; the row still has
   // to be written, or there is nothing for R1.4 to drain.
-  // Three outbox rows, not one. R1.4 queues the customer's confirmation, the
+  // Four outbox rows, not one. R1.4 queues the customer's confirmation, the
   // restaurant's new-order alert (the audit's central finding — nothing
   // previously told the restaurant an order existed at all), and the delayed
-  // feedback request (H-09).
-  assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: 3 });
+  // feedback request (H-09). While the Thanksgiving Giveaway is running, this
+  // order — C$17.98 of food, over the C$10 minimum — also earns an entry and
+  // the "you're in" email that goes with it. Read from the live setting rather
+  // than assumed, so this test is true before, during and after the giveaway.
+  const setting = await pool.query<{ value_json: string }>("SELECT value_json FROM settings WHERE key = 'giveaway'");
+  const giveaway = normalizeGiveaway(setting.rows[0] ? JSON.parse(setting.rows[0].value_json) : null);
+  const entered = orderQualifies(giveaway, { placedAt: Date.now(), subtotalCents: 1798, discountCents: 0 });
+  assert.deepEqual(counts.rows[0], { items: 1, payments: 1, events: 1, outbox: entered ? 4 : 3 });
+  const kinds = await pool.query<{ kind: string }>(
+    "SELECT kind FROM notification_outbox WHERE payload_json::jsonb->>'orderId' = $1 ORDER BY kind",
+    [orderId],
+  );
+  assert.deepEqual(
+    kinds.rows.map((row) => row.kind),
+    entered
+      ? ["customer_order_confirmation", "feedback_request", "giveaway_entry", "restaurant_new_order"]
+      : ["customer_order_confirmation", "feedback_request", "restaurant_new_order"],
+  );
 });
 
 /**

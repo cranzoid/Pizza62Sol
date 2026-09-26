@@ -4,6 +4,9 @@ import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover"
 import { readIntegrationSecret } from "@/lib/integration-secrets";
 import { loadActiveClosures } from "@/lib/closures";
 import { twilioConfig } from "@/lib/notifications/config";
+import { publicGiveaway } from "@/lib/giveaway";
+import { loadGiveaway } from "@/lib/giveaway-store";
+import { PRIVATE_SETTING_KEYS } from "@/lib/marketing-consent";
 
 // Start of the current day in America/Toronto, returned as an epoch-ms timestamp.
 function torontoStartOfDay(nowMs: number): number {
@@ -39,7 +42,10 @@ export async function GET(request: Request) {
                   payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
                   address_json, instructions, subtotal_cents, discount_cents, tax_cents,
                   delivery_fee_cents, tip_cents, total_cents, gift_card_applied_cents,
-                  created_at, acknowledged_at
+                  created_at, acknowledged_at,
+                  -- Printed on the ticket, so a walk-in who gave no email can
+                  -- still be told their giveaway entry number at the counter.
+                  (SELECT entry_number FROM giveaway_entries e WHERE e.order_id = orders.id) AS giveaway_entry_number
            FROM orders WHERE status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
            ORDER BY created_at DESC LIMIT 60`,
         )
@@ -169,7 +175,11 @@ export async function GET(request: Request) {
       availabilityWarnings: availability,
       clockedIn: clocked.results,
       lowRatings: feedback.results,
-      settings,
+      // The unsubscribe signing key lives in `settings` but is not a setting
+      // anyone edits, and a staff screen has no business holding it.
+      settings: Object.fromEntries(Object.entries(settings).filter(([key]) => !PRIVATE_SETTING_KEYS.has(key))),
+      // What the till needs to say "this order enters the giveaway".
+      giveaway: publicGiveaway(await loadGiveaway().catch(() => null), Date.now()),
       products: products.results.map((product) => ({
         ...product,
         configuration: safeJson(String((product as Record<string, unknown>).configuration_json ?? "{}"), {}),

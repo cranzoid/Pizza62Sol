@@ -84,6 +84,12 @@ export type EmailInput = {
    * writing. Set on the messages that invite a response; omitted elsewhere.
    */
   replyTo?: string | null;
+  /**
+   * Extra message headers. Used for `List-Unsubscribe` on marketing email,
+   * which is what puts the mail client's own "Unsubscribe" button next to the
+   * sender and tells spam filters this is a sender that honours opt-outs.
+   */
+  headers?: Record<string, string>;
 };
 
 export async function sendEmail(input: EmailInput): Promise<{ provider: string; reference: string | null }> {
@@ -112,6 +118,7 @@ async function sendViaResend(
       // Resend rejects a null `html`.
       ...(input.html ? { html: input.html } : {}),
       ...(input.replyTo ? { reply_to: input.replyTo } : {}),
+      ...(input.headers && Object.keys(input.headers).length ? { headers: input.headers } : {}),
     }),
   });
   const body = (await response.json().catch(() => null)) as { id?: string; message?: string; name?: string } | null;
@@ -139,6 +146,7 @@ async function sendViaSendGrid(
       personalizations: [{ to: [{ email: input.to }] }],
       from: { email: config.from, name: "Pizza 62" },
       ...(input.replyTo ? { reply_to: { email: input.replyTo } } : {}),
+      ...(input.headers && Object.keys(input.headers).length ? { headers: input.headers } : {}),
       subject: input.subject,
       // SendGrid requires the parts in ascending order of preference and
       // rejects the payload otherwise — text/plain must come before text/html.

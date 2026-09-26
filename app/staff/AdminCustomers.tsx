@@ -43,6 +43,8 @@ type CustomerDetail = {
   lifetimeCents: number;
   firstSeen: number;
   lastOrderAt: number;
+  /** "October 3", from the till or a POS import. Never a year. */
+  birthday: string | null;
   orders: Array<Record<string, unknown>>;
 };
 
@@ -124,6 +126,7 @@ export function AdminCustomersPanel() {
   const avgSpend = summary.customers ? Math.round(summary.totalCents / summary.customers) : 0;
 
   return <div className="admin-stack">
+    <CustomerListPanel />
     <section className="stats-grid">
       <Stat label="Customers" value={String(summary.customers)} note="Distinct email or phone" />
       <Stat label="Repeat customers" value={String(summary.repeatCustomers)} note="More than one order" />
@@ -174,7 +177,7 @@ export function AdminCustomersPanel() {
         <div className="customer-panel-head">
           <div>
             <h2>{selected.name}</h2>
-            <p>{selected.phone}{selected.phone && selected.email ? " · " : ""}{selected.email}</p>
+            <p>{selected.phone}{selected.phone && selected.email ? " · " : ""}{selected.email}{selected.birthday ? ` · Birthday ${selected.birthday}` : ""}</p>
           </div>
           <button className="staff-button" onClick={() => setSelectedKey(null)}>Back to all customers</button>
         </div>
@@ -201,6 +204,144 @@ export function AdminCustomersPanel() {
 
     <OrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />
   </div>;
+}
+
+type ContactOverview = {
+  summary: { contacts: number; imported: number; birthdays: number; optedOut: number };
+  birthdays: Array<{ name: string; email: string | null; phone: string | null; label: string; daysAway: number }>;
+  canImport: boolean;
+  canExport: boolean;
+};
+
+type ImportPreview = {
+  columns: Record<string, string>;
+  ready: number;
+  withEmail: number;
+  withBirthday: number;
+  sample: Array<{ name: string; email: string | null; phone: string | null; birthday: string | null }>;
+  skipped: number;
+  skippedRows: Array<{ row: number; reason: string }>;
+};
+
+const COLUMN_LABELS: Record<string, string> = {
+  name: "Name", firstName: "First name", lastName: "Last name", email: "Email", phone: "Phone",
+  birthday: "Birthday", notes: "Notes", lastVisit: "Last visit",
+};
+
+/**
+ * The customer list beyond order history: bring in the old POS list, take the
+ * whole list out, see whose birthday is coming up, and unsubscribe someone who
+ * asks in person.
+ *
+ * An import is always previewed first. The owner sees which columns were
+ * understood and every row that will be skipped before anything is written —
+ * an import that silently dropped half a file would be found out only when the
+ * nudge went to half the customers.
+ */
+function CustomerListPanel() {
+  const [overview, setOverview] = useState<ContactOverview | null>(null);
+  const [csv, setCsv] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [optOutEmail, setOptOutEmail] = useState("");
+  const [note, setNote] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const response = await fetch("/api/admin/contacts");
+    const result = await response.json();
+    if (response.ok) setOverview(result);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const post = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const response = await fetch("/api/admin/contacts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "That did not work.");
+      return result;
+    } catch (caught) {
+      setNote({ tone: "bad", text: caught instanceof Error ? caught.message : "That did not work." });
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseFile = async (file: File | undefined) => {
+    setPreview(null);
+    setNote(null);
+    if (!file) return;
+    const text = await file.text();
+    setCsv(text);
+    setFileName(file.name);
+    const result = await post({ action: "import.preview", csv: text, fileName: file.name });
+    if (result) setPreview(result);
+  };
+
+  const commit = async () => {
+    const result = await post({ action: "import.commit", csv, fileName });
+    if (!result) return;
+    setPreview(null);
+    setCsv("");
+    setNote({ tone: "ok", text: `Imported ${fileName}: ${result.created} new customer${result.created === 1 ? "" : "s"}, ${result.updated} already on file${result.skipped ? `, ${result.skipped} skipped` : ""}.` });
+    await load();
+  };
+
+  if (!overview) return null;
+  return <section className="staff-panel">
+    <div className="staff-panel-head">
+      <h2>Customer list</h2>
+      <span className="live-chip">{overview.summary.imported} imported · {overview.summary.birthdays} birthdays · {overview.summary.optedOut} unsubscribed</span>
+    </div>
+    <p className="editor-hint">Bring in the customer list from the old POS so they hear about the giveaway too. Export it from the POS as a CSV — any file with an email or phone column works. Nothing is written until you confirm the preview, and importing never re-subscribes anyone who unsubscribed.</p>
+    <div className="record-filters">
+      {overview.canImport ? <label className="staff-button">
+        Import from POS (CSV)
+        <input type="file" accept=".csv,text/csv" hidden onChange={(event) => { void chooseFile(event.target.files?.[0]); event.target.value = ""; }} />
+      </label> : null}
+      {overview.canExport ? <button className="staff-button" onClick={() => window.location.assign("/api/admin/contacts?format=csv")}>Export full customer list</button> : null}
+    </div>
+    {note ? <p className={note.tone === "bad" ? "form-error" : "admin-message"} role="status">{note.text}</p> : null}
+
+    {preview ? <div className="import-preview">
+      <h3>{fileName}: {preview.ready} customer{preview.ready === 1 ? "" : "s"} ready to import</h3>
+      <p>{preview.withEmail} with an email (these can be nudged) · {preview.withBirthday} with a birthday{preview.skipped ? ` · ${preview.skipped} row${preview.skipped === 1 ? "" : "s"} will be skipped` : ""}</p>
+      <p className="secure-note">Columns understood: {Object.entries(preview.columns).map(([key, title]) => `${COLUMN_LABELS[key] ?? key} ← “${title}”`).join(" · ")}</p>
+      <div className="table-scroll" role="region" aria-label="Import preview" tabIndex={0}><table className="viz-table">
+        <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Phone</th><th scope="col">Birthday</th></tr></thead>
+        <tbody>{preview.sample.map((row, index) => <tr key={index}><th scope="row">{row.name || "—"}</th><td>{row.email ?? "—"}</td><td>{row.phone ?? "—"}</td><td>{row.birthday ?? "—"}</td></tr>)}</tbody>
+      </table></div>
+      {preview.skippedRows.length ? <details><summary>Rows that will be skipped</summary><ul>{preview.skippedRows.map((row) => <li key={row.row}>Row {row.row}: {row.reason}</li>)}</ul></details> : null}
+      <div className="pager">
+        <button className="staff-button" disabled={busy || !preview.ready} onClick={() => void commit()}>{busy ? "Importing…" : `Import ${preview.ready} customers`}</button>
+        <button className="staff-button" onClick={() => { setPreview(null); setCsv(""); }}>Cancel</button>
+      </div>
+    </div> : null}
+
+    <div className="staff-grid">
+      <div>
+        <h3>Birthdays in the next month</h3>
+        {overview.birthdays.length ? <ul className="birthday-list">{overview.birthdays.map((row, index) => <li key={index}><b>{row.label}</b> {row.name || row.email || row.phone}<small>{row.daysAway === 0 ? "Today!" : row.daysAway === 1 ? "Tomorrow" : `In ${row.daysAway} days`}{row.phone ? ` · ${row.phone}` : ""}</small></li>)}</ul> : <p className="secure-note">None yet. The till asks for a birthday on pickup orders.</p>}
+      </div>
+      <div>
+        <h3>Unsubscribe someone</h3>
+        <p className="secure-note">For a customer who asks in person or by phone to stop getting our emails. Receipts still go to them.</p>
+        <div className="record-filters">
+          <input value={optOutEmail} onChange={(event) => setOptOutEmail(event.target.value)} placeholder="their@email.com" aria-label="Email to unsubscribe" inputMode="email" />
+          <button className="staff-button" disabled={busy || !optOutEmail.trim()} onClick={async () => {
+            const result = await post({ action: "optOut", email: optOutEmail });
+            if (result) { setNote({ tone: "ok", text: `${optOutEmail.trim()} will not get any more marketing emails.` }); setOptOutEmail(""); await load(); }
+          }}>Unsubscribe</button>
+        </div>
+      </div>
+    </div>
+  </section>;
 }
 
 function Stat({ label, value, note }: { label: string; value: string; note: string }) {

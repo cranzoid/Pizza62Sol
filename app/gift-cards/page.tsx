@@ -21,11 +21,11 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "Gift Cards | Pizza 62",
   description:
-    "Send a Pizza 62 gift card by email in under a minute. No expiry date, no fees, and it can be spent online or at the counter in Hamilton.",
+    "Send a Pizza 62 gift card by email in under a minute, with a personal message for someone special.",
   alternates: { canonical: "/gift-cards" },
   openGraph: {
     title: "Pizza 62 Gift Cards",
-    description: "Emailed in under a minute. No expiry, no fees.",
+    description: "Choose an amount, add a message, and send a Pizza 62 gift card by email.",
     type: "website",
   },
 };

@@ -33,6 +33,7 @@ import {
 } from "@/lib/deep-link";
 import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
 import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
+import { centsToQualify, formatEntryNumber, type PublicGiveaway } from "@/lib/giveaway";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -443,6 +444,9 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
   const [laborDayOfferDismissed, setLaborDayOfferDismissed] = useState(false);
+  // Only while entries are actually open — judged against the page's own
+  // clock too, so a tab left open past the last night stops advertising it.
+  const liveGiveaway = catalog?.giveaway?.status === "open" && catalog.giveaway.endsAt > now ? catalog.giveaway : null;
   const laborDayWings = catalog?.products.find((product) => product.id === "monday-dollar-wings") ?? null;
   const laborDayAvailability = laborDayWings?.configuration.availability as WeeklyAvailability | undefined;
   const laborDayOfferAvailable = Boolean(laborDayWings && laborDayAvailability && isWithinWeeklyAvailability(laborDayAvailability, new Date(now)));
@@ -861,6 +865,12 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
             : <span>{String(content.announcementText)}</span>}
         </div>
       ) : null}
+      {liveGiveaway ? (
+        <div className="giveaway-strip">
+          <span><b>Pizza 62 turns one!</b> Every order of {formatMoney(liveGiveaway.minimumCents).replace(".00", "")}+ before tax is an entry to win {liveGiveaway.prize} — until closing on {liveGiveaway.lastEntryDay}.</span>
+          <Link href="/giveaway">How it works <ArrowIcon /></Link>
+        </div>
+      ) : null}
       {catalog && !store.open ? (
         <div className="closed-strip" role="status">
           <span className="closed-clock" aria-hidden="true">{store.changesAt ? opensIn : "—"}</span>
@@ -1084,6 +1094,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           fulfilment={fulfilment}
           toppingNames={toppingNames}
           recommendations={upsellRecommendations}
+          giveaway={liveGiveaway}
           onClose={() => setCartOpen(false)}
           onRemove={removeLine}
           onUpsell={openUpsell}
@@ -1102,6 +1113,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           hours={hours}
           timeZone={timeZone}
           now={now}
+          giveaway={liveGiveaway}
           onClose={() => setCheckoutOpen(false)}
           // An empty bag has nothing to check out. Staying on a review screen
           // with no items and a disabled pay button is a dead end.
@@ -1156,13 +1168,14 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
  * problems by cart position, so an item that cannot be ordered says so *here*,
  * next to a button that removes it, rather than at the payment screen.
  */
-function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommendations, onClose, onRemove, onUpsell, onCheckout }: {
+function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommendations, giveaway, onClose, onRemove, onUpsell, onCheckout }: {
   cart: CartLine[];
   quote: Quote | null;
   loading: boolean;
   fulfilment: "pickup" | "delivery";
   toppingNames: Map<string, string>;
   recommendations: UpsellRecommendation<Product>[];
+  giveaway: PublicGiveaway | null;
   onClose: () => void;
   onRemove: (key: string) => void;
   onUpsell: (recommendation: UpsellRecommendation<Product>) => void;
@@ -1184,6 +1197,7 @@ function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommenda
       {fulfilment === "delivery" ? <div><span>Delivery</span><b>{totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
       <div><span>HST{quote ? ` ${(quote.taxRateBps / 100).toFixed(0)}%` : ""}</span><b>{formatMoney(totals.taxCents)}</b></div>
       <div className="cart-total"><span>Total{loading ? <small>Updating…</small> : <small>Priced by Pizza 62</small>}</span><b>{formatMoney(totals.totalCents)}</b></div>
+      {cart.length && quote ? <GiveawayProgress giveaway={giveaway} totals={totals} /> : null}
       {orderIssues.map((issue) => <p className="cart-blocker" role="status" key={issue.code}>{issue.message}</p>)}
       <button className="primary-button" disabled={!cart.length || blocked} onClick={onCheckout}>Go to checkout <ArrowIcon /></button>
       <p className="secure-note">Every price here is calculated by Pizza 62, not by your browser, so this is what you will be charged.</p>
@@ -1231,7 +1245,7 @@ function UpsellTray({ recommendations, onChoose }: {
   </section>;
 }
 
-function Checkout({ cart, fulfilment, toppingNames, settings, integrations, store, hours, timeZone, now, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; toppingNames: Map<string, string>; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
+function Checkout({ cart, fulfilment, toppingNames, settings, integrations, store, hours, timeZone, now, giveaway, onClose, onRemove, onConfirmed }: { cart: CartLine[]; fulfilment: "pickup" | "delivery"; toppingNames: Map<string, string>; settings: Catalog["settings"]; integrations: Catalog["integrations"]; store: StoreStatus; hours: WeeklyHours; timeZone: string; now: number; giveaway: PublicGiveaway | null; onClose: () => void; onRemove: (key: string) => void; onConfirmed: (result: Record<string, unknown>) => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState("");
   const [line1, setLine1] = useState(""); const [unit, setUnit] = useState(""); const [postalCode, setPostalCode] = useState(""); const [deliveryInstructions, setDeliveryInstructions] = useState("");
@@ -1628,6 +1642,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             </>
           ) : null}
         </div>
+        {quote ? <GiveawayProgress giveaway={giveaway} totals={totals} /> : null}
 
         {blockingIssues.map((issue) => <p className="cart-blocker" role="status" key={`${issue.code}-${issue.index ?? "order"}`}>{issue.message}</p>)}
 
@@ -1676,6 +1691,23 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   </section></div>;
 }
 
+/**
+ * "Add $1.50 more to enter the giveaway", or "this order is entered".
+ *
+ * Measured exactly as the server measures it — food after discounts, before
+ * tax — from the server's own quote, so the line never promises an entry the
+ * order will not get. See lib/giveaway.ts.
+ */
+function GiveawayProgress({ giveaway, totals }: { giveaway: PublicGiveaway | null; totals: Quote["totals"] }) {
+  if (!giveaway) return null;
+  const short = centsToQualify(giveaway, { subtotalCents: totals.menuSubtotalCents, discountCents: totals.discountCents });
+  return <p className={short === 0 ? "giveaway-hint giveaway-hint--in" : "giveaway-hint"} role="status">
+    {short === 0
+      ? <>✓ This order enters our <Link href="/giveaway" target="_blank">Thanksgiving Giveaway</Link> to win {giveaway.prize}.</>
+      : <>Add {formatMoney(short)} more (before tax) to enter our <Link href="/giveaway" target="_blank">Thanksgiving Giveaway</Link> for {giveaway.prize}.</>}
+  </p>;
+}
+
 function Confirmation({ result, onClose }: { result: Record<string, unknown>; onClose: () => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   // C-07: a duplicate submission resolves to an order that already exists. Its
@@ -1693,5 +1725,6 @@ function Confirmation({ result, onClose }: { result: Record<string, unknown>; on
   // delay after staff mark the order completed; see the outbox's
   // `waiting_completion` state and operations.feedbackDelayMinutes.
   const estimateAt = Number(result.estimateAt);
-  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
+  const giveawayEntry = Number(result.giveawayEntryNumber);
+  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{!duplicate && Number.isSafeInteger(giveawayEntry) && giveawayEntry > 0 ? <div className="giveaway-entry-badge"><span>You&apos;re in the Thanksgiving Giveaway</span><b>Entry #{formatEntryNumber(giveawayEntry)}</b><small>We&apos;ve emailed it to you too. <Link href="/giveaway">How it works</Link></small></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
 }

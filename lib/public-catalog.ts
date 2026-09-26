@@ -9,6 +9,8 @@ import {
 import { loadActiveClosures } from "@/lib/closures";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
 import type { PublicCatalog } from "@/lib/catalog-types";
+import { publicGiveaway } from "@/lib/giveaway";
+import { loadGiveaway } from "@/lib/giveaway-store";
 
 /** Settings an anonymous storefront visitor is allowed to read. */
 const PUBLIC_SETTING_KEYS = [
@@ -104,6 +106,9 @@ export async function loadPublicCatalog(): Promise<PublicCatalog> {
     toppings: toppingResult.results,
     settings: publicSettings(settings),
     closures: await loadActiveClosures(),
+    // Only while it is running, and only what a visitor may know. A failure to
+    // read it must never take the menu down with it.
+    giveaway: publicGiveaway(await loadGiveaway().catch(() => null), Date.now()),
     integrations: {
       clover: await cloverCheckoutConfigured(),
       cloverIframe: (await cloverIframeEnabled())

@@ -38,6 +38,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { cashChange, compareMenuPrice, formatMoney, isWithinWeeklyAvailability, type WeeklyAvailability } from "@/lib/domain";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
+import { centsToQualify, formatEntryNumber } from "@/lib/giveaway";
 import {
   GenericCustomizer,
   PizzaCustomizer,
@@ -127,8 +128,14 @@ type PlacedOrder = {
   amountDueCents?: number;
   giftCardAppliedCents?: number;
   printOrder?: Record<string, unknown> | null;
+  /** Set when the order earned a Thanksgiving Giveaway entry. */
+  giveawayEntryNumber?: number | null;
+  birthdaySaved?: boolean;
   error?: string;
 };
+
+const BIRTHDAY_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 const NEVER_CHANGES = () => () => {};
 const NO_PRINT_RESULT = () => null;
@@ -139,6 +146,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  // Month and day only, never the year — for a birthday treat, not an ID check.
+  const [birthMonth, setBirthMonth] = useState("");
+  const [birthDay, setBirthDay] = useState("");
   const [line1, setLine1] = useState("");
   const [unit, setUnit] = useState("");
   const [postalCode, setPostalCode] = useState("");
@@ -380,7 +390,12 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     const response = await fetch("/api/admin/orders", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body({ idempotencyKey: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}` })),
+      body: JSON.stringify(body({
+        idempotencyKey: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}`,
+        // Only on a real placement, not the running quote: it changes nothing
+        // about the price, so it has no business triggering a re-quote.
+        ...(birthdayReady ? { birthday: { month: Number(birthMonth), day: Number(birthDay) } } : {}),
+      })),
     });
     const result = (await response.json()) as PlacedOrder;
     setSubmitting(false);
@@ -402,11 +417,15 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       dueCents: Number(result.amountDueCents ?? totals.amountDueCents),
       giftCardCents: Number(result.giftCardAppliedCents ?? totals.giftCardAppliedCents),
     });
+    // The entry number is said here as well as printed, because the person at
+    // the till is the one who tells a walk-in customer they are in.
+    const entry = result.giveawayEntryNumber ? ` Giveaway entry #${formatEntryNumber(result.giveawayEntryNumber)} — tell the customer!` : "";
+    const birthdayNote = result.birthdaySaved ? " Birthday saved." : "";
     setMessage({
       tone: "ok",
       text: willPrint
-        ? `${result.orderNumber} is in. Sending its ticket to the printer…`
-        : `${result.orderNumber} is in. It is on the kitchen board now.`,
+        ? `${result.orderNumber} is in. Sending its ticket to the printer…${entry}${birthdayNote}`
+        : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
     });
     setLines([]);
     setCouponInput("");
@@ -416,6 +435,8 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     setName("");
     setPhone("");
     setEmail("");
+    setBirthMonth("");
+    setBirthDay("");
     setLine1("");
     setUnit("");
     setPostalCode("");
@@ -445,6 +466,21 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
    * not of the bill. A gift card pays to the cent; only what is left over can
    * be rounded.
    */
+  /**
+   * The giveaway, as the counter sees it: whether what is on the ticket earns
+   * an entry, and if not, how much more would. Worth saying out loud to a
+   * customer at $8.50 — it is the easiest add-on the counter will ever sell.
+   */
+  const giveaway = dashboard.giveaway?.status === "open" ? dashboard.giveaway : null;
+  const giveawayShort = giveaway && lines.length && quote
+    ? centsToQualify(giveaway, { subtotalCents: totals.menuSubtotalCents, discountCents: totals.discountCents })
+    : null;
+
+  // A birthday is filed against the customer's email or phone; with neither
+  // there is nobody to file it against.
+  const birthdayChosen = Boolean(birthMonth && birthDay);
+  const birthdayReady = fulfilment === "pickup" && birthdayChosen && Boolean(email.trim() || phone.replace(/\D/g, "").length >= 10);
+
   const cashDueCents = settled ? settled.dueCents : totals.amountDueCents;
   const tenderedCents = Math.round(Number(cashGiven.replace(/[^0-9.]/g, "")) * 100);
   const cash =
@@ -489,6 +525,23 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" /></label>
           <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
           <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
+          {/* Pickup only, as the owner asked. Month and day, never a year. */}
+          {fulfilment === "pickup" ? (
+            <div className="till-birthday">
+              <span>Birthday · optional</span>
+              <div>
+                <select value={birthMonth} onChange={(event) => setBirthMonth(event.target.value)} aria-label="Birthday month">
+                  <option value="">Month</option>
+                  {BIRTHDAY_MONTHS.map((label, index) => <option key={label} value={String(index + 1)}>{label}</option>)}
+                </select>
+                <select value={birthDay} onChange={(event) => setBirthDay(event.target.value)} aria-label="Birthday day">
+                  <option value="">Day</option>
+                  {Array.from({ length: birthMonth ? DAYS_IN_MONTH[Number(birthMonth) - 1] : 31 }, (_, index) => <option key={index + 1} value={String(index + 1)}>{index + 1}</option>)}
+                </select>
+              </div>
+              <small>{birthdayChosen && !birthdayReady ? "Add their phone or email so we can find them on their birthday." : "No year — just so we can treat them on the day."}</small>
+            </div>
+          ) : null}
         </div>
         {/* The delivery fee, the radius check and the minimum all key off this,
             and all three are enforced on the server — the same code path a
@@ -660,6 +713,14 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
               </>
             ) : null}
           </div>
+
+          {giveawayShort !== null ? (
+            <p className={giveawayShort === 0 ? "giveaway-hint giveaway-hint--in" : "giveaway-hint"} role="status">
+              {giveawayShort === 0
+                ? "✓ This order enters the Thanksgiving Giveaway."
+                : `${formatMoney(giveawayShort)} more food (before tax) enters them in the Thanksgiving Giveaway.`}
+            </p>
+          ) : null}
 
           {quote?.issues.map((issue, index) => (
             <p className="cart-blocker" role="status" key={`${index}-${issue.message}`}>{issue.message}</p>

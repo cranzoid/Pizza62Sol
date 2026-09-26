@@ -29,6 +29,17 @@
  * gets a different order description than the kitchen has.
  */
 import { formatMoney } from "@/lib/domain";
+import {
+  formatEntryNumber,
+  giveawayStatus,
+  giveawaySummary,
+  lastEntryDayLabel,
+  minimumLabel,
+  orderQualifies,
+  type GiveawaySetting,
+  type NudgeKind,
+} from "@/lib/giveaway";
+import { loadGiveaway, recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { publicBaseUrl } from "@/lib/notifications/config";
 import type { FeedbackReward } from "@/lib/rewards";
 import {
@@ -70,6 +81,8 @@ export type OrderSnapshot = {
   address_json: string | null;
   instructions: string | null;
   acknowledged_at: number | null;
+  /** When the order was placed — what the giveaway window is judged against. */
+  created_at: number;
 };
 
 export type RenderedMessage = {
@@ -232,6 +245,11 @@ export async function renderCustomerConfirmation(
     });
   }
 
+  // After the payment line and before the items: the first thing below the
+  // order number the customer will actually read.
+  const giveaway = await receiptGiveawaySection(order);
+  if (giveaway) sections.splice(3, 0, giveaway);
+
   const { emailHtml, emailText } = build({
     eyebrow: "Order confirmed",
     heading: "You're all set.",
@@ -251,6 +269,240 @@ export async function renderCustomerConfirmation(
     smsBody: link
       ? `Pizza 62: order ${order.order_number} confirmed, ${money(order.total_cents)}. ${whenLine(order)}. Track: ${link}`
       : `Pizza 62: order ${order.order_number} confirmed, ${money(order.total_cents)}. ${whenLine(order)}.`,
+  };
+}
+
+// --- the Thanksgiving Giveaway ------------------------------------------------
+
+const GIVEAWAY_KICKER = "Pizza 62 turns one · Thanksgiving Giveaway";
+
+/** "a brand-new 55-inch TV" → "A brand-new 55-inch TV". */
+function capitalise(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+/**
+ * A link back to the site, labelled so an order it produces is attributed to
+ * the email that prompted it (see lib/attribution.ts). That is how the owner
+ * finds out whether the nudges were worth sending.
+ */
+function campaignLink(base: string, medium: string): string {
+  return `${base}/?utm_source=email&utm_medium=${medium}&utm_campaign=thanksgiving_giveaway`;
+}
+
+/**
+ * The giveaway block on the receipt.
+ *
+ * A qualifying order shows its entry number. The number is fetched through
+ * `recordGiveawayEntrySafely` rather than merely read: on a card order the
+ * receipt is released the instant the payment clears, and the entry is written
+ * a moment after — so a receipt that only *read* could, in that window, go out
+ * saying nothing. Recording is idempotent, so this either finds the entry or
+ * creates it, and the receipt always carries the number.
+ *
+ * An order under the minimum while the giveaway is open gets one line saying
+ * how it works, rather than silence — the customer who spent $8 is the one
+ * the rule is most worth telling.
+ */
+async function receiptGiveawaySection(order: OrderSnapshot): Promise<Section | null> {
+  const giveaway = await loadGiveaway().catch(() => null);
+  if (!giveaway?.enabled) return null;
+  const qualifies = orderQualifies(giveaway, {
+    placedAt: Number(order.created_at),
+    subtotalCents: Number(order.subtotal_cents),
+    discountCents: Number(order.discount_cents),
+  });
+  const entryNumber = qualifies ? await recordGiveawayEntrySafely(order.id) : null;
+  if (entryNumber !== null) {
+    return {
+      type: "giveaway",
+      kicker: GIVEAWAY_KICKER,
+      headline: `You're entered to win ${giveaway.prize}.`,
+      entry: formatEntryNumber(entryNumber),
+      lines: [
+        `Winner announced ${giveaway.winnerAnnouncedOn}.`,
+        `Every order of ${minimumLabel(giveaway)} or more before tax is another entry, until closing on ${lastEntryDayLabel(giveaway)}.`,
+      ],
+    };
+  }
+  if (giveawayStatus(giveaway, Date.now()) !== "open") return null;
+  return {
+    type: "note",
+    title: GIVEAWAY_KICKER,
+    lines: [giveawaySummary(giveaway), `Winner announced ${giveaway.winnerAnnouncedOn}.`],
+  };
+}
+
+/**
+ * The "you're in" email: the thank-you the owner asked for, sent to everyone
+ * whose order earned an entry — online, phone, or a walk-in who gave an email.
+ *
+ * It exists separately from the receipt because it is a different message. The
+ * receipt is about the pizza and gets read for the pickup time; this one is
+ * about the restaurant turning one, and it is the one worth keeping. It says
+ * why the giveaway is happening, what the prize is, when the winner is picked,
+ * how they will be reached, and that every order is another chance.
+ */
+export async function renderGiveawayEntry(
+  order: OrderSnapshot,
+  input: { entryNumber: number; giveaway: GiveawaySetting; totalEntries: number },
+): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const { giveaway } = input;
+  const entry = formatEntryNumber(input.entryNumber);
+  const total = Math.max(1, input.totalEntries);
+
+  const sections: Section[] = [
+    {
+      type: "paragraph",
+      text: `Hi ${firstName(order.customer_name)}, Pizza 62 turned one this year, and we're celebrating with the neighbours who got us here. Your order ${order.order_number} has entered you in our Thanksgiving Giveaway.`,
+    },
+    {
+      type: "giveaway",
+      size: "hero",
+      kicker: "Thanksgiving Giveaway",
+      headline: `Win ${giveaway.prize}`,
+      entry,
+      lines: [`From order ${order.order_number}`],
+    },
+    {
+      type: "facts",
+      rows: [
+        { label: "The prize", value: capitalise(giveaway.prize) },
+        { label: "Winner announced", value: giveaway.winnerAnnouncedOn },
+        { label: "Entries close", value: `Closing time on ${lastEntryDayLabel(giveaway)}` },
+        { label: "Your entries", value: total === 1 ? "1 so far" : `${total} so far` },
+        {
+          label: "More chances",
+          value: `Every order of ${minimumLabel(giveaway)} or more before tax is another entry — pickup, delivery or in store.`,
+        },
+      ],
+    },
+    {
+      type: "note",
+      title: "How it works",
+      lines: [
+        "If your entry is picked, we'll call or email you using the details on this order.",
+        "Keep this email — your entry number is your proof of entry.",
+        "Orders that are cancelled or refunded are not eligible.",
+      ],
+    },
+  ];
+  if (base) {
+    sections.push({ type: "button", label: "Order again", href: campaignLink(base, "giveaway_entry") });
+    sections.push({ type: "paragraph", text: `Full details: ${base.replace(/^https?:\/\//, "")}/giveaway` });
+  }
+
+  const { emailHtml, emailText } = build({
+    eyebrow: "Pizza 62 turns one",
+    heading: "You're in the Thanksgiving Giveaway.",
+    tone: "confirmation",
+    preheader: `Entry ${entry} · Win ${giveaway.prize} · Winner announced ${giveaway.winnerAnnouncedOn}`,
+    signoff: "Thank you for a wonderful first year. — Everyone at Pizza 62",
+    baseUrl: base,
+    sections,
+  });
+
+  return {
+    emailSubject: `You're in! Pizza 62 Thanksgiving Giveaway entry ${entry}`,
+    emailText,
+    emailHtml,
+    smsBody: `Pizza 62 turns one! Order ${order.order_number} is entry ${entry} in our Thanksgiving Giveaway for ${giveaway.prize}.`,
+  };
+}
+
+/** "tonight", "tomorrow", or "on Sunday, October 11" — judged when the email is sent. */
+function closesPhrase(giveaway: GiveawaySetting, now: number): string {
+  const day = (timestamp: number) => new Date(timestamp).toLocaleDateString("en-CA", { timeZone: TORONTO });
+  const last = day(giveaway.endsAt - 1);
+  if (day(now) === last) return "tonight at closing";
+  if (day(now + 86_400_000) === last) return "tomorrow at closing";
+  return `at closing on ${lastEntryDayLabel(giveaway)}`;
+}
+
+/**
+ * The nudge to past customers, in its two versions.
+ *
+ * A commercial message under CASL, so unlike everything else in this file it
+ * carries an unsubscribe link and the reason the person is receiving it.
+ */
+export async function renderGiveawayNudge(input: {
+  name: string;
+  variant: NudgeKind;
+  giveaway: GiveawaySetting;
+  entries: number;
+  unsubscribeHref: string;
+  test?: boolean;
+  now?: number;
+}): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const { giveaway } = input;
+  const now = input.now ?? Date.now();
+  const minimum = minimumLabel(giveaway);
+  const closes = closesPhrase(giveaway, now);
+  const greeting = input.name.trim() ? `Hi ${firstName(input.name)}` : "Hi there";
+  const lastCall = input.variant === "last_call";
+
+  const sections: Section[] = [
+    {
+      type: "paragraph",
+      text: lastCall
+        ? `${greeting}, our Thanksgiving Giveaway closes ${closes}. One order of ${minimum} or more (before tax) gets you an entry to win ${giveaway.prize} — and every order is another entry.`
+        : `${greeting}, Pizza 62 is one year old — thank you for being part of our first year in Hamilton. To celebrate, we're giving away ${giveaway.prize} this Thanksgiving.`,
+    },
+    {
+      type: "giveaway",
+      size: "hero",
+      kicker: lastCall ? "Thanksgiving Giveaway · Last call" : "Thanksgiving Giveaway",
+      headline: lastCall ? `Entries close ${closes}` : `Every ${minimum} order is an entry`,
+      lines: lastCall
+        ? [`Winner announced ${giveaway.winnerAnnouncedOn}.`]
+        : [`Order ${minimum}+ before tax by closing on ${lastEntryDayLabel(giveaway)}.`, `Winner announced ${giveaway.winnerAnnouncedOn}.`],
+    },
+  ];
+  if (input.entries > 0) {
+    sections.push({
+      type: "paragraph",
+      text: `You already have ${input.entries} ${input.entries === 1 ? "entry" : "entries"} — every order adds another.`,
+    });
+  }
+  sections.push({
+    type: "facts",
+    rows: [
+      { label: "The prize", value: capitalise(giveaway.prize) },
+      { label: "How to enter", value: `Order ${minimum} or more (before tax) — online, by phone or in store.` },
+      { label: "Pickup or delivery", value: "Both count." },
+      { label: "Entries close", value: `Closing time on ${lastEntryDayLabel(giveaway)}` },
+      { label: "Winner announced", value: giveaway.winnerAnnouncedOn },
+    ],
+  });
+  if (base) {
+    sections.push({ type: "button", label: "Order now", href: campaignLink(base, lastCall ? "nudge_last_call" : "nudge") });
+    sections.push({ type: "paragraph", text: `Full details: ${base.replace(/^https?:\/\//, "")}/giveaway` });
+  }
+
+  const subject = lastCall
+    ? `Last chance to win ${giveaway.prize} — entries close ${closes.replace(" at closing", "")}`
+    : `Pizza 62 turns one — win ${giveaway.prize} this Thanksgiving`;
+  const { emailHtml, emailText } = build({
+    eyebrow: "Pizza 62 turns one",
+    heading: lastCall ? `Last chance to win ${giveaway.prize}.` : `Win ${giveaway.prize} this Thanksgiving.`,
+    tone: "feedback",
+    preheader: `Every order of ${minimum}+ before tax is an entry. Winner announced ${giveaway.winnerAnnouncedOn}.`,
+    signoff: "Thank you for a great first year. — Everyone at Pizza 62",
+    baseUrl: base,
+    sections,
+    unsubscribe: {
+      reason: "You're receiving this because you've ordered from Pizza 62.",
+      href: input.unsubscribeHref,
+    },
+  });
+
+  return {
+    emailSubject: `${input.test ? "[TEST] " : ""}${subject}`,
+    emailText,
+    emailHtml,
+    smsBody: `Pizza 62 turns one! Every ${minimum}+ order is an entry to win ${giveaway.prize}. Entries close ${closes}.`,
   };
 }
 

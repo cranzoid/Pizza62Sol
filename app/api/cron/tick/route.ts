@@ -21,6 +21,7 @@
  *   buyer's next attempt. A cancelled order also releases any gift card balance
  *   it had reserved — one of the three places a hold must be resolved.
  * - **Re-call the restaurant** about an order nobody has acknowledged.
+ * - **Give any qualifying order its giveaway entry** if it has none yet.
  *
  * ## Why this is safe to expose
  *
@@ -39,6 +40,7 @@ import { PostgresDatabase, getPool } from "@/db/pg-driver";
 import { readIntegrationSecret } from "@/lib/integration-secrets";
 import { env } from "@/lib/runtime-env";
 import { logFailure } from "@/lib/log";
+import { sweepGiveawayEntries } from "@/lib/giveaway-store";
 
 /** Length-independent, so a wrong secret cannot be narrowed by timing. */
 function secretMatches(presented: string, expected: string): boolean {
@@ -101,6 +103,10 @@ export async function POST(request: Request) {
     return { cancelled, giftCardCheckouts };
   });
   await run("unacknowledged", async () => ({ requeued: await requeueUnacknowledgedOrders() }));
+  // The giveaway's safety net: a qualifying order that somehow has no entry —
+  // taken by the previous release during a deploy, or dropped by a crash
+  // between the order committing and its entry — gets one within a minute.
+  await run("giveaway", () => sweepGiveawayEntries());
 
   // 207 when something failed: the caller is a Logic App, and a plain 200 would
   // make a persistently broken sweep invisible until a customer noticed. A 5xx

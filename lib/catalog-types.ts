@@ -1,5 +1,6 @@
 import type { CustomizerProduct, CustomizerTopping, CustomizerVariation } from "@/app/menu/ItemCustomizer";
 import type { StoreClosure } from "@/lib/domain";
+import type { PublicGiveaway } from "@/lib/giveaway";
 
 export type Category = { id: string; name: string; slug: string; description?: string | null };
 export type Product = CustomizerProduct & {
@@ -17,6 +18,8 @@ export type PublicCatalog = {
   toppings: Topping[];
   settings: Record<string, { value: Record<string, unknown>; version: number }>;
   closures: StoreClosure[];
+  /** The Thanksgiving Giveaway while it is running; null otherwise. */
+  giveaway?: PublicGiveaway | null;
   integrations: {
     clover: boolean;
     email: boolean;
