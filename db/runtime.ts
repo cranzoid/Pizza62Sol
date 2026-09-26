@@ -1,5 +1,6 @@
 import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
+import { GIVEAWAY_DEFAULTS } from "@/lib/giveaway";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   withWingStyle,
@@ -895,6 +896,22 @@ const DATA_MIGRATIONS: Array<{
           product.deliveryEligible === false ? 0 : 1, product.name.toUpperCase().slice(0, 40),
           JSON.stringify(product.configuration ?? {}), now, product.id),
     ),
+  },
+  {
+    // Pizza 62 turns one: the Thanksgiving Giveaway. The owner chose "from
+    // go-live", so the window opens at the moment this runs rather than on a
+    // fixed date — no order placed before the release earns an entry it was
+    // never told about. Conflict-ignoring, so an owner who has since edited
+    // the setting keeps their edits. See lib/giveaway.ts for the rules.
+    id: "2026-09-27-thanksgiving-giveaway",
+    run: (database, now) => [
+      database
+        .prepare("INSERT INTO settings (key, value_json, version, updated_at) VALUES ('giveaway', ?, 1, ?) ON CONFLICT (key) DO NOTHING")
+        .bind(JSON.stringify({ ...GIVEAWAY_DEFAULTS, startsAt: now }), now),
+      database
+        .prepare("INSERT INTO order_sequences (key, current_number) VALUES (?, 0) ON CONFLICT (key) DO NOTHING")
+        .bind(`giveaway:${GIVEAWAY_DEFAULTS.id}`),
+    ],
   },
 
 ];

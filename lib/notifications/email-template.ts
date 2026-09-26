@@ -128,6 +128,21 @@ export type Section =
       sender: string;
       message?: string | null;
     }
+  /**
+   * The giveaway panel: the receipt's "you're entered" block and the hero of
+   * the giveaway emails. See `giveawayPanel()`.
+   */
+  | {
+      type: "giveaway";
+      /** Small caps line over the headline, e.g. "Pizza 62 turns one". */
+      kicker: string;
+      headline: string;
+      /** `0042`, when there is an entry to show. */
+      entry?: string | null;
+      lines: string[];
+      /** A bigger treatment for the emails that are *about* the giveaway. */
+      size?: "compact" | "hero";
+    }
   | { type: "divider" };
 
 export type EmailItem = {
@@ -309,6 +324,45 @@ function giftCard(section: Extract<Section, { type: "giftcard" }>): string {
 </table>`;
 }
 
+/**
+ * The giveaway, in the restaurant's own colours.
+ *
+ * The same green-and-yellow as the gift card, for the same reason: this is a
+ * thing the customer is being *given*, and it should look like it rather than
+ * like a line of small print on a receipt. The entry number sits in its own
+ * cream panel in the monospace face, because it is a number people read out,
+ * write down and look for on the day.
+ *
+ * Everything is live text — no image carries the prize, the number or the
+ * date, because most clients block images until asked.
+ */
+function giveawayPanel(section: Extract<Section, { type: "giveaway" }>): string {
+  const hero = section.size === "hero";
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 22px;border-collapse:collapse;">
+  <tr><td align="center" bgcolor="${BRAND.green}" style="background-color:${BRAND.green};padding:${hero ? "30px 24px 26px" : "22px 20px 20px"};">
+    <div style="font-family:${SANS};font-size:10px;font-weight:bold;letter-spacing:2.4px;text-transform:uppercase;color:${BRAND.yellow};">${escapeHtml(section.kicker)}</div>
+    <div style="font-family:${SERIF};font-size:${hero ? "30px" : "22px"};line-height:1.2;font-weight:bold;letter-spacing:-.5px;color:${BRAND.paper};padding:10px 0 4px;">${escapeHtml(section.headline)}</div>
+    <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:8px auto ${section.entry ? "16px" : "12px"};">
+      <tr><td bgcolor="${BRAND.yellow}" style="background-color:${BRAND.yellow};width:56px;height:3px;font-size:0;line-height:0;">&nbsp;</td></tr>
+    </table>
+    ${
+      section.entry
+        ? `<table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 auto 14px;">
+      <tr><td align="center" bgcolor="${BRAND.cream}" style="background-color:${BRAND.cream};border:2px solid ${BRAND.yellow};padding:${hero ? "14px 30px" : "10px 22px"};">
+        <div style="font-family:${SANS};font-size:10px;font-weight:bold;letter-spacing:1.6px;text-transform:uppercase;color:${BRAND.muted};">Your entry number</div>
+        <div style="font-family:${MONO};font-size:${hero ? "40px" : "28px"};line-height:1.2;font-weight:bold;letter-spacing:4px;color:${BRAND.ink};">${escapeHtml(section.entry)}</div>
+      </td></tr>
+    </table>`
+        : ""
+    }
+    ${section.lines
+      .filter(Boolean)
+      .map((line) => `<div style="font-family:${SANS};font-size:13px;line-height:1.6;color:${BRAND.cream};">${escapeHtml(line)}</div>`)
+      .join("")}
+  </td></tr>
+</table>`;
+}
+
 function divider(): string {
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;border-collapse:collapse;"><tr><td style="border-top:1px solid ${BRAND.line};font-size:0;line-height:0;">&nbsp;</td></tr></table>`;
 }
@@ -331,6 +385,8 @@ function renderSection(section: Section): string {
       return note(section);
     case "giftcard":
       return giftCard(section);
+    case "giveaway":
+      return giveawayPanel(section);
     case "divider":
       return divider();
   }
@@ -356,6 +412,13 @@ export type EmailDocument = {
    * eyebrow, and every message previews identically.
    */
   preheader?: string;
+  /**
+   * Why this person is getting a marketing email, and how to stop. Required by
+   * CASL on anything promotional, and left off everything transactional. The
+   * restaurant's address and phone, which CASL also requires, are already in
+   * every footer.
+   */
+  unsubscribe?: { reason: string; href: string };
 };
 
 /**
@@ -424,6 +487,11 @@ ${body}
       ${RESTAURANT.address}<br />
       <a href="${RESTAURANT.phoneHref}" style="color:${BRAND.yellow};text-decoration:none;">${RESTAURANT.phone}</a>
     </div>
+    ${
+      document.unsubscribe
+        ? `<div style="font-family:${SANS};font-size:11px;line-height:1.6;color:#8d857a;padding-top:14px;border-top:1px solid #3a342b;margin-top:14px;">${escapeHtml(document.unsubscribe.reason)} <a href="${escapeHtml(document.unsubscribe.href)}" style="color:${BRAND.cream};text-decoration:underline;">Unsubscribe</a></div>`
+        : ""
+    }
   </td></tr>
 
 </table>
@@ -493,6 +561,11 @@ export function renderEmailText(document: EmailDocument): string {
         if (section.message) lines.push(`"${section.message}"`);
         lines.push(`Gift card code: ${section.code}`, "");
         break;
+      case "giveaway":
+        lines.push(section.kicker.toUpperCase(), section.headline);
+        if (section.entry) lines.push(`Your entry number: ${section.entry}`);
+        lines.push(...section.lines.filter(Boolean), "");
+        break;
       case "divider":
         lines.push("—".repeat(40), "");
         break;
@@ -500,6 +573,7 @@ export function renderEmailText(document: EmailDocument): string {
   }
   if (document.signoff) lines.push(document.signoff, "");
   lines.push(`${RESTAURANT.name} · ${RESTAURANT.address} · ${RESTAURANT.phone}`);
+  if (document.unsubscribe) lines.push("", `${document.unsubscribe.reason} Unsubscribe: ${document.unsubscribe.href}`);
   // Collapse the runs of blank lines the section loop leaves behind.
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }

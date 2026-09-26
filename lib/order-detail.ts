@@ -66,7 +66,12 @@ async function loadOrderItems(orderId: string, toppingNames: Map<string, string>
  */
 export async function loadOrderCore(orderId: string): Promise<Record<string, unknown> | null> {
   const order = await getD1()
-    .prepare(`SELECT ${ORDER_COLUMNS} FROM orders WHERE id = ?`)
+    // The giveaway entry rides along so the till's printed ticket can show it.
+    .prepare(
+      `SELECT ${ORDER_COLUMNS},
+              (SELECT entry_number FROM giveaway_entries e WHERE e.order_id = orders.id) AS giveaway_entry_number
+       FROM orders WHERE id = ?`,
+    )
     .bind(orderId)
     .first<Record<string, unknown>>();
   if (!order) return null;

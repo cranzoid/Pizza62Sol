@@ -20,7 +20,8 @@ export async function GET(request: Request) {
     const row = await getD1()
       .prepare(
         `SELECT id, order_number, fulfilment, status, payment_status, schedule_type,
-                scheduled_for, estimated_for, address_json, pricing_json, total_cents, created_at
+                scheduled_for, estimated_for, address_json, pricing_json, total_cents, created_at,
+                (SELECT entry_number FROM giveaway_entries e WHERE e.order_id = orders.id) AS giveaway_entry_number
          FROM orders WHERE order_number = ? AND tracking_token_hash = ?`,
       )
       .bind(orderNumber, await hashOpaqueToken(token))
@@ -47,6 +48,9 @@ export async function GET(request: Request) {
         totalCents: row.total_cents,
         createdAt: row.created_at,
         maskedAddress: address.city ? `${address.city}, ${address.province ?? "ON"}` : null,
+        giveawayEntryNumber: row.giveaway_entry_number === null || row.giveaway_entry_number === undefined
+          ? null
+          : Number(row.giveaway_entry_number),
         pricing: safeJson(row.pricing_json as string, {}),
         items: items.results.map((item) => ({
           name: item.product_name,

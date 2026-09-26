@@ -126,6 +126,29 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   retarget the row and all three follow. A code that matches but comes off
   nothing is reported as *not applied*, with the reason and the products named;
   the order can still be placed at full price.
+- **Thanksgiving Giveaway** (Pizza 62 turns one): every order of C$10 or more
+  of food — after any promo, before HST, delivery and tip — placed between
+  go-live and midnight after Sunday, October 11 (Toronto) earns one entry with
+  its own number. Pay-at-store orders get theirs when they commit, card orders
+  when the payment clears, and the cron sweep catches anything missed. The
+  number is on the receipt email, a separate "You're in" email, the printed
+  ticket, the checkout confirmation and the tracking page. Everything is run
+  from **Admin → Giveaway** (settings, entries, CSV export, the two nudges to
+  past customers, and — owner only, after entries close — picking the winner
+  at random from entries whose orders were not cancelled or refunded). Customer
+  wording is "giveaway", never "draw", at the owner's request.
+- Giveaway nudges are marketing email under CASL: each carries an unsubscribe
+  link and the RFC 8058 one-click header, opt-outs live in `customer_contacts`
+  and are re-checked at send time, and an import never re-subscribes anyone.
+  They are released at most **Nudges per day** (default 80) between 11 a.m. and
+  7 p.m., because they share the email provider's daily quota with receipts
+  (Resend's free plan is 100 a day), and the dispatcher always sends every
+  other kind of email before a nudge.
+- **Admin → Customers** imports a customer list from the old POS (any CSV with
+  an email or phone column; previewed before anything is written), exports the
+  full list with birthdays and email consent, and shows birthdays coming up.
+  The till asks for an optional birthday — month and day only — on pickup
+  orders and files it against the customer's email or phone.
 - Email credentials, Clover and Twilio are all set from **Admin → Integrations**,
   encrypted at rest. Until they are, orders still work: notifications park
   without spending a retry and go out the moment credentials arrive.

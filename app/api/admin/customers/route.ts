@@ -20,6 +20,7 @@ import { authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
+import { birthdayForCustomerKey, birthdayLabel } from "@/lib/customer-contacts";
 
 const PAGE_SIZE = 50;
 const EXPORT_LIMIT = 10_000;
@@ -71,7 +72,7 @@ function parseCustomerKey(key: string): { column: string; value: string } | null
 async function loadCustomer(key: string) {
   const parsed = parseCustomerKey(key);
   if (!parsed) return null;
-  const [latest, agg, orders] = await Promise.all([
+  const [latest, agg, orders, birthday] = await Promise.all([
     getD1()
       .prepare(`SELECT customer_name, customer_phone, customer_email FROM orders WHERE ${parsed.column} = ? ORDER BY created_at DESC LIMIT 1`)
       .bind(parsed.value)
@@ -93,6 +94,7 @@ async function loadCustomer(key: string) {
       )
       .bind(parsed.value)
       .all<Record<string, unknown>>(),
+    birthdayForCustomerKey(key),
   ]);
   if (!latest || !agg || !agg.order_count) return null;
   return {
@@ -105,6 +107,7 @@ async function loadCustomer(key: string) {
     lifetimeCents: Number(agg.lifetime_cents),
     firstSeen: Number(agg.first_seen),
     lastOrderAt: Number(agg.last_order_at),
+    birthday: birthday ? birthdayLabel(birthday.month, birthday.day) : null,
     orders: orders.results,
   };
 }

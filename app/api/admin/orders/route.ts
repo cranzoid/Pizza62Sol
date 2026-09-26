@@ -23,12 +23,19 @@ import { hasPermission } from "@/lib/domain";
 import { logFailure } from "@/lib/log";
 import { createOrder, OrderValidationError, quoteOrder, type OrderRequest } from "@/lib/order-service";
 import { loadOrderCore, loadOrderDetail, redactOrderContact } from "@/lib/order-detail";
+import { saveBirthday } from "@/lib/customer-contacts";
 
 type Body = OrderRequest & {
   /** Where it was taken. Anything else is refused rather than defaulted. */
   channel?: string;
   /** True to price without creating, so the counter shows a total before ringing it in. */
   quoteOnly?: boolean;
+  /**
+   * An optional birthday, month and day only, given at the counter for a
+   * pickup order. Filed against the customer, not the order — see
+   * lib/customer-contacts.ts.
+   */
+  birthday?: { month?: number; day?: number } | null;
 };
 
 /**
@@ -91,6 +98,22 @@ export async function POST(request: Request) {
 
     const result = await createOrder(body, { channel, staffEntry: true, staffUserId: user.id });
 
+    // The birthday is a nicety riding on the order, not part of it: the order
+    // is committed, so a failure here is logged and reported, never raised.
+    let birthdaySaved = false;
+    if (!result.duplicate && body.fulfilment === "pickup" && body.birthday?.month && body.birthday?.day) {
+      birthdaySaved = await saveBirthday({
+        name: String(body.customer?.name ?? ""),
+        email: String(body.customer?.email ?? ""),
+        phone: String(body.customer?.phone ?? ""),
+        month: Number(body.birthday.month),
+        day: Number(body.birthday.day),
+      }).catch((error) => {
+        logFailure("orders.staff_birthday", error);
+        return false;
+      });
+    }
+
     // Who rang it in. An order that appeared at the counter with no record of
     // who took it is the thing a cash-handling audit asks about first.
     await writeAudit({
@@ -108,7 +131,7 @@ export async function POST(request: Request) {
       logFailure("orders.staff_ticket", error);
       return null;
     });
-    return Response.json({ ...result, printOrder }, { status: result.duplicate ? 200 : 201 });
+    return Response.json({ ...result, printOrder, birthdaySaved }, { status: result.duplicate ? 200 : 201 });
   } catch (error) {
     if (error instanceof OrderValidationError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });

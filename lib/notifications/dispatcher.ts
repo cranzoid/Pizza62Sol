@@ -46,11 +46,16 @@ import {
   renderFeedbackReward,
   renderGiftCardDelivery,
   renderGiftCardReceipt,
+  renderGiveawayEntry,
+  renderGiveawayNudge,
   renderLowRatingAlert,
   renderRestaurantNewOrder,
   type OrderSnapshot,
 } from "@/lib/notifications/messages";
 import { activeFeedbackReward } from "@/lib/rewards";
+import { giveawayStatus, isNudgeKind } from "@/lib/giveaway";
+import { entriesForEmail, loadGiveaway } from "@/lib/giveaway-store";
+import { isOptedOut, unsubscribeQuery } from "@/lib/marketing-consent";
 
 /** Statuses a dispatcher will pick up. Everything else is terminal or parked. */
 const CLAIMABLE = ["pending", "retrying"] as const;
@@ -115,7 +120,10 @@ async function claimDue(limit: number, now: number): Promise<OutboxRow[]> {
             -- Reclaim rows abandoned mid-delivery by a worker that died. See
             -- STALE_SENDING_MS: without this they are stranded forever.
             OR (status = 'sending' AND updated_at < $4)
-         ORDER BY scheduled_for
+         -- Everything else before a giveaway nudge. A nudge is marketing that
+         -- can go out a minute later; a receipt or a kitchen alert cannot, and
+         -- must never wait behind a backlog of them.
+         ORDER BY (kind = 'giveaway_nudge'), scheduled_for
          LIMIT $3
          FOR UPDATE SKIP LOCKED
        )
@@ -150,7 +158,7 @@ async function loadOrder(orderId: string): Promise<OrderSnapshot | null> {
               channel, status, payment_status, payment_method, schedule_type, scheduled_for,
               estimated_for, subtotal_cents, discount_cents, tax_cents, delivery_fee_cents,
               tip_cents, total_cents, gift_card_applied_cents, address_json, instructions,
-              acknowledged_at
+              acknowledged_at, created_at
        FROM orders WHERE id = ?`,
     )
     .bind(orderId)
@@ -215,6 +223,14 @@ class PermanentFailure extends Error {}
 
 /** Thrown when the row should wait for credentials rather than spend an attempt. */
 class ParkForSetup extends Error {}
+
+/**
+ * Thrown when a row should quietly not be sent — a nudge to someone who has
+ * since unsubscribed, or one still queued when the giveaway closed. Marked
+ * `cancelled` rather than `failed`: nothing went wrong, and a failed row is
+ * something a person is expected to look into.
+ */
+class SkipDelivery extends Error {}
 
 async function deliver(row: OutboxRow): Promise<void> {
   const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
@@ -489,6 +505,77 @@ async function deliver(row: OutboxRow): Promise<void> {
       return;
     }
 
+    /**
+     * "You're in the Thanksgiving Giveaway", to a customer whose order earned
+     * an entry. Queued by `recordGiveawayEntry` in the same transaction as the
+     * entry itself, so there is always an entry to describe.
+     */
+    case "giveaway_entry": {
+      if (!orderId) throw new PermanentFailure("giveaway entry payload has no orderId");
+      const order = await loadOrder(orderId);
+      if (!order) throw new PermanentFailure(`order ${orderId} no longer exists`);
+      if (order.status === "cancelled") throw new SkipDelivery("order was cancelled");
+      const [giveaway, entry] = await Promise.all([
+        loadGiveaway(),
+        getD1()
+          .prepare("SELECT entry_number, giveaway_id FROM giveaway_entries WHERE order_id = ?")
+          .bind(orderId)
+          .first<{ entry_number: number; giveaway_id: string }>(),
+      ]);
+      if (!giveaway || !entry) throw new PermanentFailure("no giveaway entry for this order");
+      const to = row.recipient ?? order.customer_email;
+      if (!to) throw new PermanentFailure("no recipient address");
+      const message = await renderGiveawayEntry(order, {
+        entryNumber: Number(entry.entry_number),
+        giveaway,
+        totalEntries: await entriesForEmail(to, entry.giveaway_id),
+      });
+      await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+      return;
+    }
+
+    /**
+     * A giveaway nudge to a past customer — marketing, so it is the one kind
+     * that checks consent at the moment of sending, not just when it was
+     * queued. Someone who unsubscribed from the first nudge on Monday must not
+     * receive the second on Friday because it was queued on Sunday.
+     */
+    case "giveaway_nudge": {
+      const to = row.recipient ?? "";
+      if (!to) throw new PermanentFailure("nudge has no recipient");
+      const variant = payload.variant ?? payload.nudge;
+      if (!isNudgeKind(variant)) throw new PermanentFailure(`unknown nudge "${String(variant)}"`);
+      const giveaway = await loadGiveaway();
+      // A nudge still queued once entries have closed would invite someone to
+      // order for a chance that no longer exists.
+      if (giveawayStatus(giveaway, Date.now()) !== "open" || !giveaway) throw new SkipDelivery("the giveaway is not open");
+      if (!payload.test && (await isOptedOut(to))) throw new SkipDelivery("recipient unsubscribed");
+      const base = await publicBaseUrl();
+      if (!base) throw new ParkForSetup("a nudge needs PUBLIC_BASE_URL for its unsubscribe link");
+      const query = await unsubscribeQuery(to);
+      const message = await renderGiveawayNudge({
+        name: typeof payload.name === "string" ? payload.name : "",
+        variant,
+        giveaway,
+        entries: await entriesForEmail(to, giveaway.id),
+        unsubscribeHref: `${base}/unsubscribe?${query}`,
+        test: Boolean(payload.test),
+      });
+      await sendEmail({
+        to,
+        subject: message.emailSubject,
+        text: message.emailText,
+        html: message.emailHtml,
+        // RFC 8058: the mail client's own "Unsubscribe" button, which posts
+        // to this URL without the customer ever opening the email.
+        headers: {
+          "List-Unsubscribe": `<${base}/api/marketing/unsubscribe?${query}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+      return;
+    }
+
     default:
       throw new PermanentFailure(`unknown notification kind "${row.kind}"`);
   }
@@ -512,6 +599,13 @@ async function markSent(row: OutboxRow, now: number): Promise<void> {
     giftCardPurchaseId: payload.giftCardPurchaseId ?? null,
     giftCardId: payload.giftCardId ?? null,
     reference: payload.reference ?? null,
+    // Which giveaway email this was. Kept because the nudge screen counts
+    // progress by `sendId` and "already nudged" by `campaign` + `nudge`; the
+    // customer's name, which the payload also carried, is dropped.
+    giveawayId: payload.giveawayId ?? null,
+    sendId: payload.sendId ?? null,
+    campaign: payload.campaign ?? null,
+    nudge: payload.nudge ?? null,
     redacted: true,
   });
   await getD1()
@@ -540,6 +634,13 @@ async function markRetry(row: OutboxRow, error: string, now: number): Promise<bo
     .bind(error.slice(0, 500), attempts, now + backoffMs(attempts), now, row.id)
     .run();
   return true;
+}
+
+async function markSkipped(row: OutboxRow, reason: string, now: number): Promise<void> {
+  await getD1()
+    .prepare("UPDATE notification_outbox SET status = 'cancelled', last_error = ?, updated_at = ? WHERE id = ?")
+    .bind(reason.slice(0, 500), now, row.id)
+    .run();
 }
 
 async function markFailed(row: OutboxRow, error: string, now: number): Promise<void> {
@@ -580,8 +681,11 @@ async function park(row: OutboxRow, reason: string, now: number): Promise<void> 
 async function releaseParkedRows(now: number): Promise<number> {
   const result = await getD1()
     .prepare(
+      // GREATEST, not a plain overwrite: a row parked with a time still ahead
+      // of it — a paced giveaway nudge — keeps its place rather than being
+      // released early alongside everything else.
       `UPDATE notification_outbox
-         SET status = 'pending', scheduled_for = ?, last_error = NULL, updated_at = ?
+         SET status = 'pending', scheduled_for = GREATEST(scheduled_for, ?), last_error = NULL, updated_at = ?
        WHERE status = 'pending_provider_setup'`,
     )
     .bind(now, now)
@@ -615,7 +719,9 @@ export async function dispatchOutbox(options: { limit?: number; now?: number } =
       outcome.sent += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof ParkForSetup || error instanceof ChannelNotConfiguredError) {
+      if (error instanceof SkipDelivery) {
+        await markSkipped(row, message, Date.now());
+      } else if (error instanceof ParkForSetup || error instanceof ChannelNotConfiguredError) {
         await park(row, message, Date.now());
         outcome.parked += 1;
       } else if (error instanceof PermanentFailure || (error instanceof ChannelError && !error.retryable)) {

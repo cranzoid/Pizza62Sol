@@ -47,6 +47,7 @@ import {
   CloverDeclinedError,
 } from "@/lib/clover";
 import { applyPaymentApproved } from "@/lib/payment-completion";
+import { recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
@@ -1931,6 +1932,9 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           price,
           giftCardAppliedCents,
           amountDueCents,
+          // `applyPaymentApproved` has just recorded it; this only reads it back
+          // (idempotently) so the confirmation screen can show the number.
+          giveawayEntryNumber: await recordGiveawayEntrySafely(orderId),
         };
       } catch (error) {
         const declined = error instanceof CloverDeclinedError;
@@ -2068,6 +2072,11 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         );
       }
     }
+    // Settled the instant it committed, so a qualifying order has earned its
+    // giveaway entry now. In its own transaction after the order's, never
+    // inside it: see lib/giveaway-store.ts on why a promotion must not be able
+    // to fail an order. It never throws, and the cron sweep catches a miss.
+    const giveawayEntryNumber = await recordGiveawayEntrySafely(orderId);
     // An order that is already settled — pay at store, or a bill a gift card
     // covered outright — is real the instant it commits, so it is dispatched now
     // rather than waiting up to a minute for the cron floor. Deliberately not
@@ -2087,6 +2096,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       price,
       giftCardAppliedCents,
       amountDueCents,
+      giveawayEntryNumber,
     };
   } catch (error) {
     await getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ? AND status = 'pending'").bind(keyHash).run();

@@ -96,7 +96,8 @@ export const BASE_SECURITY_HEADERS: Record<string, string> = {
  * place. What these paths need on top of the baseline is the recognition that
  * their *own URL* is a credential.
  */
-const TOKEN_BEARING_PATHS = ["/track", "/feedback", "/order/return"];
+// `/unsubscribe` carries a signed link that works for exactly one address.
+const TOKEN_BEARING_PATHS = ["/track", "/feedback", "/order/return", "/unsubscribe"];
 
 export function isTokenBearingPath(pathname: string): boolean {
   return TOKEN_BEARING_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));

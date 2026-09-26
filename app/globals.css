@@ -2004,3 +2004,49 @@ fieldset.clover-card-fields {
 @media (max-width: 360px) {
   .giftcard-amounts button { font-size: 18px; }
 }
+
+/* ---------------------------------------------------------------------------
+   The Thanksgiving Giveaway — Pizza 62 turns one.
+   Green and yellow, the same pairing as the gift card and the giveaway emails,
+   so it reads as one campaign wherever a customer meets it.
+   --------------------------------------------------------------------------- */
+.giveaway-strip { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 10px clamp(20px, 4vw, 68px); background: var(--green); color: var(--paper); font-size: 12px; line-height: 1.45; text-align: center; }
+.giveaway-strip b { color: var(--yellow); }
+.giveaway-strip a { display: inline-flex; align-items: center; gap: 8px; flex: none; border: 1px solid rgba(255,255,255,.55); border-radius: 999px; padding: 6px 13px; color: inherit; font-size: 10px; font-weight: 800; text-transform: uppercase; white-space: nowrap; }
+.giveaway-strip a:hover { background: var(--yellow); border-color: var(--yellow); color: var(--ink); }
+.giveaway-strip a svg { width: 14px; height: 14px; }
+@media (max-width: 700px) { .giveaway-strip { flex-direction: column; gap: 8px; } }
+
+.giveaway-hint { margin: 10px 0; padding: 10px 12px; border: 1px dashed var(--green); background: #eef4ef; color: var(--green); font-size: 12px; line-height: 1.45; }
+.giveaway-hint a { color: inherit; font-weight: 800; text-decoration: underline; }
+.giveaway-hint--in { border-style: solid; background: var(--green); color: var(--paper); }
+
+.giveaway-entry-badge { display: grid; gap: 4px; justify-items: center; margin: 18px 0; padding: 16px; background: var(--green); color: var(--paper); border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--yellow); }
+.giveaway-entry-badge span { font-size: 10px; font-weight: 900; letter-spacing: 1.4px; text-transform: uppercase; color: var(--yellow); }
+.giveaway-entry-badge b { font-family: Consolas, "Courier New", monospace; font-size: 30px; letter-spacing: 3px; }
+.giveaway-entry-badge small { font-size: 12px; }
+.giveaway-entry-badge a { color: inherit; text-decoration: underline; }
+
+/* Admin → Giveaway */
+.giveaway-nudges { margin: 14px 0; }
+.giveaway-nudge { display: grid; align-content: start; gap: 8px; padding: 18px; border: 1px solid #dfe3dc; border-radius: 8px; background: #fbfcfa; }
+.giveaway-nudge h3 { margin: 0; font-size: 18px; }
+.giveaway-nudge p { margin: 0; }
+.giveaway-nudge ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.giveaway-winner { display: grid; justify-items: center; gap: 6px; margin: 6px 0 16px; padding: 26px 18px; border-radius: 10px; background: #173b2c; color: white; text-align: center; }
+.giveaway-winner > span { font-size: 11px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; color: var(--yellow); }
+.giveaway-winner strong { font-family: Consolas, "Courier New", monospace; font-size: clamp(46px, 9vw, 82px); line-height: 1; letter-spacing: 4px; }
+.giveaway-winner p { margin: 4px 0 0; font-size: 16px; }
+.giveaway-winner small { opacity: .75; }
+
+/* Till: birthday, month and day only */
+.till-birthday { display: grid; gap: 6px; font-size: 10px; font-weight: 900; letter-spacing: .6px; text-transform: uppercase; }
+.till-birthday > div { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; }
+.till-birthday small { font-weight: 600; letter-spacing: 0; text-transform: none; color: #5b6358; }
+
+/* Customers: import preview and birthdays */
+.import-preview { display: grid; gap: 10px; margin: 14px 0; padding: 16px; border: 1px solid #dfe3dc; border-radius: 8px; background: #fbfcfa; }
+.import-preview h3, .import-preview p { margin: 0; }
+.birthday-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.birthday-list li { display: grid; gap: 2px; font-size: 14px; }
+.birthday-list small { color: #5b6358; }
