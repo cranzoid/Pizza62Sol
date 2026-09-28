@@ -32,8 +32,10 @@ import {
 } from "@/lib/giveaway-store";
 import {
   cancelNudge,
+  isNudgeChannel,
   NudgeError,
   nudgeAudience,
+  nudgeChannelBlocker,
   nudgeSends,
   queueNudge,
   queueTestNudge,
@@ -103,16 +105,20 @@ export async function GET(request: Request) {
     const now = Date.now();
     const page = Math.max(0, Number(url.searchParams.get("page") ?? 0) || 0);
     const query = url.searchParams.get("q") ?? "";
-    const [stats, list, picks, sends, announce, lastCall, volume, email] = await Promise.all([
-      giveawayStats(giveaway.id, torontoMidnight(now)),
-      listGiveawayEntries(giveaway.id, { query, limit: PAGE_SIZE, offset: page * PAGE_SIZE, searchContact: contact }),
-      pickedEntries(giveaway.id),
-      nudgeSends(giveaway.id),
-      nudgeAudience(giveaway.id, "announce"),
-      nudgeAudience(giveaway.id, "last_call"),
-      recentEmailVolume(now),
-      emailConfig(),
-    ]);
+    const [stats, list, picks, sends, announce, lastCall, smsAnnounce, smsLastCall, volume, email, smsBlocker] =
+      await Promise.all([
+        giveawayStats(giveaway.id, torontoMidnight(now)),
+        listGiveawayEntries(giveaway.id, { query, limit: PAGE_SIZE, offset: page * PAGE_SIZE, searchContact: contact }),
+        pickedEntries(giveaway.id),
+        nudgeSends(giveaway.id),
+        nudgeAudience(giveaway.id, "announce"),
+        nudgeAudience(giveaway.id, "last_call"),
+        nudgeAudience(giveaway.id, "announce", "sms"),
+        nudgeAudience(giveaway.id, "last_call", "sms"),
+        recentEmailVolume(now),
+        emailConfig(),
+        nudgeChannelBlocker("sms"),
+      ]);
     const audience = (result: Awaited<ReturnType<typeof nudgeAudience>>) => ({
       ready: result.recipients.length,
       optedOut: result.optedOut,
@@ -129,9 +135,12 @@ export async function GET(request: Request) {
       pageSize: PAGE_SIZE,
       picks: picks.map((entry) => masked(entry, contact)),
       nudges: { announce: audience(announce), last_call: audience(lastCall) },
+      smsNudges: { announce: audience(smsAnnounce), last_call: audience(smsLastCall) },
       sends,
       emailVolume: volume,
       emailReady: email !== null,
+      // Why texts cannot go yet, in words the owner can act on, or null.
+      smsBlocker,
       canPick: user.role === "owner",
       canViewContact: contact,
       me: { email: user.email, name: user.name },
@@ -152,8 +161,8 @@ type Body =
       winnerAnnouncedOn?: string;
       nudgePerDay?: number;
     }
-  | { action: "nudge.send"; nudge?: string; perDay?: number }
-  | { action: "nudge.test"; variant?: string; email?: string }
+  | { action: "nudge.send"; nudge?: string; perDay?: number; channel?: string }
+  | { action: "nudge.test"; variant?: string; email?: string; phone?: string; channel?: string }
   | { action: "nudge.stop"; sendId?: string }
   | { action: "winner.pick" };
 
@@ -237,15 +246,19 @@ export async function POST(request: Request) {
         if (!Number.isSafeInteger(perDay) || perDay < 1 || perDay > 5000) {
           return Response.json({ error: "The daily limit must be between 1 and 5,000." }, { status: 422 });
         }
-        const result = await queueNudge({ campaign: giveaway.id, nudge: body.nudge, perDay, actorId: user.id, now });
-        // Remember the pace, so the next press starts from what was used last.
-        if (perDay !== giveaway.nudgePerDay) await saveGiveaway({ ...giveaway, nudgePerDay: perDay }, user.id);
+        const channel = isNudgeChannel(body.channel) ? body.channel : "email";
+        const result = await queueNudge({ campaign: giveaway.id, nudge: body.nudge, perDay, actorId: user.id, channel, now });
+        // Remember the email pace, so the next press starts from what was used
+        // last. The text pace is not stored: it has no quota to protect.
+        if (channel === "email" && perDay !== giveaway.nudgePerDay) {
+          await saveGiveaway({ ...giveaway, nudgePerDay: perDay }, user.id);
+        }
         await writeAudit({
           actorId: user.id,
           action: "giveaway.nudge",
           targetType: "giveaway",
           targetId: giveaway.id,
-          next: { nudge: body.nudge, label: NUDGES[body.nudge].label, ...result, perDay },
+          next: { nudge: body.nudge, label: NUDGES[body.nudge].label, channel, ...result, perDay },
         });
         dispatchSoon();
         return Response.json({ ok: true, ...result });
@@ -253,7 +266,9 @@ export async function POST(request: Request) {
 
       case "nudge.test": {
         const variant = isNudgeKind(body.variant) ? body.variant : "announce";
-        await queueTestNudge({ campaign: giveaway.id, variant, email: String(body.email ?? user.email), name: user.name, now });
+        const channel = isNudgeChannel(body.channel) ? body.channel : "email";
+        const to = channel === "sms" ? String(body.phone ?? "") : String(body.email ?? user.email);
+        await queueTestNudge({ campaign: giveaway.id, variant, to, name: user.name, channel, now });
         dispatchSoon();
         return Response.json({ ok: true });
       }

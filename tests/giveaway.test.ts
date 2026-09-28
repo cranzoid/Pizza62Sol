@@ -551,7 +551,7 @@ withDb("a nudge reaches buyers and imported customers, never the unsubscribed, a
   assert.equal(await isOptedOut(leaver), true);
 
   const before = await nudgeAudience(GIVEAWAY, "announce");
-  const emails = new Set(before.recipients.map((recipient) => recipient.email));
+  const emails = new Set(before.recipients.map((recipient) => recipient.contact));
   assert.ok(emails.has(buyer));
   assert.ok(emails.has(imported));
   assert.ok(!emails.has(leaver));

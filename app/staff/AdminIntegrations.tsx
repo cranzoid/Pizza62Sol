@@ -40,6 +40,7 @@ type Readiness = {
   email: boolean;
   emailProvider: string | null;
   sms: boolean;
+  marketingSms: boolean;
   voice: boolean;
   restaurantEmail: boolean;
   restaurantEmailAddress: string | null;
@@ -49,7 +50,7 @@ type Readiness = {
 type Payload = {
   encryptionConfigured: boolean;
   secrets: SecretStatus[];
-  callbacks: { cloverWebhook: string; cloverReturn: string; twilioVoiceAck: string } | null;
+  callbacks: { cloverWebhook: string; cloverReturn: string; twilioVoiceAck: string; twilioSmsInbound: string } | null;
   readiness: Readiness;
 };
 
@@ -154,6 +155,16 @@ const TWILIO_FIELDS: FieldSpec[] = [
       { value: "true", label: "On" },
     ],
     hint: "Leave off until the Twilio number is registered for business texting. Canadian carriers silently drop unregistered texts, so customers would think they were told and never be.",
+  },
+  {
+    key: "MARKETING_SMS_ENABLED",
+    label: "Marketing texts (giveaway nudges)",
+    type: "select",
+    options: [
+      { value: "false", label: "Off — recommended until registered" },
+      { value: "true", label: "On" },
+    ],
+    hint: "Separate from order texts. A bulk send from an unregistered number is the traffic most likely to get it filtered, which would hurt order texts too. Paste the SMS reply address above into Twilio before turning this on, so STOP replies are honoured.",
   },
 ];
 
@@ -277,6 +288,10 @@ export function AdminIntegrationsPanel() {
               value={`${data.callbacks.cloverReturn}?status=failed`}
             />
             <CopyRow label="Twilio → Voice callback (set automatically)" value={data.callbacks.twilioVoiceAck} />
+            <CopyRow
+              label="Twilio → Phone Numbers → your number → Messaging → A message comes in (Webhook, HTTP POST)"
+              value={data.callbacks.twilioSmsInbound}
+            />
           </div>
         </section>
       ) : (

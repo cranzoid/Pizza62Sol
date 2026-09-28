@@ -159,6 +159,7 @@ withDb("builds the dashboard callback URLs from the public base URL", async () =
     cloverWebhook: "https://order.pizza62.ca/api/payments/clover/webhook",
     cloverReturn: "https://order.pizza62.ca/order/return",
     twilioVoiceAck: "https://order.pizza62.ca/api/notifications/voice/ack",
+    twilioSmsInbound: "https://order.pizza62.ca/api/notifications/sms/inbound",
   });
 });
 

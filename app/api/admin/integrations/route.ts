@@ -32,7 +32,7 @@ import {
   type IntegrationSecretKey,
 } from "@/lib/integration-secrets";
 import { cloverCheckoutConfigured, cloverWebhookConfigured } from "@/lib/clover";
-import { emailConfig, publicBaseUrl, twilioConfig } from "@/lib/notifications/config";
+import { emailConfig, marketingSmsEnabled, publicBaseUrl, twilioConfig } from "@/lib/notifications/config";
 import {
   ChannelNotConfiguredError,
   placeAcknowledgementCall,
@@ -51,6 +51,7 @@ const ENUMERATED: Record<string, readonly string[]> = {
   CLOVER_ENVIRONMENT: ["sandbox", "production"],
   EMAIL_PROVIDER: ["resend", "sendgrid"],
   CUSTOMER_SMS_ENABLED: ["true", "false"],
+  MARKETING_SMS_ENABLED: ["true", "false"],
 };
 
 /** E.164, which is what Twilio requires and what a North American number is not by default. */
@@ -100,13 +101,14 @@ export async function GET(request: Request) {
     await ensureDatabase();
     await requireOwnerOrSettings(request);
 
-    const [secrets, base, checkout, webhook, email, twilio, business] = await Promise.all([
+    const [secrets, base, checkout, webhook, email, twilio, marketingSms, business] = await Promise.all([
       describeIntegrationSecrets(),
       publicBaseUrl(),
       cloverCheckoutConfigured(),
       cloverWebhookConfigured(),
       emailConfig(),
       twilioConfig(),
+      marketingSmsEnabled(),
       getSetting<{ email?: string }>("business").catch(() => ({ email: undefined })),
     ]);
 
@@ -119,6 +121,10 @@ export async function GET(request: Request) {
           cloverWebhook: `${base}/api/payments/clover/webhook`,
           cloverReturn: `${base}/order/return`,
           twilioVoiceAck: `${base}/api/notifications/voice/ack`,
+          // Unlike the voice callback (passed inline with each call), Twilio has
+          // no per-message way to say where a reply should go — this has to be
+          // pasted into the number's own console configuration once.
+          twilioSmsInbound: `${base}/api/notifications/sms/inbound`,
         }
       : null;
 
@@ -135,6 +141,7 @@ export async function GET(request: Request) {
         email: email !== null,
         emailProvider: email?.provider ?? null,
         sms: twilio !== null,
+        marketingSms: twilio !== null && marketingSms,
         voice: twilio !== null && base !== null,
         restaurantEmail: Boolean(business.email),
         // The address itself, not just whether one exists. "The restaurant is

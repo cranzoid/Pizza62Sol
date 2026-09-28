@@ -1183,6 +1183,14 @@ export const customerContacts = pgTable(
     /** Last visit as the old POS reported it, for imported customers. */
     lastVisitAt: bigint("last_visit_at", { mode: "number" }),
     marketingOptOutAt: bigint("marketing_opt_out_at", { mode: "number" }),
+    /**
+     * A reply of STOP to a marketing text, tracked separately from
+     * `marketingOptOutAt`. The two channels have different unsubscribe
+     * mechanisms (a link vs. a reply keyword) and a customer may reasonably
+     * want texts but not email, or the other way round, so one opting out
+     * does not silence the other. See `lib/marketing-consent.ts`.
+     */
+    smsOptOutAt: bigint("sms_opt_out_at", { mode: "number" }),
     ...timestamps,
   },
   (table) => [
@@ -1203,12 +1211,16 @@ export const customerContacts = pgTable(
  * many people. The individual emails are `giveaway_nudge` rows in
  * `notification_outbox`, which carry this row's id so progress can be counted.
  */
+export const MARKETING_SEND_CHANNELS = ["email", "sms"] as const;
+
 export const marketingSends = pgTable(
   "marketing_sends",
   {
     id: text("id").primaryKey(),
     campaign: text("campaign").notNull(),
     nudge: text("nudge").notNull(),
+    /** Which outbox kind this send's rows live under — `giveaway_nudge` or `giveaway_nudge_sms`. */
+    channel: text("channel").notNull().default("email"),
     recipientCount: integer("recipient_count").notNull(),
     skippedCount: integer("skipped_count").notNull().default(0),
     perDay: integer("per_day").notNull(),
@@ -1219,6 +1231,7 @@ export const marketingSends = pgTable(
   },
   (table) => [
     index("marketing_sends_campaign_idx").on(table.campaign, table.createdAt),
+    check("marketing_sends_channel", inList("channel", MARKETING_SEND_CHANNELS)),
     check("marketing_sends_counts_nonneg", nonNegative("recipient_count", "skipped_count")),
     check("marketing_sends_per_day_positive", sql`per_day > 0`),
   ],

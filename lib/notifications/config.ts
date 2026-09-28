@@ -83,6 +83,21 @@ export async function customerSmsEnabled(): Promise<boolean> {
 }
 
 /**
+ * Whether a marketing text (a giveaway nudge, say) may be sent at all.
+ *
+ * Deliberately a separate flag from `customerSmsEnabled`, not a shared one.
+ * The two are different risk decisions: a one-off order text is additive and
+ * silent-failure-tolerant, while a marketing blast is exactly the kind of
+ * traffic most likely to get an unregistered long code carrier-filtered or
+ * flagged — which would then degrade the transactional texts riding the same
+ * number. The owner turns this on separately, after registering the number
+ * for A2P traffic or accepting the risk knowingly.
+ */
+export async function marketingSmsEnabled(): Promise<boolean> {
+  return readIntegrationFlag("MARKETING_SMS_ENABLED");
+}
+
+/**
  * Absolute base URL for links and Twilio callbacks.
  *
  * The dispatcher has no incoming request to derive an origin from — it runs on a

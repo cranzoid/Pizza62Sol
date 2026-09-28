@@ -137,6 +137,40 @@ export function normalizePhone(value: string): string {
   return value.replace(/\D/g, "");
 }
 
+/**
+ * The 10-digit NANP number underneath whatever a customer, the till or a POS
+ * export wrote — with a leading "1" country code stripped, if there is one.
+ *
+ * Without this, the same person shows up as two different identities
+ * depending on whether they typed a leading 1 — `"9055551234"` from one order
+ * and `"19055551234"` from another — which would double-count them in an SMS
+ * audience and let an opt-out on one form silently fail to match the other.
+ * Empty when the number cannot be a real 10-digit NANP number.
+ */
+export function canonicalPhone10(value: string): string {
+  const digits = normalizePhone(value);
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits.length === 10 ? digits : "";
+}
+
+/**
+ * The same reduction as `canonicalPhone10`, as a SQL expression over `column`,
+ * so a query can group and join on the identity a `WHERE` clause could not
+ * otherwise express without reading every row into JavaScript first.
+ */
+export function phone10Sql(column: string): string {
+  return `(CASE WHEN length(regexp_replace(${column}, '\\D', '', 'g')) = 11
+                 AND regexp_replace(${column}, '\\D', '', 'g') LIKE '1%'
+                THEN substring(regexp_replace(${column}, '\\D', '', 'g') from 2)
+                ELSE regexp_replace(${column}, '\\D', '', 'g') END)`;
+}
+
+/** E.164 for Twilio's `To`, or null when there is no real NANP number to send to. */
+export function toE164(value: string): string | null {
+  const canonical = canonicalPhone10(value);
+  return canonical ? `+1${canonical}` : null;
+}
+
 export type ImportedContact = {
   name: string;
   email: string | null;
