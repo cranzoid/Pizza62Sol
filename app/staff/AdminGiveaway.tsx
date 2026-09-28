@@ -41,6 +41,7 @@ type Entry = {
 type Send = {
   id: string;
   nudge: string;
+  channel: "email" | "sms";
   recipient_count: number;
   skipped_count: number;
   per_day: number;
@@ -67,9 +68,11 @@ type Overview = {
   pageSize: number;
   picks: Entry[];
   nudges: Record<NudgeKind, Audience>;
+  smsNudges: Record<NudgeKind, Audience>;
   sends: Send[];
   emailVolume: { sent: number; rateLimited: number };
   emailReady: boolean;
+  smsBlocker: string | null;
   canPick: boolean;
   canViewContact: boolean;
   me: { email: string; name: string };
@@ -162,6 +165,7 @@ export function AdminGiveawayPanel() {
       {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
 
       <NudgesPanel data={data} busy={busy} act={act} />
+      <TextNudgesPanel data={data} busy={busy} act={act} />
       <WinnerPanel data={data} busy={busy} act={act} />
 
       <section className="staff-panel">
@@ -264,7 +268,7 @@ function NudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: 
           const schedule = planNudgeSchedule(audience.ready, perDayNumber, data.now);
           const finishes = schedule.at(-1) ?? null;
           const lateForClose = finishes !== null && finishes >= giveaway.endsAt;
-          const lastSend = data.sends.find((send) => send.nudge === nudge);
+          const lastSend = data.sends.find((send) => send.nudge === nudge && send.channel !== "sms");
           return (
             <article className="giveaway-nudge" key={nudge}>
               <h3>{NUDGES[nudge].label}</h3>
@@ -329,7 +333,7 @@ function NudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: 
               {data.sends.map((send) => (
                 <tr key={send.id}>
                   <th scope="row">{when(send.created_at)}<small>by {send.created_by_name ?? "staff"}</small></th>
-                  <td>{NUDGES[send.nudge as NudgeKind]?.label ?? send.nudge}<small>{send.recipient_count} people{send.skipped_count ? ` · ${send.skipped_count} left out` : ""}</small></td>
+                  <td>{NUDGES[send.nudge as NudgeKind]?.label ?? send.nudge} · {send.channel === "sms" ? "text" : "email"}<small>{send.recipient_count} people{send.skipped_count ? ` · ${send.skipped_count} left out` : ""}</small></td>
                   <td>{send.sent} delivered<small>{[send.waiting ? `${send.waiting} waiting` : "", send.failed ? `${send.failed} failed` : "", send.stopped ? `${send.stopped} stopped or skipped` : ""].filter(Boolean).join(" · ") || "done"}</small></td>
                   <td>{send.per_day}/day<small>{send.last_send_at ? `last one ${when(send.last_send_at)}` : ""}</small></td>
                   <td>
@@ -337,7 +341,7 @@ function NudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: 
                       <button
                         className="staff-button"
                         disabled={busy}
-                        onClick={() => void act({ action: "nudge.stop", sendId: send.id }, (result) => `Stopped ${result.stopped} email${result.stopped === 1 ? "" : "s"} that had not gone yet.`)}
+                        onClick={() => void act({ action: "nudge.stop", sendId: send.id }, (result) => `Stopped ${result.stopped} ${send.channel === "sms" ? "text" : "email"}${result.stopped === 1 ? "" : "s"} that had not gone yet.`)}
                       >
                         Stop the rest
                       </button>
@@ -349,6 +353,120 @@ function NudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: 
           </table>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * The same two nudges, by text, to a phone-number audience.
+ *
+ * The send button stays locked until a test text has gone out from this
+ * screen, so the first text anyone receives is one the owner has already seen
+ * arrive on their own phone. The progress of a text send shows in the log in
+ * the email panel above, alongside the emails.
+ */
+function TextNudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: Act }) {
+  const giveaway = data.giveaway as GiveawaySetting;
+  const [perDay, setPerDay] = useState("40");
+  const [testPhone, setTestPhone] = useState("");
+  const [tested, setTested] = useState<Partial<Record<NudgeKind, boolean>>>({});
+  const [confirming, setConfirming] = useState<NudgeKind | null>(null);
+  const perDayNumber = Math.max(1, Math.trunc(Number(perDay) || 0));
+  const open = data.status === "open";
+  const ready = data.smsBlocker === null;
+
+  return (
+    <section className="staff-panel">
+      <div className="staff-panel-head">
+        <h2>Text past customers</h2>
+        <span className="live-chip">Separate from email</span>
+      </div>
+      <p className="editor-hint">
+        Goes to every phone number on a paid order, plus imported customers with a phone number — so someone may get both an email and a text.
+        Anyone who has replied STOP is always left out, and each text nudge reaches each number once.
+        Every text says &ldquo;Reply STOP to opt out&rdquo;, as Canadian anti-spam law requires.
+      </p>
+      {data.smsBlocker ? <p className="form-error">{data.smsBlocker}</p> : null}
+      <div className="settings-form">
+        <label>
+          Texts per day
+          <input type="number" min={1} max={5000} value={perDay} onChange={(event) => setPerDay(event.target.value)} />
+        </label>
+        <label className="field-wide">
+          Test texts go to
+          <input value={testPhone} onChange={(event) => setTestPhone(event.target.value)} inputMode="tel" placeholder="905-555-0100" />
+        </label>
+      </div>
+      <p className="secure-note">
+        Start small: an unregistered Twilio number that suddenly sends hundreds of texts is the most likely to be filtered by carriers.
+        Send yourself a test, then send at a modest daily pace and watch the delivered and failed counts before raising it.
+      </p>
+
+      <div className="staff-grid giveaway-nudges">
+        {(Object.keys(NUDGES) as NudgeKind[]).map((nudge) => {
+          const audience = data.smsNudges[nudge];
+          const schedule = planNudgeSchedule(audience.ready, perDayNumber, data.now);
+          const finishes = schedule.at(-1) ?? null;
+          const lateForClose = finishes !== null && finishes >= giveaway.endsAt;
+          const lastSend = data.sends.find((send) => send.nudge === nudge && send.channel === "sms");
+          return (
+            <article className="giveaway-nudge" key={nudge}>
+              <h3>{NUDGES[nudge].label} · text</h3>
+              <p>{NUDGES[nudge].description}</p>
+              <ul>
+                <li><b>{audience.ready}</b> numbers ready</li>
+                {audience.alreadyNudged ? <li>{audience.alreadyNudged} already texted this nudge</li> : null}
+                {audience.optedOut ? <li>{audience.optedOut} replied STOP — never texted</li> : null}
+              </ul>
+              {lastSend ? <p className="secure-note">Last sent {when(lastSend.created_at)} by {lastSend.created_by_name ?? "staff"} to {lastSend.recipient_count}.</p> : <p className="secure-note">Not sent yet.</p>}
+              {audience.ready ? (
+                <p className="secure-note">
+                  At {perDayNumber} a day, from 11 a.m. to 7 p.m.: {schedule.length > 1 ? `first ${when(schedule[0])}, last ${when(finishes)}` : `goes ${when(schedule[0])}`}.
+                  {lateForClose ? <strong> That runs past the close — raise the daily pace.</strong> : null}
+                </p>
+              ) : null}
+              <button
+                className="text-button"
+                disabled={!open || !ready || busy || !testPhone.trim()}
+                onClick={async () => {
+                  const result = await act(
+                    { action: "nudge.test", channel: "sms", variant: nudge, phone: testPhone },
+                    () => `Test text sent to ${testPhone}. It starts with [TEST]. Check it arrived before sending to everyone.`,
+                  );
+                  if (result) setTested((current) => ({ ...current, [nudge]: true }));
+                }}
+              >
+                1. Text me a test
+              </button>
+              {confirming === nudge ? (
+                <div className="pager">
+                  <button
+                    className="staff-button"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirming(null);
+                      void act({ action: "nudge.send", channel: "sms", nudge, perDay: perDayNumber }, (result) =>
+                        `${NUDGES[nudge].label} texts queued for ${result.queued} number${result.queued === 1 ? "" : "s"}.`);
+                    }}
+                  >
+                    Yes, text {audience.ready}
+                  </button>
+                  <button className="staff-button" onClick={() => setConfirming(null)}>Cancel</button>
+                </div>
+              ) : (
+                <button
+                  className="staff-button"
+                  disabled={!open || !ready || !audience.ready || !tested[nudge] || busy}
+                  onClick={() => setConfirming(nudge)}
+                  title={!tested[nudge] ? "Send yourself a test text first" : undefined}
+                >
+                  {!open ? "Giveaway is not open" : `2. Text ${audience.ready} number${audience.ready === 1 ? "" : "s"}`}
+                </button>
+              )}
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 }

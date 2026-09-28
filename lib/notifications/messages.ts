@@ -502,7 +502,9 @@ export async function renderGiveawayNudge(input: {
     emailSubject: `${input.test ? "[TEST] " : ""}${subject}`,
     emailText,
     emailHtml,
-    smsBody: `Pizza 62 turns one! Every ${minimum}+ order is an entry to win ${giveaway.prize}. Entries close ${closes}.`,
+    // A commercial message under CASL like the email, so it names the sender
+    // and says how to stop — STOP is handled by /api/notifications/sms/inbound.
+    smsBody: `${input.test ? "[TEST] " : ""}Pizza 62 turns one! Every ${minimum}+ order before tax is an entry to win ${giveaway.prize}. Entries close ${closes}.${base ? ` ${base.replace(/^https?:\/\//, "")}/giveaway` : ""} Reply STOP to opt out.`,
   };
 }
 

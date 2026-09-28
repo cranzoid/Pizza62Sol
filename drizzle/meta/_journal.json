@@ -57,6 +57,13 @@
       "when": 1790453365789,
       "tag": "0007_giveaway_contacts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790516310487,
+      "tag": "0008_sms_opt_out",
+      "breakpoints": true
     }
   ]
 }

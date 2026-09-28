@@ -32,6 +32,7 @@ import {
 import {
   anyProviderConfigured,
   customerSmsEnabled,
+  marketingSmsEnabled,
   publicBaseUrl,
   restaurantAlertNumber,
   voiceRetryLimit,
@@ -55,7 +56,7 @@ import {
 import { activeFeedbackReward } from "@/lib/rewards";
 import { giveawayStatus, isNudgeKind } from "@/lib/giveaway";
 import { entriesForEmail, loadGiveaway } from "@/lib/giveaway-store";
-import { isOptedOut, unsubscribeQuery } from "@/lib/marketing-consent";
+import { isOptedOut, isSmsOptedOut, unsubscribeQuery } from "@/lib/marketing-consent";
 
 /** Statuses a dispatcher will pick up. Everything else is terminal or parked. */
 const CLAIMABLE = ["pending", "retrying"] as const;
@@ -123,7 +124,7 @@ async function claimDue(limit: number, now: number): Promise<OutboxRow[]> {
          -- Everything else before a giveaway nudge. A nudge is marketing that
          -- can go out a minute later; a receipt or a kitchen alert cannot, and
          -- must never wait behind a backlog of them.
-         ORDER BY (kind = 'giveaway_nudge'), scheduled_for
+         ORDER BY (kind IN ('giveaway_nudge', 'giveaway_nudge_sms')), scheduled_for
          LIMIT $3
          FOR UPDATE SKIP LOCKED
        )
@@ -573,6 +574,37 @@ async function deliver(row: OutboxRow): Promise<void> {
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
       });
+      return;
+    }
+
+    /**
+     * The same nudge as a text. Every check the email makes, made again at
+     * send time for the same reasons — plus the marketing-SMS switch, which
+     * parks rather than fails: the owner turning texts off for an afternoon
+     * should pause the queue, not empty it into `failed`.
+     *
+     * Unlike order texts, the SMS here *is* the message, so a Twilio failure
+     * is allowed to retry the row rather than being swallowed.
+     */
+    case "giveaway_nudge_sms": {
+      const to = row.recipient ?? "";
+      if (!to) throw new PermanentFailure("text nudge has no recipient");
+      const variant = payload.variant ?? payload.nudge;
+      if (!isNudgeKind(variant)) throw new PermanentFailure(`unknown nudge "${String(variant)}"`);
+      const giveaway = await loadGiveaway();
+      if (giveawayStatus(giveaway, Date.now()) !== "open" || !giveaway) throw new SkipDelivery("the giveaway is not open");
+      if (!payload.test && (await isSmsOptedOut(to))) throw new SkipDelivery("recipient replied STOP");
+      if (!(await marketingSmsEnabled())) throw new ParkForSetup("marketing texts are switched off");
+      const message = await renderGiveawayNudge({
+        name: typeof payload.name === "string" ? payload.name : "",
+        variant,
+        giveaway,
+        entries: 0,
+        // Texts unsubscribe by reply, not by link.
+        unsubscribeHref: "",
+        test: Boolean(payload.test),
+      });
+      await sendSms({ to, body: message.smsBody });
       return;
     }
 

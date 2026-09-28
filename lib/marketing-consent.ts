@@ -23,8 +23,16 @@
  *
  * **An opt-out is permanent here.** Importing a customer list never clears
  * one, and nothing in this codebase sends marketing to an address that has it.
+ *
+ * **SMS opt-out is tracked separately from email**, in its own column on the
+ * same `customer_contacts` row. CASL applies the same way to a marketing text
+ * as to a marketing email — sender identification and a working unsubscribe,
+ * here the STOP keyword every carrier and Twilio customer already expects —
+ * but the two channels are opted out independently: a customer who replies
+ * STOP to a text has not thereby unsubscribed from email, and vice versa.
  */
 import { getD1 } from "@/db/runtime";
+import { canonicalPhone10, phone10Sql } from "@/lib/customer-contacts";
 
 const KEY_SETTING = "marketingUnsubscribeKey";
 
@@ -137,4 +145,60 @@ export async function isOptedOut(email: string): Promise<boolean> {
     .bind(normalizeEmail(email))
     .first<{ present: number }>();
   return Boolean(row);
+}
+
+// --- SMS opt-out ---------------------------------------------------------
+
+/** Whether this number (in any format) has replied STOP. */
+export async function isSmsOptedOut(phone: string): Promise<boolean> {
+  const canonical = canonicalPhone10(phone);
+  if (!canonical) return false;
+  const row = await getD1()
+    .prepare(
+      `SELECT 1 AS present FROM customer_contacts WHERE ${phone10Sql("phone")} = ? AND sms_opt_out_at IS NOT NULL`,
+    )
+    .bind(canonical)
+    .first<{ present: number }>();
+  return Boolean(row);
+}
+
+/**
+ * Records that a number wants no more marketing texts — called from the
+ * Twilio inbound-SMS webhook when a reply is STOP (or one of its synonyms).
+ *
+ * Updates every existing row that number appears on, however it was stored
+ * (with or without a leading country code), rather than only an
+ * exact-string match — a customer who typed their number with a leading 1 on
+ * one order and without it on another must not be able to dodge the opt-out
+ * by which order the phone number was read from. Inserts a bare contact row
+ * only when no existing row carries the number at all.
+ */
+export async function recordSmsOptOut(phone: string, now: number = Date.now()): Promise<void> {
+  const canonical = canonicalPhone10(phone);
+  if (!canonical) return;
+  const updated = await getD1()
+    .prepare(
+      `UPDATE customer_contacts SET sms_opt_out_at = COALESCE(sms_opt_out_at, ?), updated_at = ?
+       WHERE ${phone10Sql("phone")} = ?`,
+    )
+    .bind(now, now, canonical)
+    .run();
+  if (updated.meta.changes) return;
+  await getD1()
+    .prepare(
+      `INSERT INTO customer_contacts (id, email, phone, name, source, sms_opt_out_at, created_at, updated_at)
+       VALUES (?, NULL, ?, '', 'unsubscribe', ?, ?, ?)`,
+    )
+    .bind(crypto.randomUUID(), canonical, now, now, now)
+    .run();
+}
+
+/** Reverses a STOP on a reply of START (or a synonym). Not a CASL requirement — a courtesy. */
+export async function recordSmsOptIn(phone: string, now: number = Date.now()): Promise<void> {
+  const canonical = canonicalPhone10(phone);
+  if (!canonical) return;
+  await getD1()
+    .prepare(`UPDATE customer_contacts SET sms_opt_out_at = NULL, updated_at = ? WHERE ${phone10Sql("phone")} = ?`)
+    .bind(now, canonical)
+    .run();
 }
