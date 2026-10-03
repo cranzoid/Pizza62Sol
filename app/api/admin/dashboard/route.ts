@@ -152,8 +152,13 @@ export async function GET(request: Request) {
       });
       itemsByOrder.set(key, list);
     }
+    const giveaway = await loadGiveaway().catch(() => null);
     const serializedOrders = orders.results.map((order) => ({
       ...order,
+      // For the printed entry block; see lib/passprnt.ts.
+      ...(order.giveaway_entry_number && giveaway
+        ? { giveaway_prize: giveaway.prize, giveaway_winner_announced_on: giveaway.winnerAnnouncedOn }
+        : {}),
       customer_phone: canViewContact ? order.customer_phone : undefined,
       customer_email: canViewContact ? order.customer_email : undefined,
       contactRedacted: !canViewContact,
@@ -179,7 +184,7 @@ export async function GET(request: Request) {
       // anyone edits, and a staff screen has no business holding it.
       settings: Object.fromEntries(Object.entries(settings).filter(([key]) => !PRIVATE_SETTING_KEYS.has(key))),
       // What the till needs to say "this order enters the giveaway".
-      giveaway: publicGiveaway(await loadGiveaway().catch(() => null), Date.now()),
+      giveaway: publicGiveaway(giveaway, Date.now()),
       products: products.results.map((product) => ({
         ...product,
         configuration: safeJson(String((product as Record<string, unknown>).configuration_json ?? "{}"), {}),

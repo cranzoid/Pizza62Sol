@@ -85,6 +85,12 @@ function mapsConfigured(): boolean {
   return Boolean(process.env.AZURE_MAPS_CLIENT_ID || process.env.AZURE_MAPS_SUBSCRIPTION_KEY);
 }
 
+// One credential for the life of the process. It caches its token, so only the
+// first address check pays for the managed-identity round trip. A new one per
+// call threw the cache away and made every delivery wait for a fresh token,
+// long enough that the till's ticket could miss its print window.
+let mapsCredential: import("@azure/identity").DefaultAzureCredential | null = null;
+
 async function mapsAuthHeaders(): Promise<Record<string, string> | null> {
   const subscriptionKey = process.env.AZURE_MAPS_SUBSCRIPTION_KEY;
   // A subscription key is the local and CI path. Production uses the Container
@@ -96,8 +102,11 @@ async function mapsAuthHeaders(): Promise<Record<string, string> | null> {
 
   // Imported lazily so that a deployment without Azure Maps — and every test —
   // never loads the Azure identity stack.
-  const { DefaultAzureCredential } = await import("@azure/identity");
-  const token = await new DefaultAzureCredential().getToken("https://atlas.microsoft.com/.default");
+  if (!mapsCredential) {
+    const { DefaultAzureCredential } = await import("@azure/identity");
+    mapsCredential = new DefaultAzureCredential();
+  }
+  const token = await mapsCredential.getToken("https://atlas.microsoft.com/.default");
   if (!token) return null;
   return { Authorization: `Bearer ${token.token}`, "x-ms-client-id": clientId };
 }

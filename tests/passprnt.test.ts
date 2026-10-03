@@ -44,6 +44,30 @@ const toppingNames = new Map([
   ["mushrooms", "Mushrooms"],
 ]);
 
+test("tells a giveaway entrant what they could win and when the winner is announced", () => {
+  const html = buildPassPrntTicketHtml(
+    { ...order, giveaway_entry_number: 13, giveaway_prize: "a brand-new 55-inch TV", giveaway_winner_announced_on: "Thanksgiving Monday, October 12" },
+    toppingNames,
+    Date.UTC(2026, 7, 26, 17, 31),
+  );
+
+  assert.match(html, /THANKSGIVING GIVEAWAY/);
+  assert.match(html, /#0013/);
+  assert.match(html, /Your chance to win a brand-new 55-inch TV just got better/);
+  assert.match(html, /announced Thanksgiving Monday, October 12/);
+  assert.match(html, /pizza62\.ca\/giveaway/);
+  assert.match(html, /proof of entry/);
+});
+
+test("falls back to the default prize when the order carries none, and prints no block without an entry", () => {
+  const withEntry = buildPassPrntTicketHtml({ ...order, giveaway_entry_number: 7 }, toppingNames, Date.now());
+  assert.match(withEntry, /win a brand-new 55-inch TV/);
+  assert.match(withEntry, /#0007/);
+
+  const withoutEntry = buildPassPrntTicketHtml(order, toppingNames, Date.now());
+  assert.doesNotMatch(withoutEntry, /GIVEAWAY/);
+});
+
 test("builds a self-contained, escaped 576-dot PassPRNT ticket", () => {
   const html = buildPassPrntTicketHtml(order, toppingNames, Date.UTC(2026, 7, 26, 17, 31));
 
