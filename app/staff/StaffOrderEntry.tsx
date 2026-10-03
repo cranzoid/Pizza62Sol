@@ -160,6 +160,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
+  // Set when the order went in but its ticket could not be sent on its own;
+  // see `place`. The reprint button becomes the main action until it is tapped.
+  const [printPending, setPrintPending] = useState(false);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   // Read out over the phone as often as typed at a keyboard — the thank-you
@@ -387,6 +390,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const place = async (printRequestedAt: number) => {
     setSubmitting(true);
     setMessage(null);
+    setPrintPending(false);
     const response = await fetch("/api/admin/orders", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -404,7 +408,17 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       return;
     }
     const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
-    const willPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
+    const canPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
+    // Android lets the page hand off to PassPRNT only for a few seconds after
+    // the tap. A delivery waits on the address check against the delivery
+    // area, which can outlast that window, and the handoff then fails without a
+    // word while this screen claims the ticket is on its way. That is why phone
+    // deliveries were not printing. Once the tap has expired, ask for one more
+    // instead of pretending. Browsers without `userActivation` keep the old
+    // behaviour.
+    const tapStillCounts = window.navigator.userActivation?.isActive ?? true;
+    const willPrint = canPrint && tapStillCounts;
+    setPrintPending(canPrint && !tapStillCounts);
     setLastPrintOrder(printable);
     // Kept for the cash panel, from the server's committed total rather than
     // the quote on screen — the money about to be counted has to be the money
@@ -425,7 +439,9 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
       tone: "ok",
       text: willPrint
         ? `${result.orderNumber} is in. Sending its ticket to the printer…${entry}${birthdayNote}`
-        : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
+        : canPrint
+          ? `${result.orderNumber} is in. Tap Print ticket below to print it.${entry}${birthdayNote}`
+          : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
     });
     setLines([]);
     setCouponInput("");
@@ -445,7 +461,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     // Launch before refreshing. Android permits the external-app handoff only
     // while this still belongs to the staff member's placement tap; an extra
     // dashboard round trip can lose it.
-    if (printable) printPlacedOrder(printable, printRequestedAt);
+    if (printable && willPrint) printPlacedOrder(printable, printRequestedAt);
     await onPlaced();
   };
 
@@ -736,7 +752,17 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
           {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
           {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
-          {lastPrintOrder ? <button className="staff-button" onClick={() => printPlacedOrder(lastPrintOrder, Date.now())}>Print last ticket again</button> : null}
+          {lastPrintOrder ? (
+            <button
+              className={printPending ? "primary-button" : "staff-button"}
+              onClick={() => {
+                setPrintPending(false);
+                printPlacedOrder(lastPrintOrder, Date.now());
+              }}
+            >
+              {printPending ? "Print ticket" : "Print last ticket again"}
+            </button>
+          ) : null}
 
           {/*
             Counting out the change.

@@ -383,7 +383,9 @@ test("the giveaway emails say giveaway, never draw, and the nudge can be unsubsc
 
 test("the printed ticket carries the entry number, and only when there is one", () => {
   const order = { order_number: "P62-1234", fulfilment: "pickup", customer_name: "Ada", items: [], created_at: Date.now() };
-  assert.match(buildPassPrntTicketHtml({ ...order, giveaway_entry_number: 7 }, new Map(), Date.now()), /THANKSGIVING GIVEAWAY<br><b>ENTRY #0007<\/b>/);
+  assert.match(buildPassPrntTicketHtml({ ...order, giveaway_entry_number: 7 }, new Map(), Date.now()), /THANKSGIVING GIVEAWAY[\s\S]*<b>#0007<\/b>/);
+  // The ticket says giveaway, never draw — same rule as the emails.
+  assert.doesNotMatch(buildPassPrntTicketHtml({ ...order, giveaway_entry_number: 7 }, new Map(), Date.now()), /\bdraw/i);
   assert.doesNotMatch(buildPassPrntTicketHtml(order, new Map(), Date.now()), /GIVEAWAY/);
 });
 

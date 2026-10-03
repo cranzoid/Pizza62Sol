@@ -18,6 +18,7 @@
  */
 import { getD1, safeJson } from "@/db/runtime";
 import { parseAttribution } from "@/lib/attribution";
+import { loadGiveaway } from "@/lib/giveaway-store";
 import { snapshotDetails, snapshotFlags, type ItemSnapshot } from "@/lib/order-presentation";
 
 const ORDER_COLUMNS = `id, order_number, customer_id, customer_name, customer_phone, customer_email,
@@ -76,8 +77,13 @@ export async function loadOrderCore(orderId: string): Promise<Record<string, unk
     .first<Record<string, unknown>>();
   if (!order) return null;
   const toppingNames = await toppingNameMap();
+  // What the printed entry block promises. A failed settings read only costs
+  // the ticket its live wording; it falls back to the defaults.
+  const giveaway = order.giveaway_entry_number ? await loadGiveaway().catch(() => null) : null;
   return {
     ...order,
+    giveaway_prize: giveaway?.prize,
+    giveaway_winner_announced_on: giveaway?.winnerAnnouncedOn,
     address: safeJson(String(order.address_json ?? "null"), null),
     address_json: undefined,
     // Parsed here rather than in the browser: the same sanitiser that wrote it

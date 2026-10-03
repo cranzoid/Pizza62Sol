@@ -12,7 +12,7 @@
  */
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
-import { formatEntryNumber } from "@/lib/giveaway";
+import { formatEntryNumber, GIVEAWAY_DEFAULTS } from "@/lib/giveaway";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -99,12 +99,23 @@ export function buildPassPrntTicketHtml(
       ? `<div class="note">ORDER NOTE: ${escapeHtml(order.instructions)}</div>`
       : "";
 
-  // The one line on the ticket that is for the customer rather than the
-  // kitchen: a walk-in who gave no email learns their giveaway entry number
-  // from whoever hands them the bag.
+  // The one block on the ticket that is for the customer rather than the
+  // kitchen: a walk-in who gave no email, or a delivery customer handed the
+  // ticket at the door, learns their entry number and what happens next from
+  // the paper alone. Prize and day come from the giveaway setting when the
+  // server attached them, so an edited prize is not contradicted on paper.
   const giveawayEntry = Number(order.giveaway_entry_number);
+  const prize = String(order.giveaway_prize ?? "").trim() || GIVEAWAY_DEFAULTS.prize;
+  const winnerDay = String(order.giveaway_winner_announced_on ?? "").trim() || GIVEAWAY_DEFAULTS.winnerAnnouncedOn;
   const giveawayMarkup = Number.isSafeInteger(giveawayEntry) && giveawayEntry > 0
-    ? `<div class="giveaway">THANKSGIVING GIVEAWAY<br><b>ENTRY #${escapeHtml(formatEntryNumber(giveawayEntry))}</b></div>`
+    ? `<section class="giveaway">
+        <div class="giveaway-title">THANKSGIVING GIVEAWAY</div>
+        <div>You're in! Your entry number is</div>
+        <b>#${escapeHtml(formatEntryNumber(giveawayEntry))}</b>
+        <p>Your chance to win ${escapeHtml(prize)} just got better.</p>
+        <p>The winner is announced ${escapeHtml(winnerDay)}. Visit <b class="giveaway-url">pizza62.ca/giveaway</b> to see if it's you.</p>
+        <p class="giveaway-small">Keep this receipt &mdash; your entry number is your proof of entry. Thank you for a wonderful first year!</p>
+      </section>`
     : "";
 
   const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
@@ -138,7 +149,8 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
 .address{font-size:22px}.money-row,.total{display:flex;justify-content:space-between;gap:16px}.money-row{font-size:20px;margin:4px 0}
 .total{font-size:28px;font-weight:900;border-top:4px solid #000;border-bottom:4px solid #000;padding:10px 0;margin-top:10px}
 .footer{text-align:center;font-size:16px;margin-top:14px}
-.giveaway{border:3px dashed #000;text-align:center;font-size:20px;letter-spacing:1px;margin-top:14px;padding:8px}.giveaway b{font-size:30px;letter-spacing:2px}
+.giveaway{border:3px dashed #000;text-align:center;font-size:20px;margin-top:14px;padding:10px 12px}.giveaway-title{font-weight:900;letter-spacing:2px}
+.giveaway b{display:block;font-size:34px;letter-spacing:3px;margin:2px 0 6px}.giveaway p{margin:6px 0}.giveaway b.giveaway-url{display:inline;font-size:20px;letter-spacing:0;margin:0}.giveaway .giveaway-small{font-size:17px}
 </style></head><body>
   <header class="head"><div class="number">${escapeHtml(String(order.order_number ?? "").replace("P62-", "#"))}</div><div class="type">${escapeHtml(String(order.fulfilment ?? "").toUpperCase())}</div></header>
   <div class="when">${scheduled ? `SCHEDULED ${escapeHtml(ticketTime(scheduled))}` : `ASAP &mdash; in by ${escapeHtml(ticketTime(Number(order.created_at)))}`}</div>
