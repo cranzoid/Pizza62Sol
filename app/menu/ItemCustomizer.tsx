@@ -32,15 +32,22 @@ import {
   DEFAULT_CRUST_OPTION,
   DRINK_OPTIONS,
   EXTRA_CHEESE_OPTION,
+  NEW_OPTIONS,
+  PIZZA_EXTRA_OPTIONS,
+  SAUCE_OPTIONS,
   TWO_LITRE_DRINK_OPTIONS,
   WING_FLAVOURS,
+  defaultSectionValues,
   formatMoney,
   modifierUnitsBps,
   normalizeModifierValues,
   isRetiredSection,
   orderModifierSections,
+  pizzaExtrasSection,
+  pizzaSauceSection,
   pricePizza,
   priceToppingUnits,
+  sectionOptionPrices,
   type ModifierSection,
   type ToppingPlacement,
 } from "@/lib/domain";
@@ -203,6 +210,59 @@ export function placementSuffix(placement: ToppingPlacement) {
   return placement === "left" ? " · left half" : placement === "right" ? " · right half" : "";
 }
 
+/** What the chosen sauce or extras add to the price, by the section's own rule. */
+function optionTotal(section: ModifierSection, values: string[]): number {
+  const prices = sectionOptionPrices(section);
+  return values.reduce((sum, value) => sum + (prices[value] ?? 0), 0);
+}
+
+/** A sauce is one choice: tapping the chosen one leaves it chosen. Extras toggle. */
+function nextFinishValues(section: ModifierSection, values: string[], option: string): string[] {
+  if (section.source === "sauce") return [option];
+  return values.includes(option) ? values.filter((value) => value !== option) : [...values, option];
+}
+
+/**
+ * The sauce and extras steps, shared by a pizza on its own and the pizzas in a
+ * deal so the two cannot drift apart.
+ *
+ * Every option shows its price or says it is free, because "+ Olive Oil" alone
+ * does not tell anyone whether ticking it costs money. The new sauces get one
+ * callout rather than a badge each — five badges in a row is wallpaper — while
+ * the one new extra gets its badge, in its own colour, beside its name.
+ */
+function FinishChoices({
+  section,
+  values,
+  onToggle,
+  includedSauce,
+  showCallout = true,
+}: {
+  section: ModifierSection;
+  values: string[];
+  onToggle: (option: string) => void;
+  includedSauce?: string;
+  showCallout?: boolean;
+}) {
+  const prices = sectionOptionPrices(section);
+  const isSauce = section.source === "sauce";
+  const options: readonly string[] = isSauce ? SAUCE_OPTIONS : PIZZA_EXTRA_OPTIONS;
+  const paid = Object.values(prices).filter((cents) => cents > 0);
+  const swapPrice = paid.length ? formatMoney(Math.min(...paid)) : null;
+  const newExtras = options.filter((option) => NEW_OPTIONS.has(option));
+  return <>
+    {showCallout && isSauce ? <div className="new-callout"><em className="new-badge">New</em><div><strong>Try our new sauces</strong><p>BBQ, butter chicken, creamy garlic, honey garlic or shawarma{swapPrice ? ` for ${swapPrice} each` : ""}.{includedSauce ? ` ${includedSauce} sauce comes with this pizza at no charge.` : ""} Tomato is the classic and always free.</p></div></div> : null}
+    {showCallout && !isSauce && newExtras.length ? <div className="new-callout"><em className="new-badge">New</em><div><strong>Try our new homemade seasoning</strong><p>Fresh from our kitchen, made to go on pizza. Oregano and chili flakes come free and are already ticked — tap one to leave it out.</p></div></div> : null}
+    <div className="topping-grid finish-grid">{options.map((option) => {
+      const active = values.includes(option);
+      const price = prices[option] ?? 0;
+      return <button className={active ? "active" : ""} type="button" key={option} aria-pressed={active} onClick={() => onToggle(option)}>
+        <span>{active ? "✓" : "+"}</span>{option}{NEW_OPTIONS.has(option) ? <em className="new-badge">New</em> : null}<small>{price ? `+${formatMoney(price)}` : "Free"}</small>
+      </button>;
+    })}</div>
+  </>;
+}
+
 export function PizzaCustomizer({
   product,
   variations,
@@ -253,6 +313,13 @@ export function PizzaCustomizer({
   const [crust, setCrust] = useState(() => (crustOptions.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : crustOptions[0] ?? ""));
   const [bakeSauce, setBakeSauce] = useState<string[]>([]);
   const [legacyBase, setLegacyBase] = useState<string[]>([]);
+  // The same groups, ids and prices the server builds in `pizzaOptionSections`.
+  const includedSauce = typeof configuration.includedSauce === "string" ? configuration.includedSauce : undefined;
+  const sauceSection = configuration.sauceEnabled ? pizzaSauceSection("pizza-sauce", { includedSauce }) : null;
+  const extrasSection = configuration.extrasEnabled ? pizzaExtrasSection("pizza-extras") : null;
+  const [sauce, setSauce] = useState<string[]>(() => (sauceSection ? defaultSectionValues(sauceSection, includedSauce) : []));
+  const [extras, setExtras] = useState<string[]>(() => (extrasSection ? defaultSectionValues(extrasSection) : []));
+  const finishCents = (sauceSection ? optionTotal(sauceSection, sauce) : 0) + (extrasSection ? optionTotal(extrasSection, extras) : 0);
   const [instructions, setInstructions] = useState("");
   const variation = variations.find((entry) => entry.id === variationId) ?? variations[0];
   const extraCheese = cheeseEnabled && cheese === EXTRA_CHEESE_OPTION;
@@ -286,14 +353,15 @@ export function PizzaCustomizer({
   const setPlacement = (toppingId: string, placement: ToppingPlacement) =>
     setSelected((current) => current.map((entry) => entry.toppingId === toppingId ? { ...entry, placement } : entry));
   // The customer is always asked in the same order: what it is made of, how it is
-  // baked, then what goes on it. Steps that are switched off are skipped and the
-  // numbering closes up behind them. The owner can put toppings before the crust.
+  // baked, then what goes on it, and last what comes in the box with it. Steps
+  // that are switched off are skipped and the numbering closes up behind them.
+  // The owner can put toppings before the crust.
+  const baseSteps = [crustOptions.length ? "crust" : "", sauceSection ? "sauce" : "", bakeSauceOptions.length ? "bake" : "", legacyBaseOptions.length ? "legacy" : ""];
   const steps = [
     "size",
     cheeseEnabled ? "cheese" : "",
-    ...(configuration.toppingsFirst
-      ? ["toppings", crustOptions.length ? "crust" : "", bakeSauceOptions.length ? "bake" : "", legacyBaseOptions.length ? "legacy" : ""]
-      : [crustOptions.length ? "crust" : "", bakeSauceOptions.length ? "bake" : "", legacyBaseOptions.length ? "legacy" : "", "toppings"]),
+    ...(configuration.toppingsFirst ? ["toppings", ...baseSteps] : [...baseSteps, "toppings"]),
+    extrasSection ? "extras" : "",
   ].filter(Boolean);
   const stepNumber = (name: string) => String(steps.indexOf(name) + 1);
   const sizePanel = <><fieldset><legend><span>{stepNumber("size")}</span> {String(configuration.variationLabel ?? "Choose your size")}</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset></>;
@@ -301,6 +369,8 @@ export function PizzaCustomizer({
             {cheeseEnabled ? <div className="size-options cheese-options">{CHEESE_OPTIONS.map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => setCheese(option)} /><span><b>{option.replace(" Cheese", "")}</b><small>{option === EXTRA_CHEESE_OPTION ? `Counts as one topping${variation ? ` · ${formatMoney(variation.extra_topping_price_cents)}` : ""}` : "No extra charge"}</small></span></label>)}</div> : null}
           </fieldset> : null}</>;
   const crustPanel = <>{crustOptions.length ? <fieldset><legend><span>{stepNumber("crust")}</span> Crust</legend><div className="topping-grid">{crustOptions.map((option) => <button className={crust === option ? "active" : ""} type="button" key={option} aria-pressed={crust === option} onClick={() => setCrust(option)}><span>{crust === option ? "✓" : "+"}</span>{option}</button>)}</div></fieldset> : null}</>;
+  const saucePanel = <>{sauceSection ? <fieldset><legend><span>{stepNumber("sauce")}</span> Sauce <em className="new-badge">New sauces</em></legend><FinishChoices section={sauceSection} values={sauce} includedSauce={includedSauce} onToggle={(option) => setSauce((current) => nextFinishValues(sauceSection, current, option))} /></fieldset> : null}</>;
+  const extrasPanel = <>{extrasSection ? <fieldset><legend><span>{stepNumber("extras")}</span> Extras</legend><FinishChoices section={extrasSection} values={extras} onToggle={(option) => setExtras((current) => nextFinishValues(extrasSection, current, option))} /><div className="allowance-meter"><span>{extras.length} selected</span><b>{extrasSection && optionTotal(extrasSection, extras) ? `${formatMoney(optionTotal(extrasSection, extras))} in extras` : "Optional"}</b></div></fieldset> : null}</>;
   const bakePanel = <>{bakeSauceOptions.length ? <fieldset><legend><span>{stepNumber("bake")}</span> Bake &amp; sauce</legend><div className="topping-grid">{bakeSauceOptions.map((option) => { const active = bakeSauce.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setBakeSauce((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div><div className="allowance-meter"><span>Optional</span><b>Choose up to 2</b></div></fieldset> : null}</>;
   const legacyPanel = <>{legacyBaseOptions.length ? <fieldset><legend><span>{stepNumber("legacy")}</span> Crust, bake &amp; sauce</legend><div className="topping-grid">{legacyBaseOptions.map((option) => { const active = legacyBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setLegacyBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}</>;
   const toppingsPanel = <><fieldset><legend><span>{stepNumber("toppings")}</span> Choose toppings</legend>
@@ -327,8 +397,10 @@ export function PizzaCustomizer({
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
   if (crust) modifiers.push({ id: "pizza-crust", label: "Crust", values: [{ value: crust, label: crust }] });
+  if (sauceSection && sauce.length) modifiers.push({ id: sauceSection.id, label: sauceSection.label, values: sauce.map((value) => ({ value, label: value })) });
   if (bakeSauce.length) modifiers.push({ id: "pizza-bake-sauce", label: "Bake & sauce", values: bakeSauce.map((value) => ({ value, label: value })) });
   if (legacyBase.length) modifiers.push({ id: "pizza-base", label: "Crust, bake & sauce", values: legacyBase.map((value) => ({ value, label: value })) });
+  if (extrasSection && extras.length) modifiers.push({ id: extrasSection.id, label: extrasSection.label, values: extras.map((value) => ({ value, label: value })) });
   return (
     <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
       <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="customizer-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
@@ -336,11 +408,12 @@ export function PizzaCustomizer({
         <div className="customizer-body">
           {sizePanel}{cheesePanel}
           {configuration.toppingsFirst
-            ? <>{toppingsPanel}{crustPanel}{bakePanel}{legacyPanel}</>
-            : <>{crustPanel}{bakePanel}{legacyPanel}{toppingsPanel}</>}
+            ? <>{toppingsPanel}{crustPanel}{saucePanel}{bakePanel}{legacyPanel}</>
+            : <>{crustPanel}{saucePanel}{bakePanel}{legacyPanel}{toppingsPanel}</>}
+          {extrasPanel}
           <label className="instructions-label">Special instructions <small>Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: cut into squares" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents + finishCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents + finishCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
       </section>
     </div>
   );
@@ -373,6 +446,9 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
         const value = options.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : options[0];
         if (value) initial[section.id] = [{ value, label: value }];
       }
+      if (section.source === "sauce" || section.source === "pizza_extras") {
+        initial[section.id] = defaultSectionValues(section).map((value) => ({ value, label: value }));
+      }
     }
     return initial;
   });
@@ -383,6 +459,8 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
   const [quantity, setQuantity] = useState(1);
   const optionsFor = (section: ModifierSection): Array<{ value: string; label: string }> => {
     if (section.source === "toppings") return toppings.map((entry) => ({ value: entry.id, label: entry.name }));
+    if (section.source === "sauce") return SAUCE_OPTIONS.map((entry) => ({ value: entry, label: entry }));
+    if (section.source === "pizza_extras") return PIZZA_EXTRA_OPTIONS.map((entry) => ({ value: entry, label: entry }));
     const configured = section.options?.length ? section.options : (
       section.source === "wing_flavours" ? [...WING_FLAVOURS]
         : section.source === "drinks" ? [...DRINK_OPTIONS]
@@ -397,6 +475,8 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
   const valuesOf = (sectionId: string) => selected[sectionId] ?? [];
   const toggle = (section: ModifierSection, option: { value: string; label: string }) => setSelected((current) => {
     const values = current[section.id] ?? [];
+    // One sauce per pizza, and always one: tapping the chosen sauce keeps it.
+    if (section.source === "sauce") return { ...current, [section.id]: [{ value: option.value, label: option.label }] };
     if (values.some((entry) => entry.value === option.value)) {
       return { ...current, [section.id]: values.filter((entry) => entry.value !== option.value) };
     }
@@ -416,7 +496,7 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
   const sharedUnits = new Map<string, number>();
   for (const section of sections) {
     const values = valuesOf(section.id);
-    extras += values.reduce((sum, entry) => sum + (section.optionPrices?.[entry.value] ?? 0), 0);
+    extras += values.reduce((sum, entry) => sum + (sectionOptionPrices(section)[entry.value] ?? 0), 0);
     if (section.source === "toppings") {
       const units = unitsFor(section);
       if (section.sharedGroup) sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + units);
@@ -438,6 +518,9 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
     section,
     step: index + 1,
     groupHeading: section.group && section.group !== sections[index - 1]?.group ? section.group : null,
+    // The "new" callout once per deal, on its first sauce and first extras step.
+    // Saying it again for Pizza 2 tells nobody anything.
+    firstOfItsKind: !sections.slice(0, index).some((earlier) => earlier.source === section.source),
   }));
   return (
     <div className="modal-backdrop modal-backdrop--right" role="presentation" onMouseDown={onClose}>
@@ -445,21 +528,24 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
           {quantitySelectable ? <fieldset className="quantity-choice"><legend>How many {unitLabel}s?</legend><p>This special is priced at {formatMoney(product.base_price_cents)} per {unitLabel}.</p><div><button type="button" aria-label={`Remove one ${unitLabel}`} disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximumQuantity} inputMode="numeric" value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(maximumQuantity, Number(event.target.value) || 1)))} /></label><button type="button" aria-label={`Add one ${unitLabel}`} disabled={quantity >= maximumQuantity} onClick={() => setQuantity((current) => Math.min(maximumQuantity, current + 1))}>+</button></div><small>Up to {maximumQuantity} {unitLabel}s per order.</small></fieldset> : null}
-          {layout.map(({ section, step, groupHeading }) => {
+          {layout.map(({ section, step, groupHeading, firstOfItsKind }) => {
             const values = valuesOf(section.id);
             const included = section.sharedGroup ? section.sharedIncluded ?? 0 : section.included ?? 0;
             const isToppings = section.source === "toppings";
+            const isFinish = section.source === "sauce" || section.source === "pizza_extras";
             const units = isToppings ? unitsFor(section) / 10_000 : values.length;
             const sectionExtras = isToppings && !section.sharedGroup
               ? priceToppingUnits(units * 10_000, included * 10_000, section.extraPriceCents ?? 0)
-              : values.reduce((sum, entry) => sum + (section.optionPrices?.[entry.value] ?? 0), 0);
+              : values.reduce((sum, entry) => sum + (sectionOptionPrices(section)[entry.value] ?? 0), 0);
             return <div key={section.id}>
               {groupHeading ? <h3 className="section-group">{groupHeading}</h3> : null}
               <fieldset>
-                <legend><span>{step}</span> {section.label}</legend>
+                <legend><span>{step}</span> {section.label}{section.source === "sauce" && firstOfItsKind ? <em className="new-badge">New sauces</em> : null}</legend>
                 {isToppings ? <div className="setup-alert"><strong>{section.sharedGroup ? `${included} toppings shared across this deal` : `${included} toppings included in this price`}</strong><p>Each additional topping is {formatMoney(section.extraPriceCents ?? 0)}. A topping on half counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>
                     : section.extraPriceCents ? <div className="setup-alert"><strong>Optional add-on</strong><p>This choice adds {formatMoney(section.extraPriceCents)}.</p></div> : null}
-                {isToppings
+                {isFinish
+                  ? <FinishChoices section={section} values={values.map((entry) => entry.value)} showCallout={firstOfItsKind} onToggle={(option) => toggle(section, { value: option, label: option })} />
+                  : isToppings
                   ? <ToppingPicker
                       toppings={toppings}
                       selected={values.map((entry) => ({ toppingId: entry.value, placement: entry.placement ?? "whole", name: entry.label }))}
@@ -468,7 +554,7 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
                       onPlacement={(toppingId, placement) => setPlacement(section.id, toppingId, placement)}
                     />
                   : <div className="topping-grid">{optionsFor(section).map((option) => { const active = values.some((entry) => entry.value === option.value); const price = section.optionPrices?.[option.value]; return <button className={active ? "active" : ""} type="button" key={option.value} aria-pressed={active} onClick={() => toggle(section, option)}><span>{active ? "✓" : "+"}</span>{option.label}{price ? <small>+{formatMoney(price)}</small> : null}</button>; })}</div>}
-                <div className="allowance-meter"><span>{isToppings ? `${formatUnits(units)} selected` : `${values.length} selected`}</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : section.min && values.length < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>
+                <div className="allowance-meter"><span>{isToppings ? `${formatUnits(units)} selected` : `${values.length} selected`}</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : isFinish ? (section.source === "sauce" ? "No charge" : "Optional") : section.min && values.length < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>
               </fieldset>
             </div>;
           })}

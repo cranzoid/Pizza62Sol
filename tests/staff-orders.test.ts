@@ -53,8 +53,11 @@ const PASSWORD = "Correct Horse Battery Staple 62";
 const hours = reachable
   ? await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours")
   : [];
+// 45 minutes, not 30: a delivery needs its 30-minute lead at the moment each
+// test runs, and a slot only just clearing it when the file loads is refused if
+// the suite crosses a 15-minute boundary before the delivery tests reach it.
 const SLOT = reachable
-  ? nextOrderSlots({ now: Date.now(), hours, timeZone: "America/Toronto", leadMinutes: 30, limit: 1 })[0]
+  ? nextOrderSlots({ now: Date.now(), hours, timeZone: "America/Toronto", leadMinutes: 45, limit: 1 })[0]
   : 0;
 const schedule = { type: "scheduled" as const, scheduledFor: SLOT };
 
@@ -475,6 +478,43 @@ withDb("takes a phone delivery with an address, priced like a website delivery",
   // province fixed to the one delivery area.
   assert.equal(address.postalCode, "L8H 5W7");
   assert.equal(address.city, "Hamilton");
+});
+
+withDb("quotes a phone delivery paid at the door as ready to send", async () => {
+  // The till greys out "Send & print" whenever the quote is not `ok`. The quote
+  // used to refuse pay-at-the-door on every delivery, even from the till, so a
+  // phone delivery could be keyed in but never sent — and never printed.
+  const cookie = await signedInAs("owner");
+  const response = await staffOrder(cookie, {
+    fulfilment: "delivery",
+    items: [{ productId: "poutine", quantity: 3 }],
+    paymentMethod: "pay_at_store",
+    schedule,
+    channel: "phone",
+    quoteOnly: true,
+    customer: { name: "Ada", phone: "905-555-0142" },
+    address: { line1: "55 Parkdale Ave N", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" },
+  });
+  assert.equal(response.status, 200);
+  const quote = (await response.json()) as { ok: boolean; issues: Array<{ code: string }> };
+  assert.deepEqual(quote.issues.map((issue) => issue.code), []);
+  assert.equal(quote.ok, true);
+});
+
+withDb("still refuses pay-at-the-door delivery from the website", async () => {
+  // The exemption is the till's alone. A stranger promising to pay a driver at
+  // the door is still a risk the restaurant has not agreed to take.
+  const { quoteOrder } = await import("@/lib/order-service");
+  const quote = await quoteOrder({
+    fulfilment: "delivery",
+    items: [{ productId: "poutine", quantity: 3 }],
+    paymentMethod: "pay_at_store",
+    schedule,
+    customer: { name: "Ada", phone: "905-555-0142", email: "ada@example.test" },
+    address: { line1: "55 Parkdale Ave N", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" },
+  } as never);
+  assert.equal(quote.ok, false);
+  assert.ok(quote.issues.some((issue) => issue.code === "PAYMENT_METHOD_UNAVAILABLE"));
 });
 
 withDb("refuses a delivery with no phone number for the driver", async () => {

@@ -612,7 +612,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
               return (
                 <button className="till-button" key={product.id} onClick={() => addPlain(product)}>
                   <strong>{product.name}</strong>
-                  {product.configuration.staffOnly ? <span>Staff only</span> : null}
+                  {product.configuration.isNew ? <span>New</span> : product.configuration.staffOnly ? <span>Staff only</span> : null}
                   <b>{formatMoney(product.base_price_cents)}</b>
                 </button>
               );

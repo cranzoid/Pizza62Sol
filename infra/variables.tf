@@ -134,9 +134,9 @@ variable "meta_pixel_id" {
 }
 
 variable "ga4_measurement_id" {
-  description = "Public GA4 measurement ID (G-...). Blank keeps GA4 disabled."
+  description = "Public GA4 measurement ID (G-...). The staging slot overrides this to blank."
   type        = string
-  default     = ""
+  default     = "G-YBN2YD8SJY"
 
   validation {
     condition     = var.ga4_measurement_id == "" || can(regex("^G-[A-Za-z0-9]+$", var.ga4_measurement_id))

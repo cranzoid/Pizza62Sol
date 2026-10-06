@@ -1,5 +1,5 @@
 import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES } from "@/lib/launch-config";
-import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, type ModifierSection, type WeeklyAvailability } from "@/lib/domain";
+import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, pizzaExtrasSection, pizzaSauceSection, type ModifierSection, type WeeklyAvailability } from "@/lib/domain";
 
 // The pop and wing-sauce lists are not seed data: an option group stores the
 // group, never its options, so both sides resolve the live list at render and at
@@ -29,7 +29,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-09-18-staff-pos-monday-wings";
+export const MENU_SEED_VERSION = "2026-10-06-sauces-extras-breadsticks";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
@@ -184,8 +184,9 @@ const sliceTopping = (id: string, group: string): ModifierSectionSeed => ({
 });
 
 // Every pizza inside a deal is built in the same order as a pizza ordered on its
-// own: cheese, then crust and bake/sauce, then toppings. `index` is null for
-// single-pizza deals so the existing "pizza-toppings" section id is preserved.
+// own: cheese, then crust, sauce and bake, then toppings, then extras. `index` is
+// null for single-pizza deals so the existing "pizza-toppings" section id is
+// preserved.
 const pizzaSections = (
   index: number | null,
   includedToppings: number,
@@ -197,6 +198,7 @@ const pizzaSections = (
   return [
     cheese(`pizza${suffix}-cheese`, extraPriceCents, group),
     crust(`pizza${suffix}-crust`, group),
+    pizzaSauceSection(`pizza${suffix}-sauce`, { group }),
     bakeSauce(`pizza${suffix}-bake-sauce`, group),
     toppings(
       `pizza${suffix}-toppings`,
@@ -207,7 +209,24 @@ const pizzaSections = (
       options.sharedIncluded,
       group,
     ),
+    pizzaExtrasSection(`pizza${suffix}-extras`, group),
   ];
+};
+
+/**
+ * A pizza asks which sauce it is made on and, last, for its extras. Pizza
+ * products only — a panzerotti or a sub is not asked either.
+ */
+const SAUCE_AND_EXTRAS = { sauceEnabled: true, extrasEnabled: true } as const;
+
+/**
+ * Specialty pizzas made on one of the new sauces. That sauce starts selected and
+ * is free on them; tomato is free everywhere; any other swap is the usual C$1.49.
+ */
+export const SIGNATURE_SAUCES: Readonly<Record<string, string>> = {
+  "specialty-chicken-bbq": "BBQ",
+  "specialty-butter-chicken": "Butter Chicken",
+  "specialty-shawarma": "Shawarma",
 };
 
 const bundle = (
@@ -243,7 +262,7 @@ const standalonePizzas: MenuProductSeed[] = PIZZA_SIZES.map((size) => ({
   basePriceCents: size.basePriceCents,
   pickupEligible: false,
   deliveryEligible: true,
-  configuration: { variationLabel: "Your pizza", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
+  configuration: { variationLabel: "Your pizza", crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], ...SAUCE_AND_EXTRAS, cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [
     {
       id: `${size.id}-pizza-four-toppings`,
@@ -285,7 +304,11 @@ const specialtyPizzas: MenuProductSeed[] = specialtyRecipes.map(([id, name, desc
   description,
   productType: "pizza",
   basePriceCents: 1699,
-  configuration: { fixedRecipe: true, recipeToppingIds, presetExtraCheese, crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
+  configuration: {
+    fixedRecipe: true, recipeToppingIds, presetExtraCheese, crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS],
+    ...SAUCE_AND_EXTRAS, ...(SIGNATURE_SAUCES[`specialty-${id}`] ? { includedSauce: SIGNATURE_SAUCES[`specialty-${id}`] } : {}),
+    cheeseEnabled: true, specialInstructionsEnabled: true,
+  },
   variations: specialtyPrices.map(([variationName, price, extra]) => ({
     id: `specialty-${id}-${slug(variationName)}`,
     name: variationName,
@@ -360,6 +383,23 @@ const sides: MenuProductSeed[] = [
   id: String(id), categoryId: "sides", name: String(name), description: "A Pizza 62 menu favourite.", productType: "simple" as const, basePriceCents: Number(price),
 }));
 
+/**
+ * New side, 2026-10-06. Half-moon shaped, which is why the description says so:
+ * it is the one thing about them a customer cannot guess from the name.
+ * `isNew` puts a NEW badge on the card; the owner can switch it off in Menu
+ * setup once it is no longer news.
+ */
+export const CHEESY_BREADSTICKS_PRODUCT_ID = "cheesy-breadsticks";
+const cheesyBreadsticks: MenuProductSeed = {
+  id: CHEESY_BREADSTICKS_PRODUCT_ID,
+  categoryId: "sides",
+  name: "Cheesy Breadsticks",
+  description: "Our half-moon cheesy breadsticks, baked golden.",
+  productType: "simple",
+  basePriceCents: 699,
+  configuration: { isNew: true },
+};
+
 const configurableSides: MenuProductSeed[] = [
   {
     id: "pizza-three-item-sub", categoryId: "sides", name: "Pizza 3 Item Sub",
@@ -383,7 +423,7 @@ const configurableSides: MenuProductSeed[] = [
 const pickupPizza = (id: string, name: string, price: number, size: string, extra: number, included: number): MenuProductSeed => ({
   id, categoryId: "pickup-specials", name, description: `${included} topping${included === 1 ? "" : "s"} included.`,
   productType: "pizza", basePriceCents: price, pickupEligible: true, deliveryEligible: false,
-  configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], cheeseEnabled: true, specialInstructionsEnabled: true },
+  configuration: { crustOptions: [...CRUST_OPTIONS], bakeSauceOptions: [...BAKE_SAUCE_OPTIONS], ...SAUCE_AND_EXTRAS, cheeseEnabled: true, specialInstructionsEnabled: true },
   variations: [{ id: `${id}-size`, name: size, basePriceCents: price, extraToppingPriceCents: extra, includedToppingUnitsBps: included * 10_000 }],
 });
 
@@ -406,6 +446,7 @@ const confirmedPickupPizza = (
   configuration: {
     crustOptions: [...CRUST_OPTIONS],
     bakeSauceOptions: [...BAKE_SAUCE_OPTIONS],
+    ...SAUCE_AND_EXTRAS,
     cheeseEnabled: true,
     requireIncludedToppings: true,
     specialInstructionsEnabled: true,
@@ -638,16 +679,19 @@ export const MONDAY_WINGS_AVAILABILITY: WeeklyAvailability = {
 const mondayWings: MenuProductSeed = {
   ...laborDayWings, id: MONDAY_WINGS_PRODUCT_ID, name: "Monday Wings · $1 Each",
   description: "$1 per wing, up to 40 wings. Choose Classic (non-breaded) or Breaded and your sauce. Mondays, pickup only.",
-  configuration: { ...laborDayWings.configuration, availability: MONDAY_WINGS_AVAILABILITY },
+  // `dailySpecial` is what puts it in the website's day's-special pop-up.
+  configuration: { ...laborDayWings.configuration, availability: MONDAY_WINGS_AVAILABILITY, dailySpecial: true },
 };
 
 // Only genuinely missing Loyverse items are added. Existing public prices remain authoritative.
 const staffOnly = (product: MenuProductSeed): MenuProductSeed => ({
   ...product, configuration: { ...product.configuration, staffOnly: true },
 });
+// Flagged for the day's-special pop-up already. They are counter-only, so the
+// website shows them only once the owner publishes one in Menu setup.
 const weekday = (product: MenuProductSeed, day: number, label: string) => staffOnly({
   ...product, categoryId: "weekday-specials", pickupEligible: true, deliveryEligible: false,
-  configuration: { ...product.configuration, availability: { weekdays: [day], startMinute: 0, endMinute: 1440, timeZone: "America/Toronto", label } },
+  configuration: { ...product.configuration, dailySpecial: true, availability: { weekdays: [day], startMinute: 0, endMinute: 1440, timeZone: "America/Toronto", label } },
 });
 export const STAFF_IMPORTED_PRODUCTS: MenuProductSeed[] = [
   ...([
@@ -679,6 +723,7 @@ export const MENU_PRODUCTS: MenuProductSeed[] = [
   ...twoForOne,
   ...wings,
   ...sides,
+  cheesyBreadsticks,
   ...configurableSides,
   {
     id: "one-pop",
