@@ -72,7 +72,7 @@ test("tomato is free and every new sauce is $1.49", () => {
   assert.deepEqual([...SAUCE_OPTIONS].sort(), ["BBQ", "Butter Chicken", "Creamy Garlic", "Honey Garlic", "Shawarma", "Tomato"]);
 });
 
-test("oregano and chili flakes are free and ticked; olive oil and seasoning are $1.29", () => {
+test("oregano and chili flakes are free and not ticked; olive oil and seasoning are $1.29", () => {
   const section = pizzaExtrasSection("pizza-extras");
   const prices = sectionOptionPrices(section);
   assert.deepEqual([...PIZZA_EXTRA_OPTIONS], ["Oregano", "Chili Flakes", "Olive Oil", "Homemade Seasoning"]);
@@ -81,7 +81,8 @@ test("oregano and chili flakes are free and ticked; olive oil and seasoning are 
   assert.equal(prices["Olive Oil"], 129);
   assert.equal(prices["Homemade Seasoning"], 129);
   assert.deepEqual(defaultSectionValues(section), [...DEFAULT_PIZZA_EXTRAS]);
-  assert.deepEqual(defaultSectionValues(section), ["Oregano", "Chili Flakes"]);
+  // Owner, 2026-10-06: free, but only for whoever ticks them.
+  assert.deepEqual(defaultSectionValues(section), []);
   // Every extra can be left off, and every one can be had.
   assert.equal(section.min, 0);
   assert.equal(section.max, PIZZA_EXTRA_OPTIONS.length);
@@ -383,4 +384,15 @@ withDb("the migration adds the new groups to the live menu and leaves owner edit
       [marker, Date.now()],
     );
   }
+});
+
+test("a recipe topping left off is printed as NO …, and not also listed as a topping", async () => {
+  const { snapshotDetails, snapshotFlags } = await import("@/lib/order-presentation");
+  const names = new Map([["pepperoni", "Pepperoni"], ["mushrooms", "Mushrooms"], ["pineapple", "Pineapple"]]);
+  const snapshot = {
+    recipeOmissions: ["Mushrooms"],
+    toppings: ["pepperoni", "mushrooms", "pineapple"].map((toppingId) => ({ toppingId, placement: "whole" })),
+  };
+  assert.deepEqual(snapshotDetails(snapshot, names), [{ label: "Toppings", value: "Pepperoni, Pineapple" }]);
+  assert.deepEqual(snapshotFlags(snapshot), ["No Mushrooms"]);
 });

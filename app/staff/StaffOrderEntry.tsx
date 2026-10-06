@@ -86,7 +86,9 @@ function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): st
   const parts: string[] = [];
   if (item.variationName) parts.push(item.variationName);
   if (item.extraCheese) parts.push("Extra cheese");
-  for (const topping of item.toppings ?? []) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  for (const topping of item.toppings ?? []) {
+    if (!item.omitToppings?.includes(topping.toppingId)) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  }
   for (const toppingId of item.omitToppings ?? []) parts.push(`No ${toppingNames.get(toppingId) ?? toppingId}`);
   for (const modifier of item.modifiers ?? []) {
     parts.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);

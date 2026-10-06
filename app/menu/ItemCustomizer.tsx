@@ -172,12 +172,15 @@ export function ToppingPicker({
   toppings,
   selected,
   allowPlacement = true,
+  wholeOnly,
   onToggle,
   onPlacement,
 }: {
   toppings: CustomizerTopping[];
   selected: SelectedTopping[];
   allowPlacement?: boolean;
+  /** Toppings that only go on the whole pizza — a specialty's recipe. */
+  wholeOnly?: ReadonlySet<string>;
   onToggle: (topping: CustomizerTopping) => void;
   onPlacement: (toppingId: string, placement: ToppingPlacement) => void;
 }) {
@@ -187,7 +190,7 @@ export function ToppingPicker({
       <button className={entry ? "active" : ""} type="button" onClick={() => onToggle(topping)}>
         <span>{entry ? "✓" : "+"}</span>{topping.name}
       </button>
-      {entry && allowPlacement ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
+      {entry && allowPlacement && !wholeOnly?.has(topping.id) ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
         {PLACEMENTS.map(([placement, symbol, label]) => <button
           key={placement}
           type="button"
@@ -252,7 +255,7 @@ function FinishChoices({
   const newExtras = options.filter((option) => NEW_OPTIONS.has(option));
   return <>
     {showCallout && isSauce ? <div className="new-callout"><em className="new-badge">New</em><div><strong>Try our new sauces</strong><p>BBQ, butter chicken, creamy garlic, honey garlic or shawarma{swapPrice ? ` for ${swapPrice} each` : ""}.{includedSauce ? ` ${includedSauce} sauce comes with this pizza at no charge.` : ""} Tomato is the classic and always free.</p></div></div> : null}
-    {showCallout && !isSauce && newExtras.length ? <div className="new-callout"><em className="new-badge">New</em><div><strong>Try our new homemade seasoning</strong><p>Fresh from our kitchen, made to go on pizza. Oregano and chili flakes come free and are already ticked — tap one to leave it out.</p></div></div> : null}
+    {showCallout && !isSauce && newExtras.length ? <div className="new-callout"><em className="new-badge">New</em><div><strong>Try our new homemade seasoning</strong><p>Fresh from our kitchen, made to go on pizza. Oregano and chili flakes are free — tick them if you&apos;d like some.</p></div></div> : null}
     <div className="topping-grid finish-grid">{options.map((option) => {
       const active = values.includes(option);
       const price = prices[option] ?? 0;
@@ -291,12 +294,14 @@ export function PizzaCustomizer({
       name: toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId,
     })),
   );
-  // H-03: a specialty pizza is its recipe. The recipe toppings are not removable
-  // through the ordinary topping picker any more — the server rejects an order
-  // whose recipe is incomplete — but "hold the mushrooms" is a normal request, so
-  // it gets its own explicit control. Leaving something off never changes the
-  // price: it is not a discount, and treating it as one would let the same named
-  // product be bought cheaper by removing an ingredient and re-adding it.
+  // H-03: a specialty pizza is its recipe, and "hold the mushrooms" is a normal
+  // request. The recipe toppings are shown ticked at the top of the ordinary
+  // picker; unticking one asks for it to be left off (owner, 2026-10-06 — a list
+  // of "Leave it off" buttons read badly). Underneath, the topping stays in the
+  // build and is named in `omitted`, which is the shape the server checks the
+  // recipe against and the ticket prints NO MUSHROOMS from. Leaving something
+  // off never changes the price: it is not a discount, and treating it as one
+  // would let the same named product be bought cheaper by swapping ingredients.
   const fixedRecipe = Boolean(configuration.fixedRecipe);
   const [omitted, setOmitted] = useState<string[]>([]);
   const recipeToppings = fixedRecipe
@@ -343,13 +348,19 @@ export function PizzaCustomizer({
   const selectionValid = Boolean(
     variation && (configuration.fixedRecipe || selectedToppingUnits >= requiredToppingUnits),
   );
-  const toggleTopping = (topping: CustomizerTopping) => setSelected((current) => {
-    // A recipe topping cannot be toggled off here; use "Leave it off" instead.
-    if (fixedRecipe && recipeToppingIds.includes(topping.id)) return current;
-    return current.some((entry) => entry.toppingId === topping.id)
+  const recipeIds: ReadonlySet<string> = new Set(fixedRecipe ? recipeToppingIds : []);
+  // What the customer sees ticked: the build, less anything they asked us to leave off.
+  const shownSelected = selected.filter((entry) => !omitted.includes(entry.toppingId));
+  const shownUnits = modifierUnitsBps(shownSelected.map((entry) => ({ value: entry.toppingId, placement: entry.placement })), halfToppingUnitsBps) / 10_000;
+  const toggleTopping = (topping: CustomizerTopping) => {
+    if (recipeIds.has(topping.id)) {
+      setOmitted((current) => current.includes(topping.id) ? current.filter((id) => id !== topping.id) : [...current, topping.id]);
+      return;
+    }
+    setSelected((current) => current.some((entry) => entry.toppingId === topping.id)
       ? current.filter((entry) => entry.toppingId !== topping.id)
-      : [...current, { toppingId: topping.id, placement: "whole", name: topping.name }];
-  });
+      : [...current, { toppingId: topping.id, placement: "whole", name: topping.name }]);
+  };
   const setPlacement = (toppingId: string, placement: ToppingPlacement) =>
     setSelected((current) => current.map((entry) => entry.toppingId === toppingId ? { ...entry, placement } : entry));
   // The customer is always asked in the same order: what it is made of, how it is
@@ -374,26 +385,11 @@ export function PizzaCustomizer({
   const bakePanel = <>{bakeSauceOptions.length ? <fieldset><legend><span>{stepNumber("bake")}</span> Bake &amp; sauce</legend><div className="topping-grid">{bakeSauceOptions.map((option) => { const active = bakeSauce.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setBakeSauce((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div><div className="allowance-meter"><span>Optional</span><b>Choose up to 2</b></div></fieldset> : null}</>;
   const legacyPanel = <>{legacyBaseOptions.length ? <fieldset><legend><span>{stepNumber("legacy")}</span> Crust, bake &amp; sauce</legend><div className="topping-grid">{legacyBaseOptions.map((option) => { const active = legacyBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setLegacyBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}</>;
   const toppingsPanel = <><fieldset><legend><span>{stepNumber("toppings")}</span> Choose toppings</legend>
-            {fixedRecipe ? <>
-              <div className="setup-alert"><strong>This is a set recipe</strong><p>Everything below comes on it as standard, at the price shown. Ask us to leave something off if you like — it does not change the price. Anything you add beyond the recipe is charged at the selected size&apos;s extra-topping rate.</p></div>
-              <div className="recipe-list">
-                {recipeToppings.map((topping) => {
-                  const isOmitted = omitted.includes(topping.id);
-                  return <div className={`recipe-item${isOmitted ? " recipe-item--omitted" : ""}`} key={topping.id}>
-                    <span>{topping.name}</span>
-                    <button
-                      type="button"
-                      className="text-button"
-                      aria-pressed={isOmitted}
-                      onClick={() => setOmitted((current) => isOmitted ? current.filter((id) => id !== topping.id) : [...current, topping.id])}
-                    >{isOmitted ? "Put it back" : "Leave it off"}</button>
-                  </div>;
-                })}
-              </div>
-            </> : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
-            {fixedRecipe ? <p className="editor-hint">Add anything extra below.</p> : null}
-            <ToppingPicker toppings={fixedRecipe ? toppings.filter((topping) => !recipeToppingIds.includes(topping.id)) : toppings} selected={selected} onToggle={toggleTopping} onPlacement={setPlacement} />
-            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
+            {fixedRecipe
+              ? <div className="setup-alert"><strong>Made to our recipe</strong><p>Its toppings are already ticked. Untick any you&apos;d like left off — the price stays the same. Anything else you add is {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "charged at the extra-topping rate"}.</p></div>
+              : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
+            <ToppingPicker toppings={fixedRecipe ? [...recipeToppings, ...toppings.filter((topping) => !recipeIds.has(topping.id))] : toppings} selected={shownSelected} wholeOnly={recipeIds} onToggle={toggleTopping} onPlacement={setPlacement} />
+            <div className="allowance-meter"><span>{formatUnits(fixedRecipe ? shownUnits : selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
   if (crust) modifiers.push({ id: "pizza-crust", label: "Crust", values: [{ value: crust, label: crust }] });

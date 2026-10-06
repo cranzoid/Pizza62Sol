@@ -1204,7 +1204,10 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
   const options: string[] = [];
   if (line.variationName) options.push(line.variationName);
   if (line.extraCheese) options.push("Extra cheese");
-  for (const topping of line.toppings ?? []) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  // A recipe topping left off is listed once, as "No …", not also as a topping.
+  for (const topping of line.toppings ?? []) {
+    if (!line.omitToppings?.includes(topping.toppingId)) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
+  }
   for (const modifier of line.modifiers ?? []) {
     options.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
   }

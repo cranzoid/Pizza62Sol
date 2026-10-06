@@ -142,7 +142,12 @@ export function snapshotDetails(
   snapshot: ItemSnapshot,
   toppingNames: Map<string, string>,
 ): Array<{ label: string; value: string }> {
-  const toppings = Array.isArray(snapshot.toppings) ? (snapshot.toppings as SnapshotTopping[]) : [];
+  // A recipe topping left off stays in the stored build (that is how the
+  // server checks the recipe) but is not listed as a topping: "Toppings:
+  // Mushrooms" above "** NO MUSHROOMS **" is a ticket arguing with itself.
+  const omitted = new Set(Array.isArray(snapshot.recipeOmissions) ? (snapshot.recipeOmissions as string[]) : []);
+  const toppings = (Array.isArray(snapshot.toppings) ? (snapshot.toppings as SnapshotTopping[]) : [])
+    .filter((topping) => !omitted.has(toppingNames.get(String(topping.toppingId ?? "")) ?? String(topping.toppingId ?? "")));
   const modifiers = Array.isArray(snapshot.modifiers) ? (snapshot.modifiers as SnapshotModifier[]) : [];
   return [...toppingDetails(toppings, toppingNames), ...modifierDetails(modifiers)];
 }
