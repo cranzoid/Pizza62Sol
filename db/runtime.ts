@@ -1,6 +1,7 @@
 import { env } from "@/lib/runtime-env";
 import { LAUNCH_SETTINGS, REGULAR_HOURS } from "@/lib/launch-config";
 import { GIVEAWAY_DEFAULTS } from "@/lib/giveaway";
+import { orderModifierSections } from "@/lib/domain";
 import {
   FEEDBACK_REWARD_PRODUCT_IDS,
   withWingStyle,
@@ -912,6 +913,64 @@ const DATA_MIGRATIONS: Array<{
         .prepare("INSERT INTO order_sequences (key, current_number) VALUES (?, 0) ON CONFLICT (key) DO NOTHING")
         .bind(`giveaway:${GIVEAWAY_DEFAULTS.id}`),
     ],
+  },
+  {
+    // Owner, 2026-10-06: every pizza asks which sauce it is made on (tomato
+    // free, the five new ones C$1.49) and, last, for its extras (oregano and
+    // chili flakes free and ticked; olive oil and homemade seasoning C$1.29).
+    //
+    // The seed is insert-only (C-08), so existing rows are patched here, and
+    // only additively: a pizza product gains the two switches (and a specialty
+    // its own sauce), a deal gains a sauce and an extras group for each pizza
+    // it already asks about, and the weekday specials gain the day's-special
+    // flag. A key the owner has already set, or a group already there, is left
+    // exactly as it is. A deal whose pizza group the owner renamed is skipped
+    // rather than given groups under a heading it no longer has.
+    id: "2026-10-06-pizza-sauces-and-extras",
+    run: async (database, now) => {
+      const stored = await database
+        .prepare("SELECT id, configuration_json FROM products")
+        .all<{ id: string; configuration_json: string | null }>();
+      const current = new Map(
+        stored.results.map((row) => [row.id, safeJson<Record<string, unknown>>(row.configuration_json ?? "{}", {})]),
+      );
+      const statements: D1PreparedStatement[] = [];
+      for (const product of MENU_PRODUCTS) {
+        const existing = current.get(product.id);
+        if (!existing) continue;
+        const seed = (product.configuration ?? {}) as Record<string, unknown>;
+        const next: Record<string, unknown> = { ...existing };
+        let changed = false;
+        for (const key of ["sauceEnabled", "extrasEnabled", "includedSauce", "dailySpecial"]) {
+          if (seed[key] !== undefined && existing[key] === undefined) {
+            next[key] = seed[key];
+            changed = true;
+          }
+        }
+        if (Array.isArray(seed.sections) && Array.isArray(existing.sections)) {
+          const sections = existing.sections as ModifierSectionSeed[];
+          const present = new Set(sections.map((section) => section.id));
+          const groups = new Set(sections.map((section) => section.group ?? ""));
+          const added = (seed.sections as ModifierSectionSeed[]).filter((section) =>
+            (section.source === "sauce" || section.source === "pizza_extras")
+            && !present.has(section.id)
+            && groups.has(section.group ?? ""));
+          if (added.length) {
+            // Sorted the way both the customizer and the server already sort at
+            // runtime, so Menu setup lists them where customers meet them.
+            next.sections = orderModifierSections([...sections, ...added], Boolean(existing.toppingsFirst));
+            changed = true;
+          }
+        }
+        if (!changed) continue;
+        statements.push(
+          database
+            .prepare("UPDATE products SET configuration_json = ?, updated_at = ? WHERE id = ?")
+            .bind(JSON.stringify(next), now, product.id),
+        );
+      }
+      return statements;
+    },
   },
 
 ];

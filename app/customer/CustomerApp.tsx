@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { CloverCardForm, type CloverCardFormHandle } from "@/app/customer/CloverCardForm";
@@ -32,6 +32,7 @@ import {
   type DeepLinkRequest,
 } from "@/lib/deep-link";
 import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
+import { todaysSpecials, weekdayName } from "@/lib/daily-specials";
 import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
 import { centsToQualify, formatEntryNumber, type PublicGiveaway } from "@/lib/giveaway";
 
@@ -213,6 +214,35 @@ function alreadyAskedMethod(): boolean {
   // from a fetch long after hydration.
   if (typeof window === "undefined") return true;
   return window.sessionStorage.getItem(METHOD_ASKED_KEY) === "1";
+}
+
+/**
+ * The day's-special pop-up is shown once a visit, not on every page load.
+ *
+ * A visit is the tab's session: reloading or coming back from checkout does
+ * not bring it back, a new visit does. Storage can be missing or refuse writes
+ * (private windows), so both sides are guarded; the worst case is the pop-up
+ * once more, never a pop-up that cannot be closed — dismissing it is also
+ * React state.
+ */
+const SPECIAL_SEEN_KEY = "p62_daily_special_seen";
+const NEVER_CHANGES = () => () => {};
+const SPECIAL_NOT_SEEN_ON_SERVER = () => false;
+
+function specialSeenThisVisit(): boolean {
+  try {
+    return window.sessionStorage.getItem(SPECIAL_SEEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberSpecialSeen() {
+  try {
+    window.sessionStorage.setItem(SPECIAL_SEEN_KEY, "1");
+  } catch {
+    // Nothing to do: the dismissal still holds for this page.
+  }
 }
 
 /**
@@ -443,15 +473,26 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     ? countdown(store.acceptingUntil - now)
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
-  const [laborDayOfferDismissed, setLaborDayOfferDismissed] = useState(false);
+  const [specialDismissed, setSpecialDismissed] = useState(false);
+  // Read once, outside React's render, so hydration sees the server's answer
+  // (not seen) and the browser's own follows straight after.
+  const specialSeenEarlier = useSyncExternalStore(NEVER_CHANGES, specialSeenThisVisit, SPECIAL_NOT_SEEN_ON_SERVER);
   // Only while entries are actually open — judged against the page's own
   // clock too, so a tab left open past the last night stops advertising it.
   const liveGiveaway = catalog?.giveaway?.status === "open" && catalog.giveaway.endsAt > now ? catalog.giveaway : null;
-  const laborDayWings = catalog?.products.find((product) => product.id === "monday-dollar-wings") ?? null;
-  const laborDayAvailability = laborDayWings?.configuration.availability as WeeklyAvailability | undefined;
-  const laborDayOfferAvailable = Boolean(laborDayWings && laborDayAvailability && isWithinWeeklyAvailability(laborDayAvailability, new Date(now)));
-  const showLaborDayOffer = laborDayOfferAvailable && !laborDayOfferDismissed;
-  const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed && !showLaborDayOffer;
+  // Whatever the menu flags as the day's special and is running right now —
+  // see lib/daily-specials.ts. The day is the restaurant's, not the visitor's.
+  const specials = useMemo(
+    () => (catalog ? todaysSpecials(catalog.products, new Date(now), { pickupEnabled, deliveryEnabled }) : []),
+    [catalog, now, pickupEnabled, deliveryEnabled],
+  );
+  const specialDay = weekdayName(new Date(now), timeZone);
+  const showDailySpecial = specials.length > 0 && !specialDismissed && !specialSeenEarlier;
+  const dismissSpecial = () => {
+    setSpecialDismissed(true);
+    rememberSpecialSeen();
+  };
+  const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed && !showDailySpecial;
 
   // The site used to open on pickup — inherited from a previous visit, or just
   // the default — and say so only in small type beside the estimate. A customer
@@ -465,10 +506,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Behind the closed notice: a customer who arrives after hours needs to be
   // told the kitchen is shut before being asked how they want the food.
   const showMethodPrompt =
-    Boolean(catalog) && !methodAsked && !showClosedNotice && !showLaborDayOffer && pickupEnabled && deliveryEnabled;
+    Boolean(catalog) && !methodAsked && !showClosedNotice && !showDailySpecial && pickupEnabled && deliveryEnabled;
   const deliveryDialogRef = useDialogBehavior<HTMLFormElement>(deliveryGate, () => setDeliveryGate(false));
   const closedDialogRef = useDialogBehavior<HTMLDivElement>(showClosedNotice, () => setClosedNoticeDismissed(true));
-  const laborDayDialogRef = useDialogBehavior<HTMLDivElement>(showLaborDayOffer, () => setLaborDayOfferDismissed(true));
+  const specialDialogRef = useDialogBehavior<HTMLDivElement>(showDailySpecial, dismissSpecial);
   const opensIn = store.changesAt ? countdown(store.changesAt - now) : "";
   const opensAtLabel = store.changesAt
     ? new Date(store.changesAt).toLocaleString("en-CA", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone })
@@ -549,7 +590,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Behind the closed notice, for the same reason the method prompt is: a
   // customizer opened under that modal is one the customer cannot see.
   // Dismissing the notice re-renders and the offer is there waiting.
-  const openCustomizerFor = selectedProduct ?? (showClosedNotice || showLaborDayOffer ? null : deepLinkProduct);
+  const openCustomizerFor = selectedProduct ?? (showClosedNotice || showDailySpecial ? null : deepLinkProduct);
   const closeCustomizer = () => {
     const returnToCart = Boolean(pendingUpsell);
     setSelectedProduct(null);
@@ -740,13 +781,19 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     openProduct(product);
   };
 
-  const openLaborDayOffer = (product: Product, nextFulfilment: "pickup" | "delivery") => {
-    setLaborDayOfferDismissed(true);
+  // Ordered the way the special is sold: a pickup-only special switches the
+  // visitor to pickup rather than failing later at the cart, and one sold both
+  // ways keeps whatever they already had.
+  const openDailySpecial = (product: Product) => {
+    const nextFulfilment = (fulfilment === "pickup" ? product.pickup_eligible && pickupEnabled : product.delivery_eligible && deliveryEnabled)
+      ? fulfilment
+      : product.pickup_eligible && pickupEnabled ? "pickup" : "delivery";
+    dismissSpecial();
     setClosedNoticeDismissed(true);
     window.sessionStorage.setItem(METHOD_ASKED_KEY, "1");
     setMethodAsked(true);
     setFulfilment(nextFulfilment);
-    trackEvent("fulfilment_selected", { fulfilment: nextFulfilment, source: "game_day_popup" });
+    trackEvent("fulfilment_selected", { fulfilment: nextFulfilment, source: "daily_special_popup" });
     openProduct(product);
   };
 
@@ -817,9 +864,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
                       <div className={`product-visual ${product.image_url ? "product-visual--image" : ""}`} style={product.image_url ? { backgroundImage: `url(${product.image_url})` } : undefined} aria-hidden="true">
                         {!product.image_url ? (product.product_type === "pizza" ? <div className="mini-pizza"><i /><i /><i /><i /></div> : product.product_type === "bundle" ? <div className="deal-type">DEAL<br />{String(index + 1).padStart(2, "0")}</div> : <div className="dip-cup">62</div>) : null}
                         {product.setup_required ? <span className="setup-ribbon">Setup required</span> : !availableNow ? <span className="setup-ribbon">{availability?.label ?? "Limited hours"}</span> : null}
+                        {product.configuration.isNew ? <span className="new-badge">New</span> : null}
                       </div>
                       <div className="product-content">
-                        <div className="product-kicker">{product.product_type === "bundle" ? "Family favourite" : product.product_type === "pizza" ? "Make it yours" : "The essentials"}</div>
+                        <div className="product-kicker">{product.configuration.isNew ? "New on the menu" : product.product_type === "bundle" ? "Family favourite" : product.product_type === "pizza" ? "Make it yours" : "The essentials"}</div>
                         <h4>{product.name}</h4>
                         <p>{product.description}</p>
                         <div className="product-footer"><span><small>{product.product_type === "pizza" ? "from" : ""}</small>{formatMoney(product.base_price_cents)}</span>
@@ -1004,13 +1052,24 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         <small>© {new Date().getFullYear()} {businessName}. Prices shown in Canadian dollars.</small>
       </footer>
 
-      {showLaborDayOffer && laborDayWings ? (
-        <div className="modal-backdrop labor-day-backdrop" role="presentation" onMouseDown={() => setLaborDayOfferDismissed(true)}>
-          <div ref={laborDayDialogRef} className="labor-day-popup" role="dialog" aria-modal="true" aria-labelledby="labor-day-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
-            <button type="button" className="modal-close" onClick={() => setLaborDayOfferDismissed(true)} aria-label="Close Monday special">×</button>
-            <div className="labor-day-popup__intro"><p className="eyebrow"><span /> Monday special</p><h2 id="labor-day-title">Monday wings<br /><em>taste better.</em></h2><p>Every Monday: pickup wings for $1 each.</p></div>
-            <div className="labor-day-popup__offers">
-              <article className="labor-day-offer labor-day-offer--primary"><span>Pickup only</span><h3>$1 Wings</h3><p>Choose 1–40 Classic (non-breaded) or Breaded wings and your sauce or dry rub. Just $1 per wing.</p><strong>$1 <small>each</small></strong><button type="button" onClick={() => openLaborDayOffer(laborDayWings, "pickup")}>Choose $1 wings <ArrowIcon /></button></article>
+      {showDailySpecial ? (
+        <div className="modal-backdrop special-backdrop" role="presentation" onMouseDown={dismissSpecial}>
+          <div ref={specialDialogRef} className="special-popup" data-watermark={specialDay.toUpperCase()} role="dialog" aria-modal="true" aria-labelledby="special-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={dismissSpecial} aria-label={`Close ${specialDay} special`}>×</button>
+            <div className="special-popup__intro"><p className="eyebrow"><span /> {specialDay} special</p><h2 id="special-title">Today&apos;s<br /><em>special{specials.length === 1 ? "" : "s"}.</em></h2><p>Here&apos;s what&apos;s on today at {businessName}.</p></div>
+            <div className="special-popup__offers">
+              {specials.map((product, index) => {
+                const availability = product.configuration.availability as WeeklyAvailability | undefined;
+                const how = product.pickup_eligible && product.delivery_eligible ? "Pickup or delivery" : product.pickup_eligible ? "Pickup only" : "Delivery only";
+                const perUnit = product.configuration.quantitySelectable ? String(product.configuration.unitLabel ?? "item") : null;
+                return <article className={`special-offer${index === 0 ? " special-offer--primary" : ""}`} key={product.id}>
+                  <span>{availability?.label ?? how}</span>
+                  <h3>{product.name}</h3>
+                  <p>{product.description}</p>
+                  <strong>{product.product_type === "pizza" ? <small>from </small> : null}{formatMoney(product.base_price_cents)}{perUnit ? <small> each</small> : null}</strong>
+                  <button type="button" onClick={() => openDailySpecial(product)}>Order now <ArrowIcon /></button>
+                </article>;
+              })}
             </div>
           </div>
         </div>

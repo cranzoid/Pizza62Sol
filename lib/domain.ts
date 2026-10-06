@@ -284,6 +284,97 @@ export const DEFAULT_CRUST_OPTION = "Regular Crust";
 export const BAKE_SAUCE_OPTIONS = ["Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"] as const;
 
 /**
+ * The sauce a pizza is made on, and what each one costs.
+ *
+ * Owner's list and prices, 2026-10-06: tomato is the classic and always free;
+ * every other sauce is new and C$1.49. A specialty pizza that is *made on* one
+ * of them — the Shawarma Pizza on shawarma sauce — names it as `includedSauce`,
+ * which starts it selected and takes the charge off it, because charging extra
+ * for the sauce in the recipe would be charging twice.
+ *
+ * Like the pop list, these are what a `source: "sauce"` group *means*, resolved
+ * live on both sides, so a deal stores the group and never the list.
+ */
+export const DEFAULT_SAUCE_OPTION = "Tomato";
+export const SAUCE_OPTIONS = ["Tomato", "BBQ", "Butter Chicken", "Creamy Garlic", "Honey Garlic", "Shawarma"] as const;
+export const SAUCE_PRICES_CENTS: Readonly<Record<string, number>> = {
+  BBQ: 149,
+  "Butter Chicken": 149,
+  "Creamy Garlic": 149,
+  "Honey Garlic": 149,
+  Shawarma: 149,
+};
+
+/**
+ * What goes in the box with a pizza, asked last.
+ *
+ * Oregano and chili flakes are free and start ticked — most people want them,
+ * and unticking is one tap for those who do not. Olive oil and the new homemade
+ * seasoning are C$1.29 each (owner, 2026-10-06).
+ */
+export const PIZZA_EXTRA_OPTIONS = ["Oregano", "Chili Flakes", "Olive Oil", "Homemade Seasoning"] as const;
+export const DEFAULT_PIZZA_EXTRAS: readonly string[] = ["Oregano", "Chili Flakes"];
+export const PIZZA_EXTRA_PRICES_CENTS: Readonly<Record<string, number>> = {
+  "Olive Oil": 129,
+  "Homemade Seasoning": 129,
+};
+
+/** Options new to the menu, which the customizer marks so they are noticed. */
+export const NEW_OPTIONS: ReadonlySet<string> = new Set(["Homemade Seasoning"]);
+
+/**
+ * The per-option charges a section applies.
+ *
+ * A section's own `optionPrices` win, so the owner can still set a surcharge on
+ * one deal in Menu setup. Without them, a sauce or extras group charges the live
+ * prices above — the same rule on the server that charges and in the browser
+ * that shows the total, so the two cannot disagree.
+ */
+export function sectionOptionPrices(section: Pick<ModifierSection, "source" | "optionPrices">): Readonly<Record<string, number>> {
+  if (section.optionPrices) return section.optionPrices;
+  if (section.source === "sauce") return SAUCE_PRICES_CENTS;
+  if (section.source === "pizza_extras") return PIZZA_EXTRA_PRICES_CENTS;
+  return {};
+}
+
+/**
+ * The sauce group for one pizza.
+ *
+ * `min: 0` on purpose. The customizer always sends a sauce, but a cart saved in
+ * a browser before this group existed sends none, and refusing it at checkout
+ * over a choice the customer was never offered would strand a working order.
+ * No sauce named means the classic, which is what the kitchen made before.
+ */
+export function pizzaSauceSection(id: string, options: { group?: string; includedSauce?: string } = {}): ModifierSection {
+  const included = options.includedSauce && SAUCE_OPTIONS.includes(options.includedSauce as (typeof SAUCE_OPTIONS)[number])
+    ? options.includedSauce
+    : null;
+  return {
+    id,
+    label: "Sauce",
+    group: options.group,
+    source: "sauce",
+    min: 0,
+    max: 1,
+    // Only spelled out when a recipe sauce has to be made free; otherwise the
+    // group reads the live prices through `sectionOptionPrices`.
+    ...(included ? { optionPrices: Object.fromEntries(Object.entries(SAUCE_PRICES_CENTS).filter(([sauce]) => sauce !== included)) } : {}),
+  };
+}
+
+/** The extras group for one pizza: anything from none to all four. */
+export function pizzaExtrasSection(id: string, group?: string): ModifierSection {
+  return { id, label: "Extras", group, source: "pizza_extras", min: 0, max: PIZZA_EXTRA_OPTIONS.length };
+}
+
+/** What a sauce or extras group starts with selected. */
+export function defaultSectionValues(section: Pick<ModifierSection, "source">, includedSauce?: string): string[] {
+  if (section.source === "sauce") return [includedSauce && SAUCE_OPTIONS.includes(includedSauce as (typeof SAUCE_OPTIONS)[number]) ? includedSauce : DEFAULT_SAUCE_OPTION];
+  if (section.source === "pizza_extras") return [...DEFAULT_PIZZA_EXTRAS];
+  return [];
+}
+
+/**
  * The cans in the fridge, and the wing sauces on the board.
  *
  * These live here rather than in `lib/menu.ts` because they are not seed data —
@@ -351,6 +442,8 @@ export type ModifierSource =
   | "crust"
   | "bake_sauce"
   | "cheese"
+  | "sauce"
+  | "pizza_extras"
   /**
    * Retired. Halal was withdrawn from the menu, so nothing offers, prices or
    * prints it any more — but deals seeded before the withdrawal still carry a
@@ -399,20 +492,23 @@ export function isRetiredSection(section: Pick<ModifierSection, "source">): bool
 }
 
 // The order a customer is asked to build a pizza in: what it is made of first
-// (cheese), then how it is baked (crust, bake and sauce), then what goes on it.
+// (cheese), then how it is baked (crust, sauce, bake), then what goes on it, and
+// last what comes in the box with it (extras).
 // Deals used to ask for toppings before the crust, which made the same pizza feel
 // like two different products depending on where it was ordered from.
 const SECTION_RANK: Record<string, number> = {
   cheese: 1,
   crust: 3,
+  sauce: 3.5,
   bake_sauce: 4,
   pizza_base: 4,
   toppings: 5,
+  pizza_extras: 5.5,
   wing_flavours: 6,
   drinks: 7,
   two_litre_drinks: 7,
 };
-const TOPPINGS_FIRST_RANK: Record<string, number> = { ...SECTION_RANK, toppings: 3, crust: 4, bake_sauce: 5, pizza_base: 5 };
+const TOPPINGS_FIRST_RANK: Record<string, number> = { ...SECTION_RANK, toppings: 3, crust: 4, sauce: 4.5, bake_sauce: 5, pizza_base: 5, pizza_extras: 5.5 };
 
 export function orderModifierSections<T extends ModifierSection>(
   sections: T[],

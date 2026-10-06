@@ -11,9 +11,14 @@ import {
   modifierUnitsBps,
   normalizeModifierValues,
   orderModifierSections,
+  PIZZA_EXTRA_OPTIONS,
+  pizzaExtrasSection,
+  pizzaSauceSection,
   priceCart,
   pricePizza,
   priceToppingUnits,
+  SAUCE_OPTIONS,
+  sectionOptionPrices,
   validateDelivery,
   type AppliedPromotion,
   type CartLinePrice,
@@ -205,6 +210,12 @@ type ProductConfiguration = {
   pizzaBaseOptions?: string[];
   crustOptions?: string[];
   bakeSauceOptions?: string[];
+  /** Ask which sauce the pizza is made on. See SAUCE_OPTIONS. */
+  sauceEnabled?: boolean;
+  /** The recipe's own sauce: selected to start with, and free. */
+  includedSauce?: string;
+  /** Ask for oregano, chili flakes, olive oil and seasoning, last. */
+  extrasEnabled?: boolean;
   cheeseEnabled?: boolean;
   requireIncludedToppings?: boolean;
   toppingsFirst?: boolean;
@@ -216,18 +227,28 @@ type ProductConfiguration = {
 // Crust and bake/sauce are separate groups so a customer cannot pick both Thin and
 // Thick. Pizzas configured before the split still carry pizzaBaseOptions, which is
 // honoured as one combined group so existing products keep validating.
+//
+// Listed in the order the customer is asked, which is also the order the kitchen
+// ticket prints them: crust, sauce, bake, and the extras for the box last. The
+// sauce and extras groups come from the same functions the customizer uses, so
+// a recipe's own sauce is free on both sides of the wire.
 function pizzaOptionSections(configuration: ProductConfiguration): ModifierSectionSeed[] {
-  const sections: ModifierSectionSeed[] = [];
-  if (configuration.crustOptions?.length) {
-    sections.push({ id: "pizza-crust", label: "Crust", source: "crust", options: configuration.crustOptions, min: 0, max: 1 });
-  }
-  if (configuration.bakeSauceOptions?.length) {
-    sections.push({ id: "pizza-bake-sauce", label: "Bake & sauce", source: "bake_sauce", options: configuration.bakeSauceOptions, min: 0, max: 2 });
-  }
-  if (!sections.length && configuration.pizzaBaseOptions?.length) {
-    sections.push({ id: "pizza-base", label: "Crust, bake & sauce", source: "pizza_base", options: configuration.pizzaBaseOptions, min: 0, max: 2 });
-  }
-  return sections;
+  const crust: ModifierSectionSeed[] = configuration.crustOptions?.length
+    ? [{ id: "pizza-crust", label: "Crust", source: "crust", options: configuration.crustOptions, min: 0, max: 1 }]
+    : [];
+  const bake: ModifierSectionSeed[] = configuration.bakeSauceOptions?.length
+    ? [{ id: "pizza-bake-sauce", label: "Bake & sauce", source: "bake_sauce", options: configuration.bakeSauceOptions, min: 0, max: 2 }]
+    : [];
+  const legacy: ModifierSectionSeed[] = !crust.length && !bake.length && configuration.pizzaBaseOptions?.length
+    ? [{ id: "pizza-base", label: "Crust, bake & sauce", source: "pizza_base", options: configuration.pizzaBaseOptions, min: 0, max: 2 }]
+    : [];
+  return [
+    ...crust,
+    ...(configuration.sauceEnabled ? [pizzaSauceSection("pizza-sauce", { includedSauce: configuration.includedSauce })] : []),
+    ...bake,
+    ...legacy,
+    ...(configuration.extrasEnabled ? [pizzaExtrasSection("pizza-extras")] : []),
+  ];
 }
 
 /**
@@ -329,7 +350,9 @@ function modifierOptions(
             : section.source === "crust" ? [...CRUST_OPTIONS]
               : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
                 : section.source === "cheese" ? [...CHEESE_OPTIONS]
-                  : []
+                  : section.source === "sauce" ? [...SAUCE_OPTIONS]
+                    : section.source === "pizza_extras" ? [...PIZZA_EXTRA_OPTIONS]
+                      : []
   );
   return new Map(options.map((value) => [value, value]));
 }
@@ -368,7 +391,7 @@ function validateModifiers(
   for (const section of liveSections) {
     const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
-    const optionPrices = section.optionPrices ?? {};
+    const optionPrices = sectionOptionPrices(section);
     if (section.source === "toppings") {
       // Topping groups carry a placement per selection, so a half topping consumes
       // only part of the included allowance and is charged proportionally.
@@ -611,13 +634,16 @@ async function validateItems(
           );
         }
       }
-      unitPriceCents = pizza.totalCents;
       const validatedModifiers = validateModifiers(
         input.modifiers,
         pizzaOptionSections(productConfiguration),
         toppingNames,
         operations.halfToppingUnitsBps,
       );
+      // A paid sauce or extra rides on the pizza's own price, as it does on a
+      // deal's. Nothing a pizza could choose cost anything until sauces did,
+      // which is why this was never added before.
+      unitPriceCents = pizza.totalCents + validatedModifiers.extraCents;
       snapshot = {
         ...snapshot,
         variationId: variation.id,
@@ -632,6 +658,7 @@ async function validateItems(
         // not written by an older build".
         ...(recipeOmissions.length ? { recipeOmissions } : {}),
         modifiers: validatedModifiers.snapshot,
+        modifierExtraCents: validatedModifiers.extraCents,
       };
     } else if (input.toppings?.length || input.extraCheese) {
       throw new OrderValidationError(`Unsupported customization was added to ${product.name}.`);
@@ -1157,7 +1184,12 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   //
   // Only checked when a payment method was actually named — the cart is quoted
   // long before the customer has chosen one.
-  if (body.paymentMethod === "pay_at_store" && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+  //
+  // Staff entry is exempt here exactly as it is in `createOrder`. Mirroring the
+  // rule without its exemption is how every phone delivery at the till was
+  // quoted `ok: false`, which greyed out "Send & print" — so a delivery could
+  // not be sent, and its ticket never printed for the driver.
+  if (body.paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
     issues.push({
       index: null,
       productId: null,

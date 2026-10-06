@@ -661,12 +661,12 @@ test("every pizza is built in the same order wherever it is ordered from", () =>
   assert.deepEqual(orderModifierSections(twoPizzas).map((section) => section.id), ["p2c", "p1c", "p1t"]);
 });
 
-test("deals ask for cheese and crust on every pizza they contain", () => {
+test("deals ask for cheese, crust, sauce and extras on every pizza they contain", () => {
   const twoForOne = MENU_PRODUCTS.find((product) => product.id === "two-for-one-large")!;
   const sections = (twoForOne.configuration as { sections: Array<{ id: string; source?: string; group?: string }> }).sections;
   for (const pizza of ["Pizza 1", "Pizza 2"]) {
     const sources = sections.filter((section) => section.group === pizza).map((section) => section.source);
-    assert.deepEqual(sources, ["cheese", "crust", "bake_sauce", "toppings"]);
+    assert.deepEqual(sources, ["cheese", "crust", "sauce", "bake_sauce", "toppings", "pizza_extras"]);
   }
 });
 
