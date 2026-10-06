@@ -308,12 +308,12 @@ export const SAUCE_PRICES_CENTS: Readonly<Record<string, number>> = {
 /**
  * What goes in the box with a pizza, asked last.
  *
- * Oregano and chili flakes are free and start ticked — most people want them,
- * and unticking is one tap for those who do not. Olive oil and the new homemade
- * seasoning are C$1.29 each (owner, 2026-10-06).
+ * Oregano and chili flakes are free; olive oil and the new homemade seasoning
+ * are C$1.29 each. Nothing starts ticked — the owner asked for oregano and chili
+ * flakes to be there for whoever wants them, not added to every box (2026-10-06).
  */
 export const PIZZA_EXTRA_OPTIONS = ["Oregano", "Chili Flakes", "Olive Oil", "Homemade Seasoning"] as const;
-export const DEFAULT_PIZZA_EXTRAS: readonly string[] = ["Oregano", "Chili Flakes"];
+export const DEFAULT_PIZZA_EXTRAS: readonly string[] = [];
 export const PIZZA_EXTRA_PRICES_CENTS: Readonly<Record<string, number>> = {
   "Olive Oil": 129,
   "Homemade Seasoning": 129,
