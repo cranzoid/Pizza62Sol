@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
-import { NUDGES, planNudgeSchedule, type GiveawaySetting, type NudgeKind } from "@/lib/giveaway";
+import { type GiveawaySetting, type NudgeKind } from "@/lib/giveaway";
 
 type Entry = {
   id: string;
@@ -38,13 +38,18 @@ type Entry = {
   eligible: boolean;
 };
 
-type Send = {
+export type Send = {
   id: string;
   nudge: string;
   channel: "email" | "sms";
   recipient_count: number;
   skipped_count: number;
   per_day: number;
+  interval_minutes: number | null;
+  audience_source: string;
+  send_mode: string;
+  delivered: number;
+  undelivered: number;
   first_send_at: number | null;
   last_send_at: number | null;
   created_at: number;
@@ -57,7 +62,7 @@ type Send = {
 
 type Audience = { ready: number; optedOut: number; alreadyNudged: number };
 
-type Overview = {
+export type Overview = {
   giveaway: GiveawaySetting | null;
   status: "off" | "upcoming" | "open" | "closed";
   now: number;
@@ -70,6 +75,7 @@ type Overview = {
   nudges: Record<NudgeKind, Audience>;
   smsNudges: Record<NudgeKind, Audience>;
   sends: Send[];
+  contacts: { contacts: number; imported: number };
   emailVolume: { sent: number; rateLimited: number };
   emailReady: boolean;
   smsBlocker: string | null;
@@ -87,7 +93,7 @@ const STATUS_LABELS: Record<Overview["status"], string> = {
 
 const CHANNELS: Record<string, string> = { online: "Website", phone: "Phone", walk_in: "Walk-in" };
 
-const when = (value: number | null | undefined) =>
+export const when = (value: number | null | undefined) =>
   value
     ? new Date(value).toLocaleString("en-CA", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })
     : "—";
@@ -98,16 +104,19 @@ const day = (value: number) =>
 /** The YYYY-MM-DD of the last day orders count, for the date input. */
 const lastDayInput = (endsAt: number) => new Date(endsAt - 1).toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
 
+import { OutreachPanel, ActivityPanel, ImportPanel } from "@/app/staff/AdminGiveawayOutreach";
+
 export function AdminGiveawayPanel() {
   const [data, setData] = useState<Overview | null>(null);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState("messages");
 
   const load = useCallback(async () => {
     const search = new URLSearchParams({ q: query, page: String(page) });
-    const response = await fetch(`/api/admin/giveaway?${search}`);
+    const response = await fetch(`/api/admin/giveaway?${search}`, { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) {
       setMessage({ tone: "bad", text: result.error ?? "The giveaway could not be loaded." });
@@ -117,8 +126,10 @@ export function AdminGiveawayPanel() {
   }, [query, page]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 200);
-    return () => window.clearTimeout(timer);
+    const refresh = () => void load().catch(() => setMessage({ tone: "bad", text: "Could not refresh. Check your connection and try again." }));
+    const timer = window.setTimeout(refresh, 200);
+    const poll = window.setInterval(refresh, 15_000);
+    return () => { window.clearTimeout(timer); window.clearInterval(poll); };
   }, [load]);
 
   const act = async (body: Record<string, unknown>, success: (result: Record<string, unknown>) => string) => {
@@ -148,24 +159,29 @@ export function AdminGiveawayPanel() {
   const giveaway = data.giveaway;
 
   return (
-    <div className="admin-stack">
-      <section className="stats-grid">
-        <Stat label="Status" value={STATUS_LABELS[data.status]} note={data.status === "open" ? `Closes at midnight after ${day(giveaway.endsAt - 1)}` : `Winner: ${giveaway.winnerAnnouncedOn}`} />
-        <Stat label="Entries" value={String(data.stats.eligible)} note={data.stats.entries > data.stats.eligible ? `${data.stats.entries - data.stats.eligible} dropped out (cancelled or refunded)` : "One per qualifying order"} />
-        <Stat label="People entered" value={String(data.stats.people)} note="By email or phone" />
-        <Stat label="Entries today" value={String(data.stats.today)} note="Since midnight, Hamilton time" />
+    <div className="admin-stack giveaway-workspace">
+      <section className="giveaway-hero">
+        <div><span className="giveaway-eyebrow">CUSTOMER CAMPAIGN</span><h1>{giveaway.title}</h1>
+          <p>Bring customers back. Follow every message from queued to sent.</p>
+          <span className="giveaway-status">{STATUS_LABELS[data.status]}</span> <span>Last day: {day(giveaway.endsAt - 1)}</span>
+        </div>
+        <div className="giveaway-prize"><span>The prize</span><strong>{giveaway.prize}</strong><small>Orders of {formatMoney(giveaway.minimumCents)} or more before tax earn an entry.</small></div>
       </section>
-
-      <p className="admin-message" role="note">
-        <strong>{giveaway.title}:</strong> every order of {formatMoney(giveaway.minimumCents)} or more (food before tax, after any promo)
-        placed from {when(giveaway.startsAt)} until closing on {day(giveaway.endsAt - 1)} earns one entry to win {giveaway.prize}.
-        Customers get their entry number on their receipt email, in a separate &ldquo;You&rsquo;re in&rdquo; email and on the printed ticket.
-      </p>
-
+      <section className="stats-grid">
+        <Stat label="Eligible entries" value={String(data.stats.eligible)} note={`${data.stats.people} people entered`} />
+        <Stat label="Old POS customers" value={String(data.contacts.imported)} note="Imported contacts, deduplicated for each channel" />
+        <Stat label="Messages sent" value={String(data.sends.reduce((sum, send) => sum + send.sent, 0))} note="Accepted by the sending provider" />
+        <Stat label="Waiting to send" value={String(data.sends.reduce((sum, send) => sum + send.waiting, 0))} note="Progress refreshes every 15 seconds" />
+      </section>
+      <nav className="giveaway-tabs" aria-label="Giveaway sections">
+        {[["messages", "Send nudges"], ["activity", "Message activity"], ["entries", "Entries & winner"], ["settings", "Settings"]].map(([key, label]) =>
+          <button key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)}>{label}</button>)}
+      </nav>
       {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
 
-      <NudgesPanel data={data} busy={busy} act={act} />
-      <TextNudgesPanel data={data} busy={busy} act={act} />
+      {tab === "messages" ? <><OutreachPanel data={data} busy={busy} act={act} /><ImportPanel canImport={data.canViewContact} onImported={load} /></> : null}
+      {tab === "activity" ? <ActivityPanel data={data} busy={busy} act={act} /> : null}
+      {tab === "entries" ? <>
       <WinnerPanel data={data} busy={busy} act={act} />
 
       <section className="staff-panel">
@@ -214,262 +230,13 @@ export function AdminGiveawayPanel() {
         ) : null}
       </section>
 
-      <SettingsPanel giveaway={giveaway} busy={busy} act={act} />
+      </> : null}
+      {tab === "settings" ? <SettingsPanel giveaway={giveaway} busy={busy} act={act} /> : null}
     </div>
   );
 }
 
-type Act = (body: Record<string, unknown>, success: (result: Record<string, unknown>) => string) => Promise<Record<string, unknown> | null>;
-
-/**
- * The two nudges.
- *
- * The daily limit is the one number here that needs explaining, so it is
- * explained where it is set: nudges share the email plan's daily allowance
- * with order receipts, and on the free plan that allowance is 100.
- */
-function NudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: Act }) {
-  const giveaway = data.giveaway as GiveawaySetting;
-  const [perDay, setPerDay] = useState(String(giveaway.nudgePerDay));
-  const [testEmail, setTestEmail] = useState(data.me.email);
-  const [confirming, setConfirming] = useState<NudgeKind | null>(null);
-  const perDayNumber = Math.max(1, Math.trunc(Number(perDay) || 0));
-  const open = data.status === "open";
-
-  return (
-    <section className="staff-panel">
-      <div className="staff-panel-head">
-        <h2>Nudge past customers</h2>
-        <span className="live-chip">{data.emailVolume.sent} emails sent in the last 24 h</span>
-      </div>
-      <p className="editor-hint">
-        Goes to everyone who has bought from us with an email address, plus customers imported from the POS (Customers → Import).
-        Anyone who has unsubscribed is always left out, and each nudge reaches each person once — pressing it again only reaches people added since.
-        Every nudge carries an unsubscribe link, as Canadian anti-spam law requires.
-      </p>
-      {!data.emailReady ? <p className="form-error">Email is not set up yet (Integrations), so nudges cannot be sent.</p> : null}
-      {data.emailVolume.rateLimited > 0 ? (
-        <p className="form-error">The email provider refused {data.emailVolume.rateLimited} email{data.emailVolume.rateLimited === 1 ? "" : "s"} for being over its limit in the last 24 hours. Lower the daily limit, or upgrade the email plan.</p>
-      ) : null}
-      <div className="settings-form">
-        <label>
-          Nudges per day
-          <input type="number" min={1} max={5000} value={perDay} onChange={(event) => setPerDay(event.target.value)} />
-        </label>
-        <label className="field-wide">
-          Why a limit
-          <input readOnly tabIndex={-1} value="Receipts use the same email allowance. Resend's free plan allows 100 a day — leave room for orders." />
-        </label>
-      </div>
-
-      <div className="staff-grid giveaway-nudges">
-        {(Object.keys(NUDGES) as NudgeKind[]).map((nudge) => {
-          const audience = data.nudges[nudge];
-          const schedule = planNudgeSchedule(audience.ready, perDayNumber, data.now);
-          const finishes = schedule.at(-1) ?? null;
-          const lateForClose = finishes !== null && finishes >= giveaway.endsAt;
-          const lastSend = data.sends.find((send) => send.nudge === nudge && send.channel !== "sms");
-          return (
-            <article className="giveaway-nudge" key={nudge}>
-              <h3>{NUDGES[nudge].label}</h3>
-              <p>{NUDGES[nudge].description}</p>
-              <ul>
-                <li><b>{audience.ready}</b> ready to send</li>
-                {audience.alreadyNudged ? <li>{audience.alreadyNudged} already sent this nudge</li> : null}
-                {audience.optedOut ? <li>{audience.optedOut} unsubscribed — never emailed</li> : null}
-              </ul>
-              {lastSend ? <p className="secure-note">Last sent {when(lastSend.created_at)} by {lastSend.created_by_name ?? "staff"} to {lastSend.recipient_count}.</p> : <p className="secure-note">Not sent yet.</p>}
-              {audience.ready ? (
-                <p className="secure-note">
-                  At {perDayNumber} a day, from 11 a.m. to 7 p.m.: {schedule.length > 1 ? `first ${when(schedule[0])}, last ${when(finishes)}` : `goes ${when(schedule[0])}`}.
-                  {lateForClose ? <strong> That runs past the close — raise the daily limit if your email plan allows.</strong> : null}
-                </p>
-              ) : null}
-              {confirming === nudge ? (
-                <div className="pager">
-                  <button
-                    className="staff-button"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirming(null);
-                      void act({ action: "nudge.send", nudge, perDay: perDayNumber }, (result) =>
-                        `${NUDGES[nudge].label} queued for ${result.queued} customer${result.queued === 1 ? "" : "s"}.`);
-                    }}
-                  >
-                    Yes, send to {audience.ready}
-                  </button>
-                  <button className="staff-button" onClick={() => setConfirming(null)}>Cancel</button>
-                </div>
-              ) : (
-                <button className="staff-button" disabled={!open || !audience.ready || !data.emailReady || busy} onClick={() => setConfirming(nudge)}>
-                  {open ? `Send to ${audience.ready} customer${audience.ready === 1 ? "" : "s"}` : "Giveaway is not open"}
-                </button>
-              )}
-              <button
-                className="text-button"
-                disabled={!open || !data.emailReady || busy || !testEmail.trim()}
-                onClick={() => void act({ action: "nudge.test", variant: nudge, email: testEmail }, () => `Test ${NUDGES[nudge].label.toLowerCase()} sent to ${testEmail}. It arrives marked [TEST].`)}
-              >
-                Send me a test first
-              </button>
-            </article>
-          );
-        })}
-      </div>
-      <div className="settings-form">
-        <label className="field-wide">
-          Test emails go to
-          <input value={testEmail} onChange={(event) => setTestEmail(event.target.value)} inputMode="email" />
-        </label>
-      </div>
-
-      {data.sends.length ? (
-        <div className="table-scroll" role="region" aria-label="Nudges sent" tabIndex={0}>
-          <table className="viz-table">
-            <thead>
-              <tr><th scope="col">Sent</th><th scope="col">Nudge</th><th scope="col">Progress</th><th scope="col">Pace</th><th scope="col" /></tr>
-            </thead>
-            <tbody>
-              {data.sends.map((send) => (
-                <tr key={send.id}>
-                  <th scope="row">{when(send.created_at)}<small>by {send.created_by_name ?? "staff"}</small></th>
-                  <td>{NUDGES[send.nudge as NudgeKind]?.label ?? send.nudge} · {send.channel === "sms" ? "text" : "email"}<small>{send.recipient_count} people{send.skipped_count ? ` · ${send.skipped_count} left out` : ""}</small></td>
-                  <td>{send.sent} delivered<small>{[send.waiting ? `${send.waiting} waiting` : "", send.failed ? `${send.failed} failed` : "", send.stopped ? `${send.stopped} stopped or skipped` : ""].filter(Boolean).join(" · ") || "done"}</small></td>
-                  <td>{send.per_day}/day<small>{send.last_send_at ? `last one ${when(send.last_send_at)}` : ""}</small></td>
-                  <td>
-                    {send.waiting ? (
-                      <button
-                        className="staff-button"
-                        disabled={busy}
-                        onClick={() => void act({ action: "nudge.stop", sendId: send.id }, (result) => `Stopped ${result.stopped} ${send.channel === "sms" ? "text" : "email"}${result.stopped === 1 ? "" : "s"} that had not gone yet.`)}
-                      >
-                        Stop the rest
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-/**
- * The same two nudges, by text, to a phone-number audience.
- *
- * The send button stays locked until a test text has gone out from this
- * screen, so the first text anyone receives is one the owner has already seen
- * arrive on their own phone. The progress of a text send shows in the log in
- * the email panel above, alongside the emails.
- */
-function TextNudgesPanel({ data, busy, act }: { data: Overview; busy: boolean; act: Act }) {
-  const giveaway = data.giveaway as GiveawaySetting;
-  const [perDay, setPerDay] = useState("40");
-  const [testPhone, setTestPhone] = useState("");
-  const [tested, setTested] = useState<Partial<Record<NudgeKind, boolean>>>({});
-  const [confirming, setConfirming] = useState<NudgeKind | null>(null);
-  const perDayNumber = Math.max(1, Math.trunc(Number(perDay) || 0));
-  const open = data.status === "open";
-  const ready = data.smsBlocker === null;
-
-  return (
-    <section className="staff-panel">
-      <div className="staff-panel-head">
-        <h2>Text past customers</h2>
-        <span className="live-chip">Separate from email</span>
-      </div>
-      <p className="editor-hint">
-        Goes to every phone number on a paid order, plus imported customers with a phone number — so someone may get both an email and a text.
-        Anyone who has replied STOP is always left out, and each text nudge reaches each number once.
-        Every text says &ldquo;Reply STOP to opt out&rdquo;, as Canadian anti-spam law requires.
-      </p>
-      {data.smsBlocker ? <p className="form-error">{data.smsBlocker}</p> : null}
-      <div className="settings-form">
-        <label>
-          Texts per day
-          <input type="number" min={1} max={5000} value={perDay} onChange={(event) => setPerDay(event.target.value)} />
-        </label>
-        <label className="field-wide">
-          Test texts go to
-          <input value={testPhone} onChange={(event) => setTestPhone(event.target.value)} inputMode="tel" placeholder="905-555-0100" />
-        </label>
-      </div>
-      <p className="secure-note">
-        Start small: an unregistered Twilio number that suddenly sends hundreds of texts is the most likely to be filtered by carriers.
-        Send yourself a test, then send at a modest daily pace and watch the delivered and failed counts before raising it.
-      </p>
-
-      <div className="staff-grid giveaway-nudges">
-        {(Object.keys(NUDGES) as NudgeKind[]).map((nudge) => {
-          const audience = data.smsNudges[nudge];
-          const schedule = planNudgeSchedule(audience.ready, perDayNumber, data.now);
-          const finishes = schedule.at(-1) ?? null;
-          const lateForClose = finishes !== null && finishes >= giveaway.endsAt;
-          const lastSend = data.sends.find((send) => send.nudge === nudge && send.channel === "sms");
-          return (
-            <article className="giveaway-nudge" key={nudge}>
-              <h3>{NUDGES[nudge].label} · text</h3>
-              <p>{NUDGES[nudge].description}</p>
-              <ul>
-                <li><b>{audience.ready}</b> numbers ready</li>
-                {audience.alreadyNudged ? <li>{audience.alreadyNudged} already texted this nudge</li> : null}
-                {audience.optedOut ? <li>{audience.optedOut} replied STOP — never texted</li> : null}
-              </ul>
-              {lastSend ? <p className="secure-note">Last sent {when(lastSend.created_at)} by {lastSend.created_by_name ?? "staff"} to {lastSend.recipient_count}.</p> : <p className="secure-note">Not sent yet.</p>}
-              {audience.ready ? (
-                <p className="secure-note">
-                  At {perDayNumber} a day, from 11 a.m. to 7 p.m.: {schedule.length > 1 ? `first ${when(schedule[0])}, last ${when(finishes)}` : `goes ${when(schedule[0])}`}.
-                  {lateForClose ? <strong> That runs past the close — raise the daily pace.</strong> : null}
-                </p>
-              ) : null}
-              <button
-                className="text-button"
-                disabled={!open || !ready || busy || !testPhone.trim()}
-                onClick={async () => {
-                  const result = await act(
-                    { action: "nudge.test", channel: "sms", variant: nudge, phone: testPhone },
-                    () => `Test text sent to ${testPhone}. It starts with [TEST]. Check it arrived before sending to everyone.`,
-                  );
-                  if (result) setTested((current) => ({ ...current, [nudge]: true }));
-                }}
-              >
-                1. Text me a test
-              </button>
-              {confirming === nudge ? (
-                <div className="pager">
-                  <button
-                    className="staff-button"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirming(null);
-                      void act({ action: "nudge.send", channel: "sms", nudge, perDay: perDayNumber }, (result) =>
-                        `${NUDGES[nudge].label} texts queued for ${result.queued} number${result.queued === 1 ? "" : "s"}.`);
-                    }}
-                  >
-                    Yes, text {audience.ready}
-                  </button>
-                  <button className="staff-button" onClick={() => setConfirming(null)}>Cancel</button>
-                </div>
-              ) : (
-                <button
-                  className="staff-button"
-                  disabled={!open || !ready || !audience.ready || !tested[nudge] || busy}
-                  onClick={() => setConfirming(nudge)}
-                  title={!tested[nudge] ? "Send yourself a test text first" : undefined}
-                >
-                  {!open ? "Giveaway is not open" : `2. Text ${audience.ready} number${audience.ready === 1 ? "" : "s"}`}
-                </button>
-              )}
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
+export type Act = (body: Record<string, unknown>, success: (result: Record<string, unknown>) => string) => Promise<Record<string, unknown> | null>;
 
 /**
  * Picking the winner.

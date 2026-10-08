@@ -18,9 +18,11 @@ import { AuthError, authErrorResponse, requireStaff } from "@/lib/auth";
 import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { emailConfig } from "@/lib/notifications/config";
+import { renderGiveawayNudge } from "@/lib/notifications/messages";
+import { contactSummary } from "@/lib/customer-contacts";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { logFailure } from "@/lib/log";
-import { giveawayStatus, isNudgeKind, NUDGES, type GiveawaySetting } from "@/lib/giveaway";
+import { giveawayStatus, isNudgeKind, NUDGES, planOutreachSchedule, type GiveawaySetting } from "@/lib/giveaway";
 import {
   allGiveawayEntries,
   giveawayStats,
@@ -32,6 +34,10 @@ import {
 } from "@/lib/giveaway-store";
 import {
   cancelNudge,
+  isAudienceSource,
+  isSendMode,
+  legacySummary,
+  nudgeOutboxKind,
   isNudgeChannel,
   NudgeError,
   nudgeAudience,
@@ -40,6 +46,7 @@ import {
   queueNudge,
   queueTestNudge,
   recentEmailVolume,
+  repaceNudge,
 } from "@/lib/giveaway-nudges";
 import { ISO_DATE_RE, nextCalendarDate, torontoDayStart } from "@/lib/report-dates";
 
@@ -78,6 +85,58 @@ export async function GET(request: Request) {
     const giveaway = await loadGiveaway();
     if (!giveaway) return Response.json({ giveaway: null });
     const contact = canSeeContact(user);
+    const noStore = { "cache-control": "no-store" };
+    if (url.searchParams.get("view") === "audience") {
+      const channel = isNudgeChannel(url.searchParams.get("channel")) ? url.searchParams.get("channel") as "sms" | "email" : "sms";
+      const nudge = isNudgeKind(url.searchParams.get("nudge")) ? url.searchParams.get("nudge") as "announce" | "last_call" : "announce";
+      const source = isAudienceSource(url.searchParams.get("source")) ? url.searchParams.get("source") as "all" | "imported" | "orders" : "all";
+      const mode = url.searchParams.get("mode") === "resend" ? "resend" : "new";
+      const audience = await nudgeAudience(giveaway.id, nudge, channel, source, mode);
+      const perDay = Math.max(1, Math.min(5000, Math.trunc(Number(url.searchParams.get("perDay")) || 80)));
+      const intervalMinutes = Math.max(1, Math.min(60, Math.trunc(Number(url.searchParams.get("intervalMinutes")) || 3)));
+      const now = Date.now();
+      const reservations = await getD1().prepare(`SELECT CASE WHEN status = 'sent' THEN sent_at ELSE scheduled_for END AS at
+        FROM notification_outbox WHERE kind = ? AND (status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')
+        OR (status = 'sent' AND sent_at >= ?))`).bind(nudgeOutboxKind(channel), now - 86_400_000).all<{ at: number }>();
+      const schedule = planOutreachSchedule({ count: audience.recipients.length, perDay, intervalMinutes, now, endsAt: giveaway.endsAt,
+        reserved: reservations.results.map((row) => Number(row.at)) });
+      const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const filter = url.searchParams.get("filter") ?? "all";
+      const eligible = new Set(audience.recipients.map((row) => row.contact));
+      const customers = audience.customers.filter((row) =>
+        (!query || `${row.name} ${contact ? row.contact : ""}`.toLowerCase().includes(query)) &&
+        (filter === "all" || (filter === "ready" && eligible.has(row.contact)) ||
+          (filter === "sent" && row.sent_before) || (filter === "waiting" && row.active) ||
+          (filter === "opted_out" && row.opted_out) || (filter === "failed" && (row.status === "failed" || ["failed", "undelivered"].includes(row.delivery_status ?? "")))));
+      const page = Math.max(0, Math.trunc(Number(url.searchParams.get("page")) || 0));
+      return Response.json({ total: customers.length, page, pageSize: PAGE_SIZE, ready: audience.recipients.length,
+        optedOut: audience.optedOut, alreadyNudged: audience.alreadyNudged, resendReady: audience.resendReady, waiting: audience.waiting,
+        audienceTotal: audience.total, queued: schedule.length, notQueued: audience.recipients.length - schedule.length,
+        firstSendAt: schedule[0] ?? null, lastSendAt: schedule.at(-1) ?? null,
+        customers: customers.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((row) => ({
+          ...row, contact: contact ? row.contact : "•••", legacy: legacySummary(row.legacy_json), legacy_json: undefined,
+          last_error: contact ? row.last_error : null, delivery_error: contact ? row.delivery_error : null,
+          ready: eligible.has(row.contact),
+        })),
+      }, { headers: noStore });
+    }
+    if (url.searchParams.get("view") === "messages") {
+      const sendId = url.searchParams.get("sendId") ?? "";
+      const page = Math.max(0, Math.trunc(Number(url.searchParams.get("page")) || 0));
+      const messages = await getD1().prepare(`SELECT n.id, n.recipient, n.status, n.scheduled_for, n.sent_at, n.attempt_count,
+        n.last_error, n.delivery_status, n.delivery_error, COUNT(*) OVER() AS total
+        FROM notification_outbox n JOIN marketing_sends s ON n.payload_json::jsonb->>'sendId' = s.id
+        WHERE s.id = ? AND s.campaign = ? ORDER BY n.scheduled_for, n.id LIMIT ? OFFSET ?`)
+        .bind(sendId, giveaway.id, PAGE_SIZE, page * PAGE_SIZE).all<Record<string, unknown>>();
+      return Response.json({ messages: messages.results.map((row) => ({ ...row, recipient: contact ? row.recipient : "•••",
+        last_error: contact ? row.last_error : null, delivery_error: contact ? row.delivery_error : null })),
+        total: Number(messages.results[0]?.total ?? 0), page, pageSize: PAGE_SIZE }, { headers: noStore });
+    }
+    if (url.searchParams.get("view") === "template") {
+      const variant = url.searchParams.get("nudge") === "last_call" ? "last_call" : "announce";
+      const message = await renderGiveawayNudge({ name: "Customer", variant, giveaway, entries: 0, unsubscribeHref: "#unsubscribe-preview" });
+      return Response.json({ html: message.emailHtml, subject: message.emailSubject, sms: message.smsBody }, { headers: noStore });
+    }
 
     if (url.searchParams.get("format") === "csv") {
       if (!contact) {
@@ -124,6 +183,7 @@ export async function GET(request: Request) {
       optedOut: result.optedOut,
       alreadyNudged: result.alreadyNudged,
     });
+    const contacts = await contactSummary();
     return Response.json({
       giveaway,
       status: giveawayStatus(giveaway, now),
@@ -137,6 +197,7 @@ export async function GET(request: Request) {
       nudges: { announce: audience(announce), last_call: audience(lastCall) },
       smsNudges: { announce: audience(smsAnnounce), last_call: audience(smsLastCall) },
       sends,
+      contacts,
       emailVolume: volume,
       emailReady: email !== null,
       // Why texts cannot go yet, in words the owner can act on, or null.
@@ -144,7 +205,7 @@ export async function GET(request: Request) {
       canPick: user.role === "owner",
       canViewContact: contact,
       me: { email: user.email, name: user.name },
-    });
+    }, { headers: noStore });
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -161,9 +222,10 @@ type Body =
       winnerAnnouncedOn?: string;
       nudgePerDay?: number;
     }
-  | { action: "nudge.send"; nudge?: string; perDay?: number; channel?: string }
+  | { action: "nudge.send"; nudge?: string; perDay?: number; channel?: string; source?: string; mode?: string; intervalMinutes?: number; requestKey?: string }
   | { action: "nudge.test"; variant?: string; email?: string; phone?: string; channel?: string }
   | { action: "nudge.stop"; sendId?: string }
+  | { action: "nudge.repace"; sendId?: string; intervalMinutes?: number; perDay?: number }
   | { action: "winner.pick" };
 
 function cleanText(value: unknown, max: number): string | null {
@@ -247,7 +309,18 @@ export async function POST(request: Request) {
           return Response.json({ error: "The daily limit must be between 1 and 5,000." }, { status: 422 });
         }
         const channel = isNudgeChannel(body.channel) ? body.channel : "email";
-        const result = await queueNudge({ campaign: giveaway.id, nudge: body.nudge, perDay, actorId: user.id, channel, now });
+        if (body.channel !== undefined && !isNudgeChannel(body.channel)) return Response.json({ error: "Choose email or SMS." }, { status: 422 });
+        if (body.source !== undefined && !isAudienceSource(body.source)) return Response.json({ error: "Choose a customer audience." }, { status: 422 });
+        if (body.mode !== undefined && !isSendMode(body.mode)) return Response.json({ error: "Choose first send or resend." }, { status: 422 });
+        const intervalMinutes = Number(body.intervalMinutes ?? 3);
+        if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 60) return Response.json({ error: "Choose a pace between 1 and 60 minutes." }, { status: 422 });
+        if (body.mode === "resend" && (typeof body.requestKey !== "string" || !/^[\w-]{16,80}$/.test(body.requestKey))) {
+          return Response.json({ error: "Review the resend before confirming it." }, { status: 422 });
+        }
+        const result = await queueNudge({ campaign: giveaway.id, nudge: body.nudge, perDay, actorId: user.id, channel, now,
+          source: isAudienceSource(body.source) ? body.source : "all", mode: isSendMode(body.mode) ? body.mode : "new", intervalMinutes,
+          requestKey: typeof body.requestKey === "string" ? body.requestKey.slice(0, 80) : undefined,
+        });
         // Remember the email pace, so the next press starts from what was used
         // last. The text pace is not stored: it has no quota to protect.
         if (channel === "email" && perDay !== giveaway.nudgePerDay) {
@@ -285,6 +358,19 @@ export async function POST(request: Request) {
           next: { stopped },
         });
         return Response.json({ ok: true, stopped });
+      }
+
+      case "nudge.repace": {
+        const interval = Number(body.intervalMinutes);
+        const perDay = Number(body.perDay);
+        if (!body.sendId || !Number.isSafeInteger(interval) || interval < 1 || interval > 60 ||
+          !Number.isSafeInteger(perDay) || perDay < 1 || perDay > 5000) {
+          return Response.json({ error: "Choose a valid pace and daily cap." }, { status: 422 });
+        }
+        if (giveawayStatus(giveaway, now) !== "open") return Response.json({ error: "The giveaway is not open." }, { status: 409 });
+        const updated = await repaceNudge(giveaway.id, body.sendId, interval, perDay, now);
+        await writeAudit({ actorId: user.id, action: "giveaway.nudge_repace", targetType: "marketing_send", targetId: body.sendId, next: { intervalMinutes: interval, perDay, updated } });
+        return Response.json({ ok: true, updated });
       }
 
       case "winner.pick": {

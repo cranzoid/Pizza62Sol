@@ -137,18 +137,33 @@ Deployed to Azure App Service. See `infra/README.md` for the architecture and
   past customers, and — owner only, after entries close — picking the winner
   at random from entries whose orders were not cancelled or refunded). Customer
   wording is "giveaway", never "draw", at the owner's request.
-- Giveaway nudges are marketing email under CASL: each carries an unsubscribe
-  link and the RFC 8058 one-click header, opt-outs live in `customer_contacts`
-  and are re-checked at send time, and an import never re-subscribes anyone.
-  They are released at most **Nudges per day** (default 80) between 11 a.m. and
-  7 p.m., because they share the email provider's daily quota with receipts
-  (Resend's free plan is 100 a day), and the dispatcher always sends every
-  other kind of email before a nudge.
+- **Admin → Giveaway → Send nudges** prepares SMS or branded email, previews
+  the message and audience, and confirms the send. Choose all customers, old
+  POS customers, or order customers. The default skips anyone already sent or
+  queued for that nudge; an explicit resend reaches previously sent contacts
+  while still excluding opt-outs and pending messages. Confirmation requests
+  are idempotent, including resends. Each channel shares a daily cap and spaced
+  schedule (default three minutes) from 11 a.m. to 7 p.m. Hamilton time. Nothing
+  is newly scheduled past closing. Email defaults to 80/day to leave capacity
+  for receipts; SMS defaults to 160/day. **Message activity** shows batches,
+  individual recipients, attempts and errors, and can stop or re-time the
+  remaining queue without resending completed messages. SMS reports carrier
+  delivery through signed Twilio callbacks; email reports provider acceptance.
+  Marketing email carries an unsubscribe link and RFC 8058 one-click headers.
+  Opt-outs are re-checked at send time, imports never re-subscribe anyone, and
+  order notifications always take priority over marketing nudges.
 - **Admin → Customers** imports a customer list from the old POS (any CSV with
   an email or phone column; previewed before anything is written), exports the
   full list with birthdays and email consent, and shows birthdays coming up.
   The till asks for an optional birthday — month and day only — on pickup
   orders and files it against the customer's email or phone.
+- Customer CSV imports are also available directly in Giveaway. They normalize
+  Canadian/US phone numbers, keep a customer with either a usable phone or email,
+  merge repeated contacts and reject rows with neither. Old POS IDs, addresses,
+  day-first visit dates, visit counts and spend are retained as historical
+  records and included in the full customer export. They do not create website
+  orders, giveaway entries, or new loyalty balances. Re-importing updates the
+  same historical IDs without duplicating them; the entire import is atomic.
 - Email credentials, Clover and Twilio are all set from **Admin → Integrations**,
   encrypted at rest. Until they are, orders still work: notifications park
   without spending a retry and go out the moment credentials arrive.

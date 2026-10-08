@@ -917,10 +917,14 @@ export const notificationOutbox = pgTable(
     scheduledFor: bigint("scheduled_for", { mode: "number" }).notNull(),
     sentAt: bigint("sent_at", { mode: "number" }),
     lastError: text("last_error"),
+    providerReference: text("provider_reference"),
+    deliveryStatus: text("delivery_status"),
+    deliveryError: text("delivery_error"),
     ...timestamps,
   },
   (table) => [
     index("outbox_status_idx").on(table.status, table.scheduledFor),
+    index("outbox_giveaway_history_idx").on(table.kind, sql`(payload_json::jsonb->>'campaign')`, sql`(payload_json::jsonb->>'nudge')`),
     check("outbox_status", inList("status", OUTBOX_STATUSES)),
     check("outbox_attempts_nonneg", nonNegative("attempt_count")),
   ],
@@ -1182,6 +1186,7 @@ export const customerContacts = pgTable(
     notes: text("notes"),
     /** Last visit as the old POS reported it, for imported customers. */
     lastVisitAt: bigint("last_visit_at", { mode: "number" }),
+    legacyJson: text("legacy_json"),
     marketingOptOutAt: bigint("marketing_opt_out_at", { mode: "number" }),
     /**
      * A reply of STOP to a marketing text, tracked separately from
@@ -1224,6 +1229,10 @@ export const marketingSends = pgTable(
     recipientCount: integer("recipient_count").notNull(),
     skippedCount: integer("skipped_count").notNull().default(0),
     perDay: integer("per_day").notNull(),
+    intervalMinutes: integer("interval_minutes"),
+    audienceSource: text("audience_source").notNull().default("all"),
+    sendMode: text("send_mode").notNull().default("new"),
+    requestKey: text("request_key"),
     firstSendAt: bigint("first_send_at", { mode: "number" }),
     lastSendAt: bigint("last_send_at", { mode: "number" }),
     createdBy: text("created_by").notNull(),
@@ -1231,6 +1240,7 @@ export const marketingSends = pgTable(
   },
   (table) => [
     index("marketing_sends_campaign_idx").on(table.campaign, table.createdAt),
+    uniqueIndex("marketing_sends_request_uq").on(table.requestKey).where(sql`${table.requestKey} IS NOT NULL`),
     check("marketing_sends_channel", inList("channel", MARKETING_SEND_CHANNELS)),
     check("marketing_sends_counts_nonneg", nonNegative("recipient_count", "skipped_count")),
     check("marketing_sends_per_day_positive", sql`per_day > 0`),

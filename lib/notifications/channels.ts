@@ -207,7 +207,7 @@ async function postToTwilio(
 
 // --- SMS (Programmable Messaging) -------------------------------------------
 
-export async function sendSms(input: { to: string; body: string }): Promise<{
+export async function sendSms(input: { to: string; body: string; statusCallback?: string }): Promise<{
   provider: string;
   reference: string | null;
 }> {
@@ -219,6 +219,7 @@ export async function sendSms(input: { to: string; body: string }): Promise<{
     // Twilio splits anything longer into segments and bills each one; the
     // renderer keeps bodies short, and this is the backstop.
     Body: input.body.slice(0, 1500),
+    ...(input.statusCallback ? { StatusCallback: input.statusCallback } : {}),
   });
 }
 

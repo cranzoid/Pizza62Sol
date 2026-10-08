@@ -1,279 +1,164 @@
-/**
- * Nudging past customers about the giveaway — sent when the owner presses the
- * button, never on a timer.
- *
- * The owner asked for two: one to say the giveaway is on, and one the day
- * before it closes. Each is a button in Admin → Giveaway, and each goes to
- * everyone at most once: pressing it a second time only reaches people added
- * since (a new customer, a freshly imported list), so a nervous double-click
- * cannot email the whole list twice.
- *
- * ## Who is nudged
- *
- * Everyone with an email address who has bought something — a paid order, or
- * one paid for at the store — plus every customer imported from the old POS,
- * minus everyone who has unsubscribed. See `lib/marketing-consent.ts` on why
- * that is who CASL allows, and why the opt-out is absolute.
- *
- * ## How they go out
- *
- * As ordinary `giveaway_nudge` rows in the notification outbox, so they get
- * the dispatcher's retries, backoff and parking for free — but released at a
- * capped daily pace (`planNudgeSchedule`), because they share the email
- * provider's daily quota with order confirmations. The dispatcher also serves
- * every other kind of email before a nudge, so a nudge can delay nothing.
- *
- * ## The SMS channel
- *
- * The same two nudges can also go out as texts, as `giveaway_nudge_sms` rows.
- * The audience is built from phone numbers rather than emails — everyone who
- * has bought with a phone on the order, plus imported contacts with one —
- * minus anyone who has replied STOP. It is independent of the email audience:
- * a customer may get both. Texts need Twilio and the `MARKETING_SMS_ENABLED`
- * flag; see `lib/notifications/config.ts` for why that flag is its own.
- */
+/** Giveaway outreach: one audience identity, explicit resends, durable progress. */
 import { getD1 } from "@/db/runtime";
-import { planNudgeSchedule, type NudgeKind } from "@/lib/giveaway";
-import { ELIGIBLE_ORDER_SQL } from "@/lib/giveaway-store";
-import { phone10Sql, toE164 } from "@/lib/customer-contacts";
-import { anyProviderConfigured, emailConfig, marketingSmsEnabled, twilioConfig } from "@/lib/notifications/config";
+import { getPool } from "@/db/pg-driver";
+import { planOutreachSchedule, type NudgeKind } from "@/lib/giveaway";
+import { ELIGIBLE_ORDER_SQL, loadGiveaway } from "@/lib/giveaway-store";
+import { phone10Sql, toE164, type LegacyCustomerRecord } from "@/lib/customer-contacts";
+import { emailConfig, marketingSmsEnabled, twilioConfig } from "@/lib/notifications/config";
 import { normalizeEmail } from "@/lib/marketing-consent";
 
-/** Loose on purpose — the provider is the real validator — but it drops junk. */
-const PLAUSIBLE_EMAIL_SQL = `'^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$'`;
-
-/** Outbox states that mean "this person has been, or is about to be, nudged". */
-const LIVE_STATES = `('waiting_payment', 'waiting_completion', 'pending', 'retrying', 'pending_provider_setup', 'sending', 'sent')`;
-
 export type NudgeChannel = "email" | "sms";
-
-export function isNudgeChannel(value: unknown): value is NudgeChannel {
-  return value === "email" || value === "sms";
-}
-
-/** The outbox kind each channel's rows are written under. */
+export type AudienceSource = "all" | "imported" | "orders";
+export type SendMode = "new" | "resend";
+export function isNudgeChannel(value: unknown): value is NudgeChannel { return value === "email" || value === "sms"; }
+export function isAudienceSource(value: unknown): value is AudienceSource { return value === "all" || value === "imported" || value === "orders"; }
+export function isSendMode(value: unknown): value is SendMode { return value === "new" || value === "resend"; }
 export function nudgeOutboxKind(channel: NudgeChannel): "giveaway_nudge" | "giveaway_nudge_sms" {
   return channel === "sms" ? "giveaway_nudge_sms" : "giveaway_nudge";
 }
-
-/** `contact` is a lower-cased email, or an E.164 number for SMS — whatever goes in `recipient`. */
 export type NudgeRecipient = { contact: string; name: string };
+export type AudienceCustomer = NudgeRecipient & {
+  imported: boolean; buyer: boolean; opted_out: boolean; already: boolean; sent_before: boolean; active: boolean;
+  status: string | null; scheduled_for: number | null; sent_at: number | null; attempt_count: number;
+  last_error: string | null; delivery_status: string | null; delivery_error: string | null;
+  legacy_json: string | null; last_visit_at: number | null;
+};
+export type Audience = {
+  recipients: NudgeRecipient[]; customers: AudienceCustomer[]; optedOut: number; alreadyNudged: number;
+  resendReady: number; waiting: number; total: number;
+};
 
-type Audience = { recipients: NudgeRecipient[]; optedOut: number; alreadyNudged: number };
-
-function tally(rows: Array<{ contact: string; name: string | null; opted_out: boolean; already: boolean }>): Audience {
-  let optedOut = 0;
-  let alreadyNudged = 0;
-  const recipients: NudgeRecipient[] = [];
-  for (const row of rows) {
-    if (row.opted_out) optedOut += 1;
-    else if (row.already) alreadyNudged += 1;
-    else recipients.push({ contact: row.contact, name: row.name ?? "" });
-  }
-  return { recipients, optedOut, alreadyNudged };
-}
-
-/**
- * Everyone this nudge would reach if it were sent now, on this channel.
- *
- * Names come from the customer's most recent order where there is one, then
- * from the import — the name they gave us last is the one to greet them by.
- */
-export async function nudgeAudience(
-  campaign: string,
-  nudge: NudgeKind,
-  channel: NudgeChannel = "email",
-): Promise<Audience> {
-  return channel === "sms" ? smsAudience(campaign, nudge) : emailAudience(campaign, nudge);
-}
-
-async function emailAudience(campaign: string, nudge: NudgeKind): Promise<Audience> {
-  const rows = await getD1()
-    .prepare(
-      `WITH buyers AS (
-         SELECT DISTINCT ON (lower(o.customer_email)) lower(o.customer_email) AS email, o.customer_name AS name, 0 AS rank
-         FROM orders o
-         WHERE o.customer_email <> '' AND ${ELIGIBLE_ORDER_SQL}
-         ORDER BY lower(o.customer_email), o.created_at DESC
-       ),
-       imported AS (
-         SELECT email, name, 1 AS rank FROM customer_contacts WHERE email IS NOT NULL
-       ),
-       everyone AS (
-         SELECT DISTINCT ON (email) email, name FROM (SELECT * FROM buyers UNION ALL SELECT * FROM imported) people
-         WHERE email ~ ${PLAUSIBLE_EMAIL_SQL}
-         ORDER BY email, rank
-       )
-       SELECT everyone.email AS contact, everyone.name,
-              EXISTS (SELECT 1 FROM customer_contacts c WHERE c.email = everyone.email AND c.marketing_opt_out_at IS NOT NULL) AS opted_out,
-              EXISTS (
-                SELECT 1 FROM notification_outbox n
-                WHERE n.kind = 'giveaway_nudge' AND lower(n.recipient) = everyone.email
-                  AND n.payload_json::jsonb->>'campaign' = ? AND n.payload_json::jsonb->>'nudge' = ?
-                  AND n.status IN ${LIVE_STATES}
-              ) AS already
-       FROM everyone ORDER BY everyone.email`,
+/** Latest status is displayed; all history is checked when deciding eligibility. */
+export async function nudgeAudience(campaign: string, nudge: NudgeKind, channel: NudgeChannel = "email",
+  source: AudienceSource = "all", mode: SendMode = "new"): Promise<Audience> {
+  const orderContact = channel === "sms" ? phone10Sql("o.customer_phone") : "lower(o.customer_email)";
+  const contactColumn = channel === "sms" ? phone10Sql("c.phone") : "lower(c.email)";
+  const historyContact = channel === "sms" ? phone10Sql("n.recipient") : "lower(n.recipient)";
+  const valid = channel === "sms" ? "contact ~ '^[2-9][0-9]{2}[2-9][0-9]{6}$' AND contact !~ '^([0-9])\\1{9}$'"
+    : "contact ~ '^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$'";
+  const optout = channel === "sms" ? "c.sms_opt_out_at" : "c.marketing_opt_out_at";
+  const rows = await getD1().prepare(`
+    WITH buyers AS (
+      SELECT DISTINCT ON (${orderContact}) ${orderContact} AS contact, o.customer_name AS name,
+             0 AS rank, true AS buyer, false AS imported, NULL::text AS legacy_json, o.created_at AS last_visit_at
+      FROM orders o WHERE ${ELIGIBLE_ORDER_SQL} ORDER BY ${orderContact}, o.created_at DESC
+    ), people AS (
+      SELECT * FROM buyers UNION ALL
+      SELECT ${contactColumn}, c.name, 1, false, (c.source = 'import' OR c.legacy_json IS NOT NULL), c.legacy_json, c.last_visit_at
+      FROM customer_contacts c WHERE c.source <> 'unsubscribe' OR c.legacy_json IS NOT NULL
+    ), everyone AS (
+      SELECT contact, (array_agg(name ORDER BY rank))[1] AS name, bool_or(buyer) AS buyer, bool_or(imported) AS imported,
+             (array_agg(legacy_json ORDER BY (legacy_json IS NULL), rank))[1] AS legacy_json, max(last_visit_at) AS last_visit_at
+      FROM people WHERE ${valid} GROUP BY contact
+    ), history AS MATERIALIZED (
+      SELECT n.*, ${historyContact} AS contact FROM notification_outbox n
+      WHERE n.kind = ? AND n.payload_json::jsonb->>'campaign' = ? AND n.payload_json::jsonb->>'nudge' = ?
+    ), history_flags AS (
+      SELECT contact, bool_or(status = 'sent') AS sent_before,
+        bool_or(status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')) AS active
+      FROM history GROUP BY contact
+    ), latest AS (
+      SELECT DISTINCT ON (contact) * FROM history ORDER BY contact, created_at DESC, id DESC
+    ), optouts AS (
+      SELECT DISTINCT ${contactColumn} AS contact FROM customer_contacts c WHERE ${optout} IS NOT NULL
     )
-    .bind(campaign, nudge)
-    .all<{ contact: string; name: string; opted_out: boolean; already: boolean }>();
-  return tally(rows.results);
-}
-
-/**
- * The phone audience: every buyer with a phone on an order, plus imported or
- * till contacts with one, keyed on the 10-digit number so "905…" and
- * "1905…" are one person. `contact` comes back as E.164, ready for Twilio.
- */
-async function smsAudience(campaign: string, nudge: NudgeKind): Promise<Audience> {
-  const orderPhone = phone10Sql("o.customer_phone");
-  const rows = await getD1()
-    .prepare(
-      `WITH buyers AS (
-         SELECT DISTINCT ON (${orderPhone}) ${orderPhone} AS phone, o.customer_name AS name, 0 AS rank
-         FROM orders o
-         WHERE ${orderPhone} <> '' AND ${ELIGIBLE_ORDER_SQL}
-         ORDER BY ${orderPhone}, o.created_at DESC
-       ),
-       imported AS (
-         SELECT ${phone10Sql("c.phone")} AS phone, c.name, 1 AS rank FROM customer_contacts c WHERE c.phone IS NOT NULL
-       ),
-       everyone AS (
-         SELECT DISTINCT ON (phone) phone, name FROM (SELECT * FROM buyers UNION ALL SELECT * FROM imported) people
-         WHERE length(phone) = 10
-         ORDER BY phone, rank
-       )
-       SELECT everyone.phone AS contact, everyone.name,
-              EXISTS (
-                SELECT 1 FROM customer_contacts c
-                WHERE ${phone10Sql("c.phone")} = everyone.phone AND c.sms_opt_out_at IS NOT NULL
-              ) AS opted_out,
-              EXISTS (
-                SELECT 1 FROM notification_outbox n
-                WHERE n.kind = 'giveaway_nudge_sms' AND ${phone10Sql("n.recipient")} = everyone.phone
-                  AND n.payload_json::jsonb->>'campaign' = ? AND n.payload_json::jsonb->>'nudge' = ?
-                  AND n.status IN ${LIVE_STATES}
-              ) AS already
-       FROM everyone ORDER BY everyone.phone`,
-    )
-    .bind(campaign, nudge)
-    .all<{ contact: string; name: string; opted_out: boolean; already: boolean }>();
-  const audience = tally(rows.results);
-  // Always non-null: the query only returns 10-digit numbers.
-  audience.recipients = audience.recipients.map((recipient) => ({ ...recipient, contact: toE164(recipient.contact) as string }));
-  return audience;
+    SELECT e.*, optouts.contact IS NOT NULL AS opted_out,
+      COALESCE(h.sent_before, false) AS sent_before, COALESCE(h.active, false) AS active,
+      latest.status, latest.scheduled_for, latest.sent_at, COALESCE(latest.attempt_count, 0) AS attempt_count,
+      latest.last_error, latest.delivery_status, latest.delivery_error
+    FROM everyone e LEFT JOIN history_flags h ON h.contact = e.contact
+      LEFT JOIN latest ON latest.contact = e.contact LEFT JOIN optouts ON optouts.contact = e.contact
+    WHERE (? = 'all' OR (? = 'imported' AND e.imported) OR (? = 'orders' AND e.buyer)) ORDER BY e.name, e.contact
+  `).bind(nudgeOutboxKind(channel), campaign, nudge, source, source, source)
+    .all<AudienceCustomer>();
+  const customers = rows.results.map((row) => ({ ...row, contact: channel === "sms" ? toE164(row.contact)! : row.contact,
+    already: row.sent_before || row.active }));
+  const available = customers.filter((row) => !row.opted_out && !row.active);
+  return {
+    customers, total: customers.length,
+    recipients: available.filter((row) => mode === "resend" ? row.sent_before : !row.sent_before).map(({ contact, name }) => ({ contact, name })),
+    optedOut: customers.filter((row) => row.opted_out).length,
+    alreadyNudged: customers.filter((row) => !row.opted_out && row.already).length,
+    resendReady: available.filter((row) => row.sent_before).length,
+    waiting: customers.filter((row) => row.active).length,
+  };
 }
 
 export class NudgeError extends Error {}
-
-/**
- * Why a channel cannot send right now, or null when it can.
- *
- * Refused rather than parked: a parked row is released the moment
- * credentials arrive, all at once, which is exactly the burst pacing exists
- * to prevent.
- */
 export async function nudgeChannelBlocker(channel: NudgeChannel): Promise<string | null> {
-  if (channel === "email") {
-    return (await emailConfig()) ? null : "Email is not set up yet (Admin → Integrations), so nothing can be sent.";
-  }
-  if (!(await twilioConfig())) return "Twilio is not set up yet (Admin → Integrations), so no texts can be sent.";
-  if (!(await marketingSmsEnabled())) {
-    return "Marketing texts are switched off (Admin → Integrations → Calls and texts). Turn them on to send an SMS nudge.";
-  }
+  if (channel === "email") return (await emailConfig()) ? null : "Email is not set up yet. Open Integrations to connect it.";
+  if (!(await twilioConfig())) return "Twilio is not set up yet. Open Integrations to connect texts.";
+  if (!(await marketingSmsEnabled())) return "Marketing texts are switched off. Enable them in Integrations → Calls and texts.";
   return null;
 }
 
-/**
- * Queues a nudge to everyone in its audience, paced at `perDay`.
- *
- * One transaction: the log row and every message go in together or not at
- * all. The advisory lock makes two presses of the same button take turns, and
- * the insert re-checks "already nudged" inside the lock, so the second press
- * finds everyone already queued and adds nobody.
- */
+export type QueueResult = { sendId: string; queued: number; skipped: number; notQueued: number; firstSendAt: number | null; lastSendAt: number | null };
+
+/** Serializes the entire channel so overlapping sends share capacity and cannot duplicate a first nudge. */
 export async function queueNudge(input: {
-  campaign: string;
-  nudge: NudgeKind;
-  perDay: number;
-  actorId: string;
-  channel?: NudgeChannel;
-  now?: number;
-}): Promise<{ sendId: string; queued: number; skipped: number; firstSendAt: number | null; lastSendAt: number | null }> {
+  campaign: string; nudge: NudgeKind; perDay: number; actorId: string; channel?: NudgeChannel;
+  source?: AudienceSource; mode?: SendMode; intervalMinutes?: number; requestKey?: string; now?: number;
+}): Promise<QueueResult> {
   const channel = input.channel ?? "email";
   const blocker = await nudgeChannelBlocker(channel);
   if (blocker) throw new NudgeError(blocker);
   const kind = nudgeOutboxKind(channel);
   const now = input.now ?? Date.now();
   const perDay = Math.max(1, Math.min(5000, Math.trunc(input.perDay)));
-  const { recipients, optedOut, alreadyNudged } = await nudgeAudience(input.campaign, input.nudge, channel);
-  const schedule = planNudgeSchedule(recipients.length, perDay, now);
-  const sendId = crypto.randomUUID();
-  const status = (await anyProviderConfigured()) ? "pending" : "pending_provider_setup";
-  // The same identity the audience was built on, so the in-lock re-check
-  // agrees with it: lower-cased email, or the 10-digit number.
-  const existing =
-    channel === "sms" ? `${phone10Sql("n.recipient")} = ${phone10Sql("r.contact")}` : "lower(n.recipient) = r.contact";
+  const intervalMinutes = input.intervalMinutes ?? 1;
+  const source = input.source ?? "all";
+  const mode = input.mode ?? "new";
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`giveaway-channel:${channel}`]);
+    if (input.requestKey) {
+      const prior = await client.query("SELECT * FROM marketing_sends WHERE request_key = $1", [input.requestKey]);
+      if (prior.rows[0]) {
+        const row = prior.rows[0];
+        if (row.campaign !== input.campaign || row.channel !== channel || row.created_by !== input.actorId) throw new NudgeError("This request was already used. Refresh and review your send again.");
+        await client.query("COMMIT");
+        return { sendId: row.id, queued: Number(row.recipient_count), skipped: Number(row.skipped_count), notQueued: 0,
+          firstSendAt: row.first_send_at, lastSendAt: row.last_send_at };
+      }
+    }
+    const giveaway = await loadGiveaway();
+    const audience = await nudgeAudience(input.campaign, input.nudge, channel, source, mode);
+    const reserved = await client.query<{ at: number }>(`SELECT CASE WHEN status = 'sent' THEN sent_at ELSE scheduled_for END AS at
+      FROM notification_outbox WHERE kind = $1 AND (status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')
+        OR (status = 'sent' AND sent_at >= $2))`, [kind, now - 86_400_000]);
+    const schedule = planOutreachSchedule({ count: audience.recipients.length, perDay, intervalMinutes, now,
+      endsAt: giveaway?.endsAt ?? now + 30 * 86_400_000, reserved: reserved.rows.map((row) => Number(row.at)) });
+    const recipients = audience.recipients.slice(0, schedule.length);
+    const sendId = crypto.randomUUID();
+    const skipped = audience.total - audience.recipients.length;
+    await client.query(`INSERT INTO marketing_sends
+      (id, campaign, nudge, channel, recipient_count, skipped_count, per_day, interval_minutes, audience_source, send_mode, request_key,
+       first_send_at, last_send_at, created_by, created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [sendId, input.campaign, input.nudge, channel, recipients.length, skipped, perDay, intervalMinutes, source, mode,
+        input.requestKey ?? null, schedule[0] ?? null, schedule.at(-1) ?? null, input.actorId, now]);
+    await client.query(`INSERT INTO notification_outbox
+      (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
+      SELECT gen_random_uuid()::text, $1, r.contact,
+        json_build_object('sendId',$2::text,'campaign',$3::text,'nudge',$4::text,'name',r.name)::text,
+        'pending',0,r.at,$5,$5 FROM unnest($6::text[],$7::text[],$8::bigint[]) AS r(contact,name,at)`,
+      [kind,sendId,input.campaign,input.nudge,now,recipients.map((r) => r.contact),recipients.map((r) => r.name),schedule]);
+    await client.query("COMMIT");
+    return { sendId, queued: recipients.length, skipped, notQueued: audience.recipients.length - recipients.length,
+      firstSendAt: schedule[0] ?? null, lastSendAt: schedule.at(-1) ?? null };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
 
-  await getD1().batch([
-    getD1().prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`${kind}:${input.campaign}:${input.nudge}`),
-    getD1()
-      .prepare(
-        `INSERT INTO marketing_sends
-         (id, campaign, nudge, channel, recipient_count, skipped_count, per_day, first_send_at, last_send_at, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        sendId,
-        input.campaign,
-        input.nudge,
-        channel,
-        recipients.length,
-        optedOut + alreadyNudged,
-        perDay,
-        schedule[0] ?? null,
-        schedule.at(-1) ?? null,
-        input.actorId,
-        now,
-      ),
-    getD1()
-      .prepare(
-        `INSERT INTO notification_outbox
-         (id, kind, recipient, payload_json, status, attempt_count, scheduled_for, created_at, updated_at)
-         SELECT gen_random_uuid()::text, ?, r.contact,
-                json_build_object('sendId', ?::text, 'campaign', ?::text, 'nudge', ?::text, 'name', r.name)::text,
-                ?, 0, r.at, ?, ?
-         FROM unnest(?::text[], ?::text[], ?::bigint[]) AS r(contact, name, at)
-         WHERE NOT EXISTS (
-           SELECT 1 FROM notification_outbox n
-           WHERE n.kind = ? AND ${existing}
-             AND n.payload_json::jsonb->>'campaign' = ? AND n.payload_json::jsonb->>'nudge' = ?
-             AND n.status IN ${LIVE_STATES}
-         )`,
-      )
-      .bind(
-        kind,
-        sendId,
-        input.campaign,
-        input.nudge,
-        status,
-        now,
-        now,
-        recipients.map((recipient) => recipient.contact),
-        recipients.map((recipient) => recipient.name),
-        schedule,
-        kind,
-        input.campaign,
-        input.nudge,
-      ),
-  ]);
-
-  return {
-    sendId,
-    queued: recipients.length,
-    skipped: optedOut + alreadyNudged,
-    firstSendAt: schedule[0] ?? null,
-    lastSendAt: schedule.at(-1) ?? null,
-  };
+/** Safe metadata for customer rows, never used as new website order totals. */
+export function legacySummary(json: string | null): { visits: number; spentCents: number; records: number } | null {
+  if (!json) return null;
+  const records = JSON.parse(json) as LegacyCustomerRecord[];
+  return { records: records.length, visits: records.reduce((sum, row) => sum + (row.visits ?? 0), 0),
+    spentCents: records.reduce((sum, row) => sum + (row.totalSpentCents ?? 0), 0) };
 }
 
 /**
@@ -342,6 +227,37 @@ export async function cancelNudge(sendId: string, now: number = Date.now()): Pro
   return result.meta.changes ?? 0;
 }
 
+/** Re-time only the unsent part of an existing batch, without sending it again. */
+export async function repaceNudge(campaign: string, sendId: string, intervalMinutes: number, perDay: number, now = Date.now()): Promise<number> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const send = (await client.query("SELECT channel FROM marketing_sends WHERE id = $1 AND campaign = $2", [sendId, campaign])).rows[0];
+    if (!send) throw new NudgeError("That send could not be found.");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`giveaway-channel:${send.channel}`]);
+    const rows = await client.query<{ id: string }>(`SELECT id FROM notification_outbox
+      WHERE payload_json::jsonb->>'sendId' = $1 AND status IN ('pending', 'retrying', 'pending_provider_setup')
+      ORDER BY scheduled_for, id FOR UPDATE`, [sendId]);
+    const reserved = await client.query<{ at: number }>(`SELECT CASE WHEN status = 'sent' THEN sent_at ELSE scheduled_for END AS at
+      FROM notification_outbox WHERE kind = $1
+        AND (status IN ('pending', 'retrying', 'sending', 'pending_provider_setup') OR (status = 'sent' AND sent_at >= $2))
+        AND NOT (id = ANY($3::text[]))`, [nudgeOutboxKind(send.channel), now - 86_400_000, rows.rows.map((row) => row.id)]);
+    const giveaway = await loadGiveaway();
+    const slots = planOutreachSchedule({ count: rows.rows.length, perDay, intervalMinutes, now,
+      endsAt: giveaway?.endsAt ?? now, reserved: reserved.rows.map((row) => Number(row.at)) });
+    if (slots.length < rows.rows.length) throw new NudgeError("The remaining messages do not fit before closing at this pace. Choose a faster pace or a higher daily cap.");
+    await client.query(`UPDATE notification_outbox n SET scheduled_for = r.at, updated_at = $1
+      FROM unnest($2::text[], $3::bigint[]) AS r(id, at) WHERE n.id = r.id`, [now, rows.rows.map((row) => row.id), slots]);
+    await client.query(`UPDATE marketing_sends SET interval_minutes = $1, per_day = $2,
+      first_send_at = (SELECT min(scheduled_for) FROM notification_outbox WHERE payload_json::jsonb->>'sendId' = $3),
+      last_send_at = (SELECT max(scheduled_for) FROM notification_outbox WHERE payload_json::jsonb->>'sendId' = $3) WHERE id = $3`,
+      [intervalMinutes, perDay, sendId]);
+    await client.query("COMMIT");
+    return rows.rows.length;
+  } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
+  finally { client.release(); }
+}
+
 export type NudgeSendRow = {
   id: string;
   nudge: string;
@@ -349,6 +265,9 @@ export type NudgeSendRow = {
   recipient_count: number;
   skipped_count: number;
   per_day: number;
+  interval_minutes: number | null;
+  audience_source: AudienceSource;
+  send_mode: SendMode;
   first_send_at: number | null;
   last_send_at: number | null;
   created_at: number;
@@ -357,18 +276,22 @@ export type NudgeSendRow = {
   waiting: number;
   failed: number;
   stopped: number;
+  delivered: number;
+  undelivered: number;
 };
 
 /** Every press of a nudge button, with how far each has got. */
 export async function nudgeSends(campaign: string): Promise<NudgeSendRow[]> {
   const rows = await getD1()
     .prepare(
-      `SELECT s.id, s.nudge, s.channel, s.recipient_count, s.skipped_count, s.per_day, s.first_send_at, s.last_send_at,
+      `SELECT s.id, s.nudge, s.channel, s.recipient_count, s.skipped_count, s.per_day, s.interval_minutes, s.audience_source, s.send_mode, s.first_send_at, s.last_send_at,
               s.created_at, u.name AS created_by_name,
               COUNT(n.id) FILTER (WHERE n.status = 'sent') AS sent,
               COUNT(n.id) FILTER (WHERE n.status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')) AS waiting,
               COUNT(n.id) FILTER (WHERE n.status = 'failed') AS failed,
               COUNT(n.id) FILTER (WHERE n.status = 'cancelled') AS stopped
+              , COUNT(n.id) FILTER (WHERE n.delivery_status = 'delivered') AS delivered
+              , COUNT(n.id) FILTER (WHERE n.delivery_status IN ('undelivered', 'failed')) AS undelivered
        FROM marketing_sends s
        LEFT JOIN staff_users u ON u.id = s.created_by
        LEFT JOIN notification_outbox n
@@ -392,6 +315,8 @@ export async function nudgeSends(campaign: string): Promise<NudgeSendRow[]> {
     waiting: Number(row.waiting),
     failed: Number(row.failed),
     stopped: Number(row.stopped),
+    delivered: Number(row.delivered),
+    undelivered: Number(row.undelivered),
   }));
 }
 

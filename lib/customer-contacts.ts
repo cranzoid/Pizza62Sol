@@ -21,6 +21,7 @@
  */
 import { getD1 } from "@/db/runtime";
 import { ELIGIBLE_ORDER_SQL } from "@/lib/giveaway-store";
+import { torontoDayStart } from "@/lib/report-dates";
 
 // --- CSV ---------------------------------------------------------------------
 
@@ -77,6 +78,14 @@ const HEADER_ALIASES: Record<string, string[]> = {
   birthday: ["birthday", "birth date", "birthdate", "date of birth", "dob"],
   notes: ["note", "notes", "comment", "comments"],
   lastVisit: ["last visit", "last visit date", "last order", "last order date", "last purchase", "last seen"],
+  externalId: ["customer id", "client id"],
+  firstVisit: ["first visit", "first visit date"],
+  visits: ["total visits", "visit count"],
+  totalSpent: ["total spent", "lifetime spend"],
+  address: ["address", "street address"],
+  city: ["city"],
+  province: ["province", "state"],
+  postalCode: ["postal code", "zip code"],
 };
 
 function headerKey(header: string): string | null {
@@ -125,9 +134,18 @@ export function parseBirthday(value: string): { month: number; day: number } | n
   return validBirthday(month, day) ? { month, day } : null;
 }
 
-function parseVisit(value: string): number | null {
+export function parseVisit(value: string): number | null {
   const text = value.trim();
   if (!text) return null;
+  // The old POS exports DD/MM/YYYY, including ambiguous dates such as 03/04.
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (match) {
+    const [, d, m, y, h = "0", minute = "0"] = match;
+    const date = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    const check = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+    if (check.toISOString().slice(0, 10) !== date || Number(h) > 23 || Number(minute) > 59) return null;
+    return torontoDayStart(date) + (Number(h) * 60 + Number(minute)) * 60_000;
+  }
   const parsed = Date.parse(text);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -149,8 +167,8 @@ export function normalizePhone(value: string): string {
  */
 export function canonicalPhone10(value: string): string {
   const digits = normalizePhone(value);
-  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-  return digits.length === 10 ? digits : "";
+  const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  return /^[2-9]\d{2}[2-9]\d{6}$/.test(phone) && !/^(\d)\1{9}$/.test(phone) ? phone : "";
 }
 
 /**
@@ -178,6 +196,17 @@ export type ImportedContact = {
   birthday: { month: number; day: number } | null;
   notes: string | null;
   lastVisitAt: number | null;
+  legacy?: LegacyCustomerRecord[];
+};
+
+export type LegacyCustomerRecord = {
+  externalId: string;
+  name: string;
+  firstVisitAt: number | null;
+  lastVisitAt: number | null;
+  visits: number | null;
+  totalSpentCents: number | null;
+  address: string | null;
 };
 
 export type ImportPlan = {
@@ -185,6 +214,7 @@ export type ImportPlan = {
   /** Rows left out, with why — shown on the preview so nothing vanishes silently. */
   skipped: Array<{ row: number; reason: string }>;
   columns: Record<string, string>;
+  merged: number;
 };
 
 /**
@@ -218,35 +248,57 @@ export function planContactImport(text: string, limit = 20_000): ImportPlan {
   const skipped: ImportPlan["skipped"] = [];
   const seenEmails = new Set<string>();
   const seenPhones = new Set<string>();
+  let merged = 0;
 
   rows.slice(1).forEach((row, offset) => {
     const rowNumber = offset + 2;
     const rawEmail = cell(row, "email").toLowerCase();
     const email = rawEmail && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(rawEmail) && rawEmail.length <= 254 ? rawEmail : null;
-    const phoneDigits = normalizePhone(cell(row, "phone"));
-    const phone = phoneDigits.length >= 10 && phoneDigits.length <= 15 ? phoneDigits : null;
+    const phone = canonicalPhone10(cell(row, "phone")) || null;
     if (!email && !phone) {
       skipped.push({ row: rowNumber, reason: rawEmail ? `"${rawEmail}" is not a valid email and there is no phone number` : "No email or phone number" });
       return;
     }
-    if (email ? seenEmails.has(email) : phone && seenPhones.has(phone)) {
-      skipped.push({ row: rowNumber, reason: `Duplicate of an earlier row (${email ?? phone})` });
-      return;
-    }
-    if (email) seenEmails.add(email);
-    else if (phone) seenPhones.add(phone);
     const name =
       cell(row, "name") || [cell(row, "firstName"), cell(row, "lastName")].filter(Boolean).join(" ");
-    contacts.push({
+    const contact: ImportedContact = {
       name: name.slice(0, 100),
       email,
       phone,
       birthday: parseBirthday(cell(row, "birthday")),
       notes: cell(row, "notes").slice(0, 500) || null,
       lastVisitAt: parseVisit(cell(row, "lastVisit")),
-    });
+    };
+    if ("externalId" in columnIndex || "visits" in columnIndex || "totalSpent" in columnIndex) {
+      const spent = cell(row, "totalSpent").replace(/[$,\s]/g, "");
+      const visits = cell(row, "visits");
+      contact.legacy = [{
+        externalId: cell(row, "externalId").slice(0, 120), name: contact.name,
+        firstVisitAt: parseVisit(cell(row, "firstVisit")), lastVisitAt: contact.lastVisitAt,
+        visits: /^\d+$/.test(visits) && Number.isSafeInteger(Number(visits)) ? Number(visits) : null,
+        totalSpentCents: /^\d+(\.\d{1,2})?$/.test(spent) && Number.isSafeInteger(Math.round(Number(spent) * 100)) ? Math.round(Number(spent) * 100) : null,
+        address: ["address", "city", "province", "postalCode"].map((key) => cell(row, key)).filter(Boolean).join(", ").slice(0, 500) || null,
+      }];
+    }
+    if (email ? seenEmails.has(email) : phone && seenPhones.has(phone)) {
+      const previous = contacts.find((item) => email ? item.email === email : !item.email && item.phone === phone);
+      if (previous) {
+        previous.phone ||= phone;
+        previous.name ||= contact.name;
+        previous.notes ||= contact.notes;
+        previous.birthday ||= contact.birthday;
+        previous.lastVisitAt = Math.max(previous.lastVisitAt ?? 0, contact.lastVisitAt ?? 0) || null;
+        if (contact.legacy) previous.legacy = [...(previous.legacy ?? []), ...contact.legacy];
+      }
+      merged += 1;
+      skipped.push({ row: rowNumber, reason: "Merged with an earlier customer with the same contact details" });
+      return;
+    }
+    if (email) seenEmails.add(email);
+    else if (phone) seenPhones.add(phone);
+    contacts.push(contact);
   });
-  return { contacts, skipped, columns };
+  return { contacts, skipped, columns, merged };
 }
 
 // --- database ----------------------------------------------------------------
@@ -257,86 +309,65 @@ export function planContactImport(text: string, limit = 20_000): ImportPlan {
  * An opt-out is never touched — importing a list must not re-subscribe anyone.
  */
 export async function importContacts(contacts: ImportedContact[], now: number = Date.now()): Promise<{ created: number; updated: number }> {
+  const { getPool } = await import("@/db/pg-driver");
+  const client = await getPool().connect();
   let created = 0;
   let updated = 0;
-  for (let start = 0; start < contacts.length; start += 200) {
-    const statements = contacts.slice(start, start + 200).map((contact) => {
-      if (contact.email) {
-        return getD1()
-          .prepare(
-            `INSERT INTO customer_contacts
-             (id, email, phone, name, birth_month, birth_day, source, notes, last_visit_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)
-             ON CONFLICT (email) WHERE email IS NOT NULL DO UPDATE SET
-               phone = COALESCE(customer_contacts.phone, EXCLUDED.phone),
-               name = CASE WHEN customer_contacts.name = '' THEN EXCLUDED.name ELSE customer_contacts.name END,
-               birth_day = CASE WHEN customer_contacts.birth_month IS NULL THEN EXCLUDED.birth_day ELSE customer_contacts.birth_day END,
-               birth_month = COALESCE(customer_contacts.birth_month, EXCLUDED.birth_month),
-               notes = COALESCE(customer_contacts.notes, EXCLUDED.notes),
-               last_visit_at = GREATEST(customer_contacts.last_visit_at, EXCLUDED.last_visit_at),
-               updated_at = EXCLUDED.updated_at
-             RETURNING (xmax = 0) AS inserted`,
-          )
-          .bind(
-            crypto.randomUUID(),
-            contact.email,
-            contact.phone,
-            contact.name,
-            contact.birthday?.month ?? null,
-            contact.birthday?.day ?? null,
-            contact.notes,
-            contact.lastVisitAt,
-            now,
-            now,
-          );
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('customer-contact-import'))");
+    for (const contact of contacts) {
+      const phone = canonicalPhone10(contact.phone ?? "") || null;
+      const email = contact.email?.trim().toLowerCase() || null;
+      if (!phone && !email) continue;
+      const found = await client.query<{ id: string; legacy_json: string | null }>(
+        `SELECT id, legacy_json FROM customer_contacts
+         WHERE ($1::text IS NOT NULL AND email = $1)
+            OR ($2::text IS NOT NULL AND ${phone10Sql("phone")} = $2 AND ($1::text IS NULL OR email IS NULL))
+         ORDER BY (email = $1) DESC NULLS LAST, updated_at DESC LIMIT 1 FOR UPDATE`,
+        [email, phone],
+      );
+      const existing = found.rows[0];
+      const history: LegacyCustomerRecord[] = existing?.legacy_json ? JSON.parse(existing.legacy_json) : [];
+      for (const record of contact.legacy ?? []) {
+        const key = record.externalId || JSON.stringify(record);
+        const index = history.findIndex((item) => (item.externalId || JSON.stringify(item)) === key);
+        if (index < 0) history.push(record);
+        else history[index] = record;
       }
-      // Phone only: there is no unique key to conflict on, so "insert unless a
-      // phone-only row already exists" and a companion update are one statement.
-      return getD1()
-        .prepare(
-          `WITH existing AS (
-             UPDATE customer_contacts SET
-               name = CASE WHEN name = '' THEN ? ELSE name END,
-               birth_day = CASE WHEN birth_month IS NULL THEN ? ELSE birth_day END,
-               birth_month = COALESCE(birth_month, ?),
-               notes = COALESCE(notes, ?),
-               last_visit_at = GREATEST(last_visit_at, ?),
-               updated_at = ?
-             WHERE phone = ? AND email IS NULL
-             RETURNING id
-           )
-           INSERT INTO customer_contacts
-           (id, email, phone, name, birth_month, birth_day, source, notes, last_visit_at, created_at, updated_at)
-           SELECT ?, NULL, ?, ?, ?, ?, 'import', ?, ?, ?, ?
-           WHERE NOT EXISTS (SELECT 1 FROM existing)
-           RETURNING true AS inserted`,
-        )
-        .bind(
-          contact.name,
-          contact.birthday?.day ?? null,
-          contact.birthday?.month ?? null,
-          contact.notes,
-          contact.lastVisitAt,
-          now,
-          contact.phone,
-          crypto.randomUUID(),
-          contact.phone,
-          contact.name,
-          contact.birthday?.month ?? null,
-          contact.birthday?.day ?? null,
-          contact.notes,
-          contact.lastVisitAt,
-          now,
-          now,
+      const legacy = history.length ? JSON.stringify(history) : null;
+      if (existing) {
+        await client.query(
+          `UPDATE customer_contacts SET email = COALESCE(email, $2),
+             phone = CASE WHEN ${phone10Sql("phone")} ~ '^[2-9][0-9]{2}[2-9][0-9]{6}$' THEN phone ELSE COALESCE($3, phone) END,
+             name = CASE WHEN name = '' THEN $4 ELSE name END,
+             birth_day = CASE WHEN birth_month IS NULL THEN $6 ELSE birth_day END,
+             birth_month = COALESCE(birth_month, $5), notes = COALESCE(notes, $7),
+             last_visit_at = GREATEST(last_visit_at, $8), legacy_json = $9, updated_at = $10
+           WHERE id = $1`,
+          [existing.id, email, phone, contact.name, contact.birthday?.month ?? null, contact.birthday?.day ?? null,
+            contact.notes, contact.lastVisitAt, legacy, now],
         );
-    });
-    const results = await getD1().batch<{ inserted: boolean }>(statements);
-    for (const result of results) {
-      if (result.results[0]?.inserted) created += 1;
-      else updated += 1;
+        updated += 1;
+      } else {
+        await client.query(
+          `INSERT INTO customer_contacts
+           (id, email, phone, name, birth_month, birth_day, source, notes, last_visit_at, legacy_json, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, 'import', $7, $8, $9, $10, $10)`,
+          [crypto.randomUUID(), email, phone, contact.name, contact.birthday?.month ?? null,
+            contact.birthday?.day ?? null, contact.notes, contact.lastVisitAt, legacy, now],
+        );
+        created += 1;
+      }
     }
+    await client.query("COMMIT");
+    return { created, updated };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
   }
-  return { created, updated };
 }
 
 /**
@@ -439,7 +470,7 @@ export async function contactSummary(): Promise<{ contacts: number; imported: nu
   const row = await getD1()
     .prepare(
       `SELECT COUNT(*) AS contacts,
-              COUNT(*) FILTER (WHERE source = 'import') AS imported,
+              COUNT(*) FILTER (WHERE source = 'import' OR legacy_json IS NOT NULL) AS imported,
               COUNT(*) FILTER (WHERE birth_month IS NOT NULL) AS birthdays,
               COUNT(*) FILTER (WHERE marketing_opt_out_at IS NOT NULL) AS opted_out
        FROM customer_contacts`,
@@ -485,7 +516,7 @@ export async function exportAllContacts(): Promise<Array<Record<string, unknown>
        ),
        contacts AS (
          SELECT CASE WHEN email IS NOT NULL THEN 'email:' || email ELSE 'phone:' || phone END AS key,
-                name, email, phone, birth_month, birth_day, source, notes, last_visit_at, marketing_opt_out_at
+                name, email, phone, birth_month, birth_day, source, notes, last_visit_at, marketing_opt_out_at, legacy_json
          FROM customer_contacts
        )
        SELECT COALESCE(NULLIF(f.name, ''), c.name, '') AS name,
@@ -500,7 +531,7 @@ export async function exportAllContacts(): Promise<Array<Record<string, unknown>
                    WHEN c.source = 'import' THEN 'POS import'
                    WHEN c.source = 'till' THEN 'till'
                    ELSE 'unsubscribe request' END AS source,
-              c.notes, c.marketing_opt_out_at
+              c.notes, c.marketing_opt_out_at, c.legacy_json
        FROM from_orders f FULL OUTER JOIN contacts c ON c.key = f.key
        ORDER BY COALESCE(f.last_order_at, c.last_visit_at, 0) DESC`,
     )

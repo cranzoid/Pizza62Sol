@@ -115,18 +115,29 @@ async function claimDue(limit: number, now: number): Promise<OutboxRow[]> {
   try {
     await client.query("BEGIN");
     const claimed = await client.query<OutboxRow>(
-      `WITH due AS (
-         SELECT id FROM notification_outbox
-         WHERE (status = ANY($1) AND scheduled_for <= $2)
+      `WITH paced AS (
+         SELECT n.id, s.interval_minutes,
+           row_number() OVER (PARTITION BY n.kind ORDER BY n.scheduled_for, n.id) AS position
+         FROM notification_outbox n JOIN marketing_sends s ON n.payload_json::jsonb->>'sendId' = s.id
+         WHERE s.interval_minutes >= 2 AND n.status IN ('pending', 'retrying', 'sending')
+       ), due AS (
+         SELECT n.id FROM notification_outbox n LEFT JOIN paced p ON p.id = n.id
+         WHERE ((n.status = ANY($1) AND n.scheduled_for <= $2)
             -- Reclaim rows abandoned mid-delivery by a worker that died. See
             -- STALE_SENDING_MS: without this they are stranded forever.
-            OR (status = 'sending' AND updated_at < $4)
+            OR (n.status = 'sending' AND n.updated_at < $4))
+           AND (p.id IS NULL OR (p.position = 1
+             AND (to_timestamp($2 / 1000.0) AT TIME ZONE 'America/Toronto')::time >= TIME '11:00'
+             AND (to_timestamp($2 / 1000.0) AT TIME ZONE 'America/Toronto')::time < TIME '19:00'
+             AND NOT EXISTS (SELECT 1 FROM notification_outbox other WHERE other.kind = n.kind AND other.id <> n.id
+               AND ((other.status = 'sent' AND other.sent_at > $2 - p.interval_minutes * 60000)
+                 OR (other.status = 'sending' AND other.updated_at >= $4)))))
          -- Everything else before a giveaway nudge. A nudge is marketing that
          -- can go out a minute later; a receipt or a kitchen alert cannot, and
          -- must never wait behind a backlog of them.
-         ORDER BY (kind IN ('giveaway_nudge', 'giveaway_nudge_sms')), scheduled_for
+         ORDER BY (n.kind IN ('giveaway_nudge', 'giveaway_nudge_sms')), n.scheduled_for
          LIMIT $3
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF n SKIP LOCKED
        )
        UPDATE notification_outbox o
        SET status = 'sending', updated_at = $2
@@ -233,7 +244,8 @@ class ParkForSetup extends Error {}
  */
 class SkipDelivery extends Error {}
 
-async function deliver(row: OutboxRow): Promise<void> {
+type DeliveryReceipt = { provider: string; reference: string | null };
+async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
   const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
   const orderId = typeof payload.orderId === "string" ? payload.orderId : null;
 
@@ -562,7 +574,7 @@ async function deliver(row: OutboxRow): Promise<void> {
         unsubscribeHref: `${base}/unsubscribe?${query}`,
         test: Boolean(payload.test),
       });
-      await sendEmail({
+      return await sendEmail({
         to,
         subject: message.emailSubject,
         text: message.emailText,
@@ -574,7 +586,6 @@ async function deliver(row: OutboxRow): Promise<void> {
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
       });
-      return;
     }
 
     /**
@@ -604,8 +615,10 @@ async function deliver(row: OutboxRow): Promise<void> {
         unsubscribeHref: "",
         test: Boolean(payload.test),
       });
-      await sendSms({ to, body: message.smsBody });
-      return;
+      const base = await publicBaseUrl();
+      return await sendSms({ to, body: message.smsBody,
+        ...(base ? { statusCallback: `${base}/api/notifications/sms/status?id=${encodeURIComponent(row.id)}` } : {}),
+      });
     }
 
     default:
@@ -613,7 +626,7 @@ async function deliver(row: OutboxRow): Promise<void> {
   }
 }
 
-async function markSent(row: OutboxRow, now: number): Promise<void> {
+async function markSent(row: OutboxRow, now: number, receipt: DeliveryReceipt | void): Promise<void> {
   // The payload is replaced rather than kept. It carries plaintext tracking and
   // feedback tokens (messages.ts explains why it has to), and once the message
   // is gone there is no reason for them to persist in the queue. What remains is
@@ -642,9 +655,9 @@ async function markSent(row: OutboxRow, now: number): Promise<void> {
   });
   await getD1()
     .prepare(
-      "UPDATE notification_outbox SET status = 'sent', sent_at = ?, last_error = NULL, payload_json = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
+      "UPDATE notification_outbox SET status = 'sent', sent_at = ?, last_error = NULL, payload_json = ?, attempt_count = attempt_count + 1, updated_at = ?, provider_reference = COALESCE(provider_reference, ?), delivery_status = COALESCE(delivery_status, ?) WHERE id = ?",
     )
-    .bind(now, redacted, now, row.id)
+    .bind(now, redacted, now, receipt?.reference ?? null, receipt ? 'accepted' : null, row.id)
     .run();
 }
 
@@ -746,8 +759,8 @@ export async function dispatchOutbox(options: { limit?: number; now?: number } =
 
   for (const row of rows) {
     try {
-      await deliver(row);
-      await markSent(row, Date.now());
+      const receipt = await deliver(row);
+      await markSent(row, Date.now(), receipt);
       outcome.sent += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
