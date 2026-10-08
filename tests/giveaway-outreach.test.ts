@@ -10,7 +10,7 @@ const { nudgeAudience, queueNudge, repaceNudge } = await import("@/lib/giveaway-
 const { clearIntegrationSecretCache } = await import("@/lib/integration-secrets");
 const { POST: statusRoute } = await import("@/app/api/notifications/sms/status/route");
 const { twilioSignature } = await import("@/app/api/notifications/voice/ack/route");
-const { dispatchOutbox } = await import("@/lib/notifications/dispatcher");
+const { dispatchOutbox, dispatchSoon } = await import("@/lib/notifications/dispatcher");
 const reachable = await getPool().query("SELECT 1").then(() => true).catch(() => false);
 const withDb = (name: string, body: () => Promise<void>) => test(name, { skip: reachable ? false : "Postgres is not reachable" }, body);
 const campaign = `outreach-${crypto.randomUUID()}`;
@@ -72,6 +72,22 @@ test("three-minute pacing shares booked capacity, never overlaps, and stops at c
   assert.ok(slots.every((slot) => !reserved.some((taken) => Math.abs(taken - slot) < 3 * 60_000)));
   const close = planOutreachSchedule({ count: 10, perDay: 160, intervalMinutes: 4, now, endsAt: now + 10 * 60_000 });
   assert.deepEqual(close, [now, now + 4 * 60_000, now + 8 * 60_000]);
+});
+
+test("send-together releases all 248 texts now while sharing the daily cap and respecting sending hours", () => {
+  const start = Date.parse("2026-10-08T16:34:27-04:00");
+  const input = { count: 248, perDay: 500, intervalMinutes: 0, now: start, endsAt: start + 86_400_000 };
+  const slots = planOutreachSchedule({ ...input, reserved: [start, start - 60_000] });
+  assert.equal(slots.length, 248);
+  assert.ok(slots.every((slot) => slot === start));
+
+  const capped = planOutreachSchedule({ ...input, perDay: 160, reserved: [start] });
+  assert.equal(capped.filter((slot) => slot === start).length, 159);
+  assert.equal(capped[159], Date.parse("2026-10-09T11:00:27-04:00"));
+  const afterHours = Date.parse("2026-10-08T19:00:00-04:00");
+  assert.deepEqual(planOutreachSchedule({ ...input, count: 2, now: afterHours }),
+    Array(2).fill(Date.parse("2026-10-09T11:00:00-04:00")));
+  assert.deepEqual(planOutreachSchedule({ ...input, now: input.endsAt }), []);
 });
 
 withDb("re-import fills existing contacts without duplicating identities, history or opting them back in", async () => {
@@ -150,5 +166,29 @@ withDb("a delayed dispatcher sends one paced text at a time instead of bursting 
     time += 60_000;
     assert.equal((await dispatchOutbox({now:time})).sent,1);
     assert.equal(calls,2);
+  } finally { globalThis.fetch = realFetch; Date.now = realNow; }
+});
+
+withDb("send-together drains more than one dispatch batch immediately", async () => {
+  await getPool().query("UPDATE notification_outbox SET status = 'cancelled' WHERE status IN ('pending','retrying','sending','pending_provider_setup')");
+  const sendId = crypto.randomUUID();
+  await getPool().query(`INSERT INTO marketing_sends
+    (id,campaign,nudge,channel,recipient_count,per_day,interval_minutes,created_by,created_at)
+    VALUES ($1,$2,'last_call','sms',26,500,0,'test',$3)`, [sendId,campaign,now]);
+  await getPool().query(`INSERT INTO notification_outbox
+    (id,kind,recipient,payload_json,status,scheduled_for,created_at,updated_at)
+    SELECT gen_random_uuid()::text,'giveaway_nudge_sms','+1905777' || lpad(i::text,4,'0'),$1,'pending',$2,$2,$2
+    FROM generate_series(1,26) AS i`, [JSON.stringify({sendId,campaign,nudge:"last_call"}),now]);
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let calls = 0;
+  Date.now = () => now;
+  globalThis.fetch = (async () => { calls += 1; return new Response(JSON.stringify({sid:`SM-together-${calls}`})); }) as typeof fetch;
+  try {
+    await dispatchSoon({ drain: true });
+    assert.equal(calls,26);
+    const statuses = (await getPool().query("SELECT status FROM notification_outbox WHERE payload_json::jsonb->>'sendId' = $1", [sendId])).rows;
+    assert.ok(statuses.every((row) => row.status === "sent"));
+    assert.equal((await dispatchOutbox({now})).sent,0);
   } finally { globalThis.fetch = realFetch; Date.now = realNow; }
 });

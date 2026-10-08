@@ -106,6 +106,7 @@ export async function queueNudge(input: {
   const now = input.now ?? Date.now();
   const perDay = Math.max(1, Math.min(5000, Math.trunc(input.perDay)));
   const intervalMinutes = input.intervalMinutes ?? 1;
+  if (channel === "email" && intervalMinutes === 0) throw new NudgeError("Leave at least one minute between emails to protect order receipts.");
   const source = input.source ?? "all";
   const mode = input.mode ?? "new";
   const client = await getPool().connect();
@@ -234,6 +235,7 @@ export async function repaceNudge(campaign: string, sendId: string, intervalMinu
     await client.query("BEGIN");
     const send = (await client.query("SELECT channel FROM marketing_sends WHERE id = $1 AND campaign = $2", [sendId, campaign])).rows[0];
     if (!send) throw new NudgeError("That send could not be found.");
+    if (send.channel === "email" && intervalMinutes === 0) throw new NudgeError("Leave at least one minute between emails to protect order receipts.");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`giveaway-channel:${send.channel}`]);
     const rows = await client.query<{ id: string }>(`SELECT id FROM notification_outbox
       WHERE payload_json::jsonb->>'sendId' = $1 AND status IN ('pending', 'retrying', 'pending_provider_setup')
