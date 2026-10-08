@@ -30,7 +30,9 @@ function Status({ row }: { row: Parameters<typeof statusLabel>[0] }) {
   return <span className={`giveaway-badge ${["Delivered", "Sent to provider"].includes(label) ? "good" : ["Failed", "Not delivered"].includes(label) ? "bad" : ""}`}>{label}</span>;
 }
 
-export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boolean; act: Act }) {
+export function OutreachPanel({ data, busy, act, notice }: {
+  data: Overview; busy: boolean; act: Act; notice: { tone: "ok" | "bad"; text: string } | null;
+}) {
   const [channel, setChannel] = useState<"sms" | "email">("sms");
   const [nudge, setNudge] = useState<NudgeKind>("announce");
   const [source, setSource] = useState("all");
@@ -45,6 +47,7 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
   const [error, setError] = useState("");
   const [template, setTemplate] = useState<{ html: string; subject: string; sms: string } | null>(null);
   const [confirmation, setConfirmation] = useState<{ key: string; count: number } | null>(null);
+  const [queueing, setQueueing] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [testedSelection, setTestedSelection] = useState("");
   const blocker = channel === "sms" ? data.smsBlocker : data.emailReady ? null : "Email is not connected. Set it up in Integrations.";
@@ -116,7 +119,7 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
             <strong>{template?.subject ?? "Loading email…"}</strong>
             <iframe title="Branded giveaway email preview" sandbox="" srcDoc={template?.html.replace("</head>", '<style>table[width="600"]{width:100%!important}body{overflow-wrap:anywhere}</style></head>') ?? ""} />
           </>}
-          <label>Send a test to<input type={channel === "sms" ? "tel" : "email"} value={testTo} onChange={(event) => setTestTo(event.target.value)} placeholder={channel === "sms" ? "Your phone number" : "Your email address"} /></label>
+          <label>Send a test to · optional<input type={channel === "sms" ? "tel" : "email"} value={testTo} onChange={(event) => setTestTo(event.target.value)} placeholder={channel === "sms" ? "Your phone number" : "Your email address"} /></label>
           <button className="staff-button" disabled={!!blocker || busy || !testTo.trim() || data.status !== "open"} onClick={async () => {
             const result = await act({ action: "nudge.test", channel, variant: nudge, [channel === "sms" ? "phone" : "email"]: testTo }, () => "Test queued. Check that it arrives before sending to customers.");
             if (result) setTestedSelection(testIdentity);
@@ -143,15 +146,20 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
           Review {mode === "resend" ? "resend" : "send"} to {audience?.queued ?? 0}
         </button>
       </div>
+      {!confirmation && notice ? <p className={notice.tone === "bad" ? "form-error" : "admin-message"} role={notice.tone === "bad" ? "alert" : "status"}>{notice.text}</p> : null}
       {confirmation ? <div className="giveaway-confirm" role="region" aria-label="Confirm customer messages">
         <h3>{mode === "resend" ? "Confirm another copy" : "Confirm this send"}</h3>
         <p>{NUDGES[nudge].label} by {channel === "sms" ? "SMS text" : "email"} to {confirmation.count} {source === "imported" ? "old POS customers" : "customers"}. {mode === "resend" ? "These customers have already been sent this nudge." : "Customers already sent or queued for this nudge will be skipped."}</p>
-        {testedSelection !== testIdentity ? <p>Send yourself a test above to check the message before confirming.</p> : <p>Test queued to {testTo}. Check it has arrived and looks right.</p>}
-        <div className="pager"><button className="staff-button giveaway-primary" disabled={busy || !canSend || (channel === "sms" && testedSelection !== testIdentity)} onClick={async () => {
-          const result = await act({ action: "nudge.send", channel, nudge, source, mode, intervalMinutes, perDay: Number(perDay), requestKey: confirmation.key },
-            (value) => `${value.queued} messages queued. ${value.skipped} excluded.${value.notQueued ? ` ${value.notQueued} did not fit before closing.` : ""} Follow progress in Message activity.`);
-          if (result) { setConfirmation(null); setRefresh((value) => value + 1); }
-        }}>Confirm & queue {mode === "resend" ? "resend" : "messages"}</button><button className="text-button" disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button></div>
+        {testedSelection !== testIdentity ? <p>You can send a test above, or confirm now using the customer preview.</p> : <p>Test queued to {testTo}. Check it has arrived and looks right.</p>}
+        {notice ? <p className={notice.tone === "bad" ? "form-error" : "admin-message"} role={notice.tone === "bad" ? "alert" : "status"}>{notice.text}</p> : null}
+        <div className="pager"><button className="staff-button giveaway-primary" disabled={busy || !canSend || queueing} aria-busy={queueing} onClick={async () => {
+          setQueueing(true);
+          try {
+            const result = await act({ action: "nudge.send", channel, nudge, source, mode, intervalMinutes, perDay: Number(perDay), requestKey: confirmation.key },
+              (value) => `${value.queued} messages queued. ${value.skipped} excluded.${value.notQueued ? ` ${value.notQueued} did not fit before closing.` : ""} Follow progress in Message activity.`);
+            if (result) { setConfirmation(null); setRefresh((value) => value + 1); }
+          } finally { setQueueing(false); }
+        }}>{queueing ? "Queuing messages…" : `Confirm & queue ${mode === "resend" ? "resend" : "messages"}`}</button><button className="text-button" disabled={busy || queueing} onClick={() => setConfirmation(null)}>Cancel</button></div>
       </div> : null}
       <div className="record-filters giveaway-recipient-filters">
         <input aria-label="Search audience" placeholder="Search customer name, phone or email" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />

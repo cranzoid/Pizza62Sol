@@ -179,7 +179,7 @@ export function AdminGiveawayPanel() {
       </nav>
       {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
 
-      {tab === "messages" ? <><OutreachPanel data={data} busy={busy} act={act} /><ImportPanel canImport={data.canViewContact} onImported={load} /></> : null}
+      {tab === "messages" ? <><OutreachPanel data={data} busy={busy} act={act} notice={message} /><ImportPanel canImport={data.canViewContact} onImported={load} /></> : null}
       {tab === "activity" ? <ActivityPanel data={data} busy={busy} act={act} /> : null}
       {tab === "entries" ? <>
       <WinnerPanel data={data} busy={busy} act={act} />
