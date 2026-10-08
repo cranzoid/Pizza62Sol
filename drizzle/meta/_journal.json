@@ -64,6 +64,20 @@
       "when": 1790516310487,
       "tag": "0008_sms_opt_out",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791485578625,
+      "tag": "0009_giveaway_outreach",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791486040531,
+      "tag": "0010_giveaway_history_index",
+      "breakpoints": true
     }
   ]
 }

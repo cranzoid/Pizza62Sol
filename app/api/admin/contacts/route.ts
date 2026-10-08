@@ -30,6 +30,7 @@ import {
   upcomingBirthdays,
 } from "@/lib/customer-contacts";
 import { normalizeEmail, recordOptOut } from "@/lib/marketing-consent";
+import type { LegacyCustomerRecord } from "@/lib/customer-contacts";
 
 /** About 2 MB of CSV — tens of thousands of customers, far past a year's POS. */
 const MAX_CSV_LENGTH = 2_000_000;
@@ -116,6 +117,8 @@ export async function POST(request: Request) {
       return Response.json({
         columns: plan.columns,
         ready: plan.contacts.length,
+        withPhone: plan.contacts.filter((contact) => contact.phone).length,
+        merged: plan.merged,
         withEmail: plan.contacts.filter((contact) => contact.email).length,
         withBirthday: plan.contacts.filter((contact) => contact.birthday).length,
         sample: plan.contacts.slice(0, 8).map((contact) => ({
@@ -124,7 +127,7 @@ export async function POST(request: Request) {
           phone: contact.phone,
           birthday: contact.birthday ? birthdayLabel(contact.birthday.month, contact.birthday.day) : null,
         })),
-        skipped: plan.skipped.length,
+        skipped: plan.skipped.length - plan.merged,
         skippedRows: plan.skipped.slice(0, 25),
       });
     }
@@ -135,9 +138,9 @@ export async function POST(request: Request) {
       action: "contacts.import",
       targetType: "customers",
       targetId: typeof body.fileName === "string" ? body.fileName.slice(0, 120) : "csv",
-      next: { ...result, skipped: plan.skipped.length },
+      next: { ...result, skipped: plan.skipped.length - plan.merged, merged: plan.merged },
     });
-    return Response.json({ ok: true, ...result, skipped: plan.skipped.length });
+    return Response.json({ ok: true, ...result, skipped: plan.skipped.length - plan.merged, merged: plan.merged });
   } catch (error) {
     if (error instanceof AuthError) return authErrorResponse(error);
     const reference = logFailure("admin.contacts", error);
@@ -155,11 +158,12 @@ function contactsCsv(rows: Array<Record<string, unknown>>): string {
   const day = (value: unknown) =>
     value ? new Date(Number(value)).toLocaleDateString("en-CA", { timeZone: "America/Toronto" }) : "";
   const lines = [
-    ["Name", "Email", "Phone", "Birthday", "Orders", "Last order", "POS last visit", "Source", "Email marketing", "Notes"]
+    ["Name", "Email", "Phone", "Birthday", "Orders", "Last order", "POS last visit", "Source", "Email marketing", "Notes", "POS customer IDs", "POS visits", "POS total spent CAD", "POS addresses"]
       .map(csvField)
       .join(","),
   ];
   for (const row of rows) {
+    const legacy: LegacyCustomerRecord[] = row.legacy_json ? JSON.parse(String(row.legacy_json)) : [];
     lines.push(
       [
         row.name,
@@ -172,6 +176,10 @@ function contactsCsv(rows: Array<Record<string, unknown>>): string {
         row.source,
         !row.email ? "" : row.marketing_opt_out_at ? `unsubscribed ${day(row.marketing_opt_out_at)}` : "subscribed",
         row.notes,
+        legacy.map((record) => record.externalId).filter(Boolean).join("; "),
+        legacy.length ? legacy.reduce((sum, record) => sum + (record.visits ?? 0), 0) : "",
+        legacy.length ? (legacy.reduce((sum, record) => sum + (record.totalSpentCents ?? 0), 0) / 100).toFixed(2) : "",
+        [...new Set(legacy.map((record) => record.address).filter(Boolean))].join("; "),
       ]
         .map(csvField)
         .join(","),

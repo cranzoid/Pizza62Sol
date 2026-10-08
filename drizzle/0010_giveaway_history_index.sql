@@ -1,0 +1,1 @@
+CREATE INDEX "outbox_giveaway_history_idx" ON "notification_outbox" USING btree ("kind",(payload_json::jsonb->>'campaign'),(payload_json::jsonb->>'nudge'));

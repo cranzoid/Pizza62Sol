@@ -280,3 +280,39 @@ export function planNudgeSchedule(count: number, perDay: number, now: number): n
   }
   return slots;
 }
+
+/** Shared channel capacity, exact spacing, local sending hours and a hard close. */
+export function planOutreachSchedule(input: {
+  count: number; perDay: number; intervalMinutes: number; now: number; endsAt: number; reserved?: number[];
+}): number[] {
+  const slots: number[] = [];
+  const gap = Math.max(1, input.intervalMinutes) * 60_000;
+  const taken = [...(input.reserved ?? [])].sort((a, b) => a - b);
+  const dayOf = (at: number) => new Date(at).toLocaleDateString("en-CA", { timeZone: TORONTO });
+  const used = new Map<string, number>();
+  for (const at of taken) used.set(dayOf(at), (used.get(dayOf(at)) ?? 0) + 1);
+  let cursor = Math.ceil(input.now / 60_000) * 60_000;
+  // Capacity is bounded by the giveaway window. Nothing is queued after closing.
+  while (slots.length < input.count && cursor < input.endsAt) {
+    const minute = torontoMinuteOfDay(cursor);
+    const date = dayOf(cursor);
+    if (minute < NUDGE_WINDOW.startMinute) {
+      cursor += (NUDGE_WINDOW.startMinute - minute) * 60_000;
+      continue;
+    }
+    if (minute >= NUDGE_WINDOW.endMinute || (used.get(date) ?? 0) >= input.perDay) {
+      cursor += (24 * 60 - minute + NUDGE_WINDOW.startMinute) * 60_000;
+      continue;
+    }
+    const collision = taken.find((at) => Math.abs(at - cursor) < gap);
+    if (collision !== undefined) {
+      cursor = collision + gap;
+      continue;
+    }
+    slots.push(cursor);
+    taken.push(cursor);
+    used.set(date, (used.get(date) ?? 0) + 1);
+    cursor += gap;
+  }
+  return slots;
+}
