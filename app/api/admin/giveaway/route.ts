@@ -93,7 +93,8 @@ export async function GET(request: Request) {
       const mode = url.searchParams.get("mode") === "resend" ? "resend" : "new";
       const audience = await nudgeAudience(giveaway.id, nudge, channel, source, mode);
       const perDay = Math.max(1, Math.min(5000, Math.trunc(Number(url.searchParams.get("perDay")) || 80)));
-      const intervalMinutes = Math.max(1, Math.min(60, Math.trunc(Number(url.searchParams.get("intervalMinutes")) || 3)));
+      const requestedInterval = Number(url.searchParams.get("intervalMinutes") ?? 3);
+      const intervalMinutes = Number.isSafeInteger(requestedInterval) ? Math.max(channel === "sms" ? 0 : 1, Math.min(60, requestedInterval)) : 3;
       const now = Date.now();
       const reservations = await getD1().prepare(`SELECT CASE WHEN status = 'sent' THEN sent_at ELSE scheduled_for END AS at
         FROM notification_outbox WHERE kind = ? AND (status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')
@@ -313,7 +314,7 @@ export async function POST(request: Request) {
         if (body.source !== undefined && !isAudienceSource(body.source)) return Response.json({ error: "Choose a customer audience." }, { status: 422 });
         if (body.mode !== undefined && !isSendMode(body.mode)) return Response.json({ error: "Choose first send or resend." }, { status: 422 });
         const intervalMinutes = Number(body.intervalMinutes ?? 3);
-        if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 60) return Response.json({ error: "Choose a pace between 1 and 60 minutes." }, { status: 422 });
+        if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < (channel === "sms" ? 0 : 1) || intervalMinutes > 60) return Response.json({ error: "Choose a valid sending pace. Texts can be sent together; emails need at least one minute between messages." }, { status: 422 });
         if (body.mode === "resend" && (typeof body.requestKey !== "string" || !/^[\w-]{16,80}$/.test(body.requestKey))) {
           return Response.json({ error: "Review the resend before confirming it." }, { status: 422 });
         }
@@ -333,7 +334,7 @@ export async function POST(request: Request) {
           targetId: giveaway.id,
           next: { nudge: body.nudge, label: NUDGES[body.nudge].label, channel, ...result, perDay },
         });
-        dispatchSoon();
+        dispatchSoon({ drain: channel === "sms" && intervalMinutes === 0 });
         return Response.json({ ok: true, ...result });
       }
 
@@ -363,13 +364,14 @@ export async function POST(request: Request) {
       case "nudge.repace": {
         const interval = Number(body.intervalMinutes);
         const perDay = Number(body.perDay);
-        if (!body.sendId || !Number.isSafeInteger(interval) || interval < 1 || interval > 60 ||
+        if (!body.sendId || !Number.isSafeInteger(interval) || interval < 0 || interval > 60 ||
           !Number.isSafeInteger(perDay) || perDay < 1 || perDay > 5000) {
           return Response.json({ error: "Choose a valid pace and daily cap." }, { status: 422 });
         }
         if (giveawayStatus(giveaway, now) !== "open") return Response.json({ error: "The giveaway is not open." }, { status: 409 });
         const updated = await repaceNudge(giveaway.id, body.sendId, interval, perDay, now);
         await writeAudit({ actorId: user.id, action: "giveaway.nudge_repace", targetType: "marketing_send", targetId: body.sendId, next: { intervalMinutes: interval, perDay, updated } });
+        dispatchSoon({ drain: interval === 0 });
         return Response.json({ ok: true, updated });
       }
 

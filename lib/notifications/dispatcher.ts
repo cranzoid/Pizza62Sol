@@ -793,8 +793,17 @@ export async function dispatchOutbox(options: { limit?: number; now?: number } =
  * a failed inline dispatch must never turn a successfully placed order into an
  * error response.
  */
-export function dispatchSoon(): void {
-  void dispatchOutbox({ limit: 10 }).catch(() => undefined);
+export function dispatchSoon(options: { drain?: boolean } = {}): Promise<void> {
+  return (async () => {
+    // A send-together batch should keep moving immediately, rather than wait
+    // for one cron tick per 25 texts. Re-claim in small batches so new order
+    // receipts retain priority. The cron still recovers interrupted work.
+    const limit = options.drain ? 25 : 10;
+    for (let batch = 0; batch < (options.drain ? 200 : 1); batch += 1) {
+      const result = await dispatchOutbox({ limit });
+      if (result.claimed < limit) break;
+    }
+  })().catch(() => undefined);
 }
 
 /**

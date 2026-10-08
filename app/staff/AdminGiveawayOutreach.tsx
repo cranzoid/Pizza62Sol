@@ -35,8 +35,8 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
   const [nudge, setNudge] = useState<NudgeKind>("announce");
   const [source, setSource] = useState("all");
   const [mode, setMode] = useState("new");
-  const [intervalMinutes, setIntervalMinutes] = useState(3);
-  const [perDay, setPerDay] = useState("160");
+  const [intervalMinutes, setIntervalMinutes] = useState(0);
+  const [perDay, setPerDay] = useState("500");
   const [testTo, setTestTo] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -84,8 +84,8 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
       <div className="giveaway-compose-grid">
         <div className="giveaway-controls">
           <div className="giveaway-channel" role="group" aria-label="Message channel">
-            <button className={channel === "sms" ? "active" : ""} onClick={() => change(() => { setChannel("sms"); setPerDay("160"); setTestTo(""); })}>SMS text</button>
-            <button className={channel === "email" ? "active" : ""} onClick={() => change(() => { setChannel("email"); setPerDay(String(data.giveaway?.nudgePerDay ?? 80)); setTestTo(data.me.email); })}>Email</button>
+            <button className={channel === "sms" ? "active" : ""} onClick={() => change(() => { setChannel("sms"); setIntervalMinutes(0); setPerDay("500"); setTestTo(""); })}>SMS text</button>
+            <button className={channel === "email" ? "active" : ""} onClick={() => change(() => { setChannel("email"); setIntervalMinutes(3); setPerDay(String(data.giveaway?.nudgePerDay ?? 80)); setTestTo(data.me.email); })}>Email</button>
           </div>
           <div className="settings-form">
             <label>Message<select value={nudge} onChange={(event) => change(() => setNudge(event.target.value as NudgeKind))}>
@@ -98,11 +98,13 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
               <option value="new">Customers not yet sent this nudge</option><option value="resend">Resend to customers already sent this nudge</option>
             </select></label>
             <label>Time between messages<select value={intervalMinutes} onChange={(event) => change(() => setIntervalMinutes(Number(event.target.value)))}>
+              {channel === "sms" ? <option value={0}>Send together · no delay</option> : null}
               {[1, 3, 4, 5, 10].map((value) => <option key={value} value={value}>Every {value} minute{value === 1 ? "" : "s"}</option>)}
             </select></label>
             <label>Maximum per day<input type="number" min={1} max={5000} value={perDay} onChange={(event) => change(() => setPerDay(event.target.value))} /></label>
           </div>
           <p className="editor-hint">Messages go out from 11 a.m. to 7 p.m. Hamilton time. The daily cap includes other queued giveaway nudges on this channel. Each contact appears once per batch.</p>
+          {channel === "sms" && intervalMinutes === 0 ? <p className="secure-note">Texts start sending together during sending hours. Carrier delivery may take a few minutes.</p> : null}
           {channel === "email" ? <p className="secure-note">{data.emailVolume.sent} emails sent in the last 24 hours. Leave room in your email plan for order receipts.{data.emailVolume.rateLimited ? ` ${data.emailVolume.rateLimited} provider rate-limit errors recently.` : ""}</p> : null}
           {mode === "resend" ? <p className="giveaway-warning">This sends another copy to people already sent the selected nudge. People still waiting for it and anyone who opted out are excluded.</p> : <p className="secure-note">Already sent or queued? They are automatically skipped. You can send the last-call reminder before the final day whenever you are ready.</p>}
           {blocker ? <p className="form-error">{blocker}</p> : null}
@@ -133,7 +135,7 @@ export function OutreachPanel({ data, busy, act }: { data: Overview; busy: boole
       </div>
       <div className="giveaway-send-summary">
         <div><strong>{audience?.queued ?? 0} {channel === "sms" ? "texts" : "emails"} fit before closing</strong>
-          <p>{audience?.queued ? `Every ${intervalMinutes} minutes, up to ${perDay} a day. First: ${when(audience.firstSendAt)}. Last: ${when(audience.lastSendAt)}.` : "Choose an audience with eligible contacts to start a send."}</p>
+          <p>{audience?.queued ? `${intervalMinutes === 0 ? "No delay between texts" : `Every ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"}`}, up to ${perDay} a day. First: ${when(audience.firstSendAt)}. Last: ${when(audience.lastSendAt)}.` : "Choose an audience with eligible contacts to start a send."}</p>
           {audience?.notQueued ? <p className="giveaway-warning">{audience.notQueued} will remain unsent because this pace runs past closing. Choose a faster pace or a higher daily cap.</p> : null}
           {channel === "email" && source === "imported" && !audience?.audienceTotal ? <p>The attached POS export has no emails. Those customers can be reached by text. Imported customers with valid emails will appear here.</p> : null}
         </div>
@@ -191,8 +193,12 @@ export function ActivityPanel({ data, busy, act }: { data: Overview; busy: boole
       <div className="staff-panel-head"><div><span className="giveaway-badge">{send.channel === "sms" ? "SMS" : "EMAIL"} · {send.send_mode === "resend" ? "RESEND" : "FIRST SEND"}</span><h3>{NUDGES[send.nudge as NudgeKind]?.label ?? send.nudge}</h3><small>{when(send.created_at)} · {send.created_by_name ?? "Staff"} · {send.audience_source === "imported" ? "Old POS customers" : send.audience_source === "orders" ? "Order customers" : "All customers"}</small></div><strong>{send.sent + send.failed + send.stopped} / {send.recipient_count}<small>processed</small></strong></div>
       <progress max={Math.max(1, send.recipient_count)} value={send.sent + send.failed + send.stopped} aria-label={`${send.sent + send.failed + send.stopped} of ${send.recipient_count} processed`} />
       <div className="giveaway-run-counts"><span><b>{send.sent}</b> sent to provider</span>{send.channel === "sms" ? <span><b>{send.delivered}</b> delivered</span> : null}<span><b>{send.waiting}</b> waiting</span><span><b>{send.failed + send.undelivered}</b> failed / not delivered</span><span><b>{send.stopped}</b> stopped / skipped</span></div>
-      <p className="secure-note">{send.interval_minutes ? `Every ${send.interval_minutes} minutes · ` : ""}Up to {send.per_day}/day · Last scheduled {when(send.last_send_at)} · {send.skipped_count} excluded</p>
+      <p className="secure-note">{send.interval_minutes === 0 ? "Send together · " : send.interval_minutes ? `Every ${send.interval_minutes} minutes · ` : ""}Up to {send.per_day}/day · Last scheduled {when(send.last_send_at)} · {send.skipped_count} excluded</p>
       <div className="pager"><button className="staff-button" onClick={() => { setSelected(send.id); setPage(0); setResult(null); }}>View recipients</button>
+        {send.waiting && send.channel === "sms" ? <button className="text-button" disabled={busy} onClick={() => {
+          const cap = Math.max(send.per_day, 500);
+          if (window.confirm(`Send the ${send.waiting} waiting texts together during sending hours, up to ${cap} a day? Already sent messages will not be sent again.`)) void act({ action: "nudge.repace", sendId: send.id, intervalMinutes: 0, perDay: cap }, (value) => `${value.updated} waiting texts set to send together. Follow progress here.`);
+        }}>Send remaining together</button> : null}
         {send.waiting ? [3, 4].map((interval) => <button className="text-button" key={interval} disabled={busy} onClick={() => {
           const cap = send.channel === "sms" ? Math.max(send.per_day, Math.floor(480 / interval)) : send.per_day;
           if (window.confirm(`Re-time the unsent messages to every ${interval} minutes, up to ${cap} a day? Already sent messages will not be sent again.`)) void act({ action: "nudge.repace", sendId: send.id, intervalMinutes: interval, perDay: cap }, (value) => `${value.updated} waiting messages re-timed. Previously sent messages were left unchanged.`);
