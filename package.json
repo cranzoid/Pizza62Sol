@@ -12,7 +12,8 @@
     "test": "node --test --test-concurrency=1 --experimental-strip-types --import ./tests/register.mjs tests/*.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node --experimental-strip-types --import ./register-alias.mjs scripts/migrate.ts"
+    "db:migrate": "node --experimental-strip-types --import ./register-alias.mjs scripts/migrate.ts",
+    "ordering:release": "node --experimental-strip-types --import ./register-alias.mjs scripts/ordering-release.ts"
   },
   "dependencies": {
     "@azure/identity": "^4.5.0",

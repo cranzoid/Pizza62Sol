@@ -23,6 +23,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { changeDrinkQuantity, includedDrinkPools } from "@/lib/drink-slots";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
   BAKE_SAUCE_OPTIONS,
@@ -46,7 +47,9 @@ import {
   pizzaExtrasSection,
   pizzaSauceSection,
   pricePizza,
-  priceToppingUnits,
+  priceModifierSelections,
+  toppingWeight,
+  normalizeToppings,
   sectionOptionPrices,
   type ModifierSection,
   type ToppingPlacement,
@@ -117,6 +120,8 @@ export type BuiltItem = {
   /** H-03: recipe toppings the customer asked us to leave off. */
   omitToppings?: string[];
   modifiers?: ModifierSelection[];
+  /** Presentation metadata only; never sent to the orders API. */
+  modifierSections?: ModifierSection[];
   extraCheese?: boolean;
   specialInstructions?: string;
   freeDelivery?: boolean;
@@ -184,11 +189,11 @@ export function ToppingPicker({
   onToggle: (topping: CustomizerTopping) => void;
   onPlacement: (toppingId: string, placement: ToppingPlacement) => void;
 }) {
-  return <div className="topping-grid">{toppings.map((topping) => {
+  return <div className="topping-groups">{[false, true].map((meat) => <div key={String(meat)}><h4>{meat ? "Meat & fish" : "Veggies & cheese"}</h4><div className="topping-grid">{toppings.filter((topping) => Boolean(topping.is_meat || topping.id === "anchovies") === meat).map((topping) => {
     const entry = selected.find((item) => item.toppingId === topping.id);
     return <div className={`topping-chip ${entry ? "topping-chip--active" : ""}`} key={topping.id}>
-      <button className={entry ? "active" : ""} type="button" onClick={() => onToggle(topping)}>
-        <span>{entry ? "✓" : "+"}</span>{topping.name}
+      <button className={entry ? "active" : ""} type="button" aria-pressed={Boolean(entry)} onClick={() => onToggle(topping)}>
+        <span>{entry ? "✓" : "+"}</span>{topping.name}{toppingWeight(topping.id) === 2 ? <small>Counts as 2 toppings</small> : null}
       </button>
       {entry && allowPlacement && !wholeOnly?.has(topping.id) ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
         {PLACEMENTS.map(([placement, symbol, label]) => <button
@@ -200,7 +205,7 @@ export function ToppingPicker({
         ><i aria-hidden="true">{symbol}</i>{label}</button>)}
       </div> : null}
     </div>;
-  })}</div>;
+  })}</div></div>)}</div>;
 }
 
 const PLACEMENTS: Array<[ToppingPlacement, string, string]> = [
@@ -273,6 +278,8 @@ export function PizzaCustomizer({
   halfToppingUnitsBps,
   onClose,
   onAdd,
+  initialItem,
+  onSave,
 }: {
   product: CustomizerProduct;
   variations: CustomizerVariation[];
@@ -280,17 +287,19 @@ export function PizzaCustomizer({
   halfToppingUnitsBps: number;
   onClose: () => void;
   onAdd: (line: BuiltItem) => void;
+  initialItem?: BuiltItem;
+  onSave?: (line: BuiltItem) => void;
 }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const configuration = product.configuration;
   const recipeToppingIds = Array.isArray(configuration.recipeToppingIds)
     ? configuration.recipeToppingIds.map(String)
     : [];
-  const [variationId, setVariationId] = useState(variations[0]?.id ?? "");
+  const [variationId, setVariationId] = useState(initialItem?.variationId ?? variations[0]?.id ?? "");
   const [selected, setSelected] = useState<SelectedTopping[]>(() =>
-    recipeToppingIds.map((toppingId) => ({
+    normalizeToppings([...(initialItem?.toppings ?? []), ...recipeToppingIds.map((toppingId) => ({ toppingId, placement: "whole" as const }))]).map(({ toppingId, placement }) => ({
       toppingId,
-      placement: "whole" as ToppingPlacement,
+      placement,
       name: toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId,
     })),
   );
@@ -303,29 +312,28 @@ export function PizzaCustomizer({
   // off never changes the price: it is not a discount, and treating it as one
   // would let the same named product be bought cheaper by swapping ingredients.
   const fixedRecipe = Boolean(configuration.fixedRecipe);
-  const [omitted, setOmitted] = useState<string[]>([]);
-  const recipeToppings = fixedRecipe
-    ? recipeToppingIds
-        .map((toppingId) => toppings.find((topping) => topping.id === toppingId))
-        .filter((topping): topping is CustomizerTopping => Boolean(topping))
-    : [];
+  const [omitted, setOmitted] = useState<string[]>(initialItem?.omitToppings ?? []);
   const cheeseEnabled = configuration.cheeseEnabled !== false;
   const crustOptions = stringList(configuration.crustOptions);
   const bakeSauceOptions = stringList(configuration.bakeSauceOptions);
   // Pizzas configured before crust and bake/sauce were split keep one combined group.
   const legacyBaseOptions = !crustOptions.length && !bakeSauceOptions.length ? stringList(configuration.pizzaBaseOptions) : [];
-  const [cheese, setCheese] = useState(configuration.presetExtraCheese ? EXTRA_CHEESE_OPTION : DEFAULT_CHEESE_OPTION);
-  const [crust, setCrust] = useState(() => (crustOptions.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : crustOptions[0] ?? ""));
-  const [bakeSauce, setBakeSauce] = useState<string[]>([]);
-  const [legacyBase, setLegacyBase] = useState<string[]>([]);
+  const initialValues = (id: string) => initialItem?.modifiers?.find((modifier) => modifier.id === id)?.values.map((entry) => entry.value);
+  const initialNote = initialItem?.specialInstructions ?? "";
+  const noteCheese = CHEESE_OPTIONS.find((option) => initialNote === option || initialNote.startsWith(`${option} · `));
+  const [cheese, setCheese] = useState(initialItem ? (initialItem.extraCheese ? EXTRA_CHEESE_OPTION : noteCheese ?? DEFAULT_CHEESE_OPTION) : configuration.presetExtraCheese ? EXTRA_CHEESE_OPTION : DEFAULT_CHEESE_OPTION);
+  const [crust, setCrust] = useState(() => initialValues("pizza-crust")?.[0] ?? (crustOptions.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : crustOptions[0] ?? ""));
+  const [bakeSauce, setBakeSauce] = useState<string[]>(initialValues("pizza-bake-sauce") ?? []);
+  const [legacyBase, setLegacyBase] = useState<string[]>(initialValues("pizza-base") ?? []);
   // The same groups, ids and prices the server builds in `pizzaOptionSections`.
   const includedSauce = typeof configuration.includedSauce === "string" ? configuration.includedSauce : undefined;
   const sauceSection = configuration.sauceEnabled ? pizzaSauceSection("pizza-sauce", { includedSauce }) : null;
   const extrasSection = configuration.extrasEnabled ? pizzaExtrasSection("pizza-extras") : null;
-  const [sauce, setSauce] = useState<string[]>(() => (sauceSection ? defaultSectionValues(sauceSection, includedSauce) : []));
-  const [extras, setExtras] = useState<string[]>(() => (extrasSection ? defaultSectionValues(extrasSection) : []));
+  const [sauce, setSauce] = useState<string[]>(() => (initialValues("pizza-sauce") ?? (sauceSection ? defaultSectionValues(sauceSection, includedSauce) : [])));
+  const [extras, setExtras] = useState<string[]>(() => (initialValues("pizza-extras") ?? (extrasSection ? defaultSectionValues(extrasSection) : [])));
   const finishCents = (sauceSection ? optionTotal(sauceSection, sauce) : 0) + (extrasSection ? optionTotal(extrasSection, extras) : 0);
-  const [instructions, setInstructions] = useState("");
+  const [instructions, setInstructions] = useState(noteCheese ? initialNote.slice(noteCheese.length).replace(/^ · /, "") : initialNote);
+  const [quantity, setQuantity] = useState(initialItem?.quantity ?? 1);
   const variation = variations.find((entry) => entry.id === variationId) ?? variations[0];
   const extraCheese = cheeseEnabled && cheese === EXTRA_CHEESE_OPTION;
   const price = variation
@@ -336,9 +344,11 @@ export function PizzaCustomizer({
         halfToppingUnitsBps,
         toppings: selected,
         extraCheese,
+        recipeToppingIds: fixedRecipe ? recipeToppingIds : undefined,
+        recipeExtraCheese: fixedRecipe && Boolean(configuration.presetExtraCheese),
       })
     : null;
-  const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000;
+  const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000 + (fixedRecipe ? recipeToppingIds.reduce((sum, id) => sum + toppingWeight(id) - 1, 0) : 0);
   const selectedUnits = (price?.toppingUnitsBps ?? 0) / 10_000;
   const selectedToppingUnits = modifierUnitsBps(
     selected.map((entry) => ({ value: entry.toppingId, placement: entry.placement })),
@@ -346,12 +356,11 @@ export function PizzaCustomizer({
   ) / 10_000;
   const requiredToppingUnits = configuration.requireIncludedToppings ? includedCount : includedCount > 0 ? 1 : 0;
   const selectionValid = Boolean(
-    variation && (configuration.fixedRecipe || selectedToppingUnits >= requiredToppingUnits),
+    variation && (configuration.fixedRecipe || (configuration.requireIncludedToppings ? selectedToppingUnits >= requiredToppingUnits : includedCount <= 0 || selected.length > 0)),
   );
   const recipeIds: ReadonlySet<string> = new Set(fixedRecipe ? recipeToppingIds : []);
   // What the customer sees ticked: the build, less anything they asked us to leave off.
   const shownSelected = selected.filter((entry) => !omitted.includes(entry.toppingId));
-  const shownUnits = modifierUnitsBps(shownSelected.map((entry) => ({ value: entry.toppingId, placement: entry.placement })), halfToppingUnitsBps) / 10_000;
   const toggleTopping = (topping: CustomizerTopping) => {
     if (recipeIds.has(topping.id)) {
       setOmitted((current) => current.includes(topping.id) ? current.filter((id) => id !== topping.id) : [...current, topping.id]);
@@ -386,10 +395,10 @@ export function PizzaCustomizer({
   const legacyPanel = <>{legacyBaseOptions.length ? <fieldset><legend><span>{stepNumber("legacy")}</span> Crust, bake &amp; sauce</legend><div className="topping-grid">{legacyBaseOptions.map((option) => { const active = legacyBase.includes(option); return <button className={active ? "active" : ""} type="button" key={option} onClick={() => setLegacyBase((current) => active ? current.filter((entry) => entry !== option) : current.length < 2 ? [...current, option] : current)}><span>{active ? "✓" : "+"}</span>{option}</button>; })}</div></fieldset> : null}</>;
   const toppingsPanel = <><fieldset><legend><span>{stepNumber("toppings")}</span> Choose toppings</legend>
             {fixedRecipe
-              ? <div className="setup-alert"><strong>Made to our recipe</strong><p>Its toppings are already ticked. Untick any you&apos;d like left off — the price stays the same. Anything else you add is {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "charged at the extra-topping rate"}.</p></div>
+              ? <div className="setup-alert"><strong>Made to our recipe</strong><p>Its toppings are already ticked. Untick any you&apos;d like left off — the price stays the same and their recipe units stay reserved. Anything else you add is {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "charged at the extra-topping rate"}.</p></div>
               : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
-            <ToppingPicker toppings={fixedRecipe ? [...recipeToppings, ...toppings.filter((topping) => !recipeIds.has(topping.id))] : toppings} selected={shownSelected} wholeOnly={recipeIds} onToggle={toggleTopping} onPlacement={setPlacement} />
-            <div className="allowance-meter"><span>{formatUnits(fixedRecipe ? shownUnits : selectedUnits)} selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
+            <ToppingPicker toppings={toppings} selected={shownSelected} wholeOnly={recipeIds} onToggle={toggleTopping} onPlacement={setPlacement} />
+            <div className="allowance-meter"><span>{formatUnits(selectedUnits)} units selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
   if (crust) modifiers.push({ id: "pizza-crust", label: "Crust", values: [{ value: crust, label: crust }] });
@@ -407,12 +416,17 @@ export function PizzaCustomizer({
             ? <>{toppingsPanel}{crustPanel}{saucePanel}{bakePanel}{legacyPanel}</>
             : <>{crustPanel}{saucePanel}{bakePanel}{legacyPanel}{toppingsPanel}</>}
           {extrasPanel}
+          <QuantityEditor quantity={quantity} maximum={99} onChange={setQuantity} />
           <label className="instructions-label">Special instructions <small>Call the restaurant about serious allergies.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} placeholder="Example: cut into squares" /></label>
         </div>
-        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney(price.totalCents + finishCents) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity: 1, unitPriceCents: price.totalCents + finishCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>Your pizza</small><strong>{price ? formatMoney((price.totalCents + finishCents) * quantity) : "—"}</strong></div><button className="primary-button" disabled={!selectionValid} onClick={() => variation && price && (onSave ?? onAdd)({ ...initialItem, key: initialItem?.key ?? crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, variationId: variation.id, variationName: variation.name, quantity, unitPriceCents: price.totalCents + finishCents, taxable: Boolean(product.taxable), toppings: selected, omitToppings: omitted.length ? omitted : undefined, modifiers, extraCheese, freeDelivery: Boolean(configuration.freeDelivery), specialInstructions: [cheeseEnabled && cheese !== DEFAULT_CHEESE_OPTION ? cheese : "", instructions.trim()].filter(Boolean).join(" · ") })}>{initialItem ? "Save changes" : "Add to order"} <ArrowIcon /></button>{initialItem ? <button className="staff-button" onClick={onClose}>Cancel</button> : null}</div>
       </section>
     </div>
   );
+}
+
+function QuantityEditor({ quantity, maximum, onChange }: { quantity: number; maximum: number; onChange: (value: number) => void }) {
+  return <fieldset className="quantity-choice"><legend>Quantity</legend><div><button type="button" aria-label="Decrease quantity" disabled={quantity <= 1} onClick={() => onChange(quantity - 1)}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximum} value={quantity} onChange={(event) => onChange(Math.max(1, Math.min(maximum, Number(event.target.value) || 1)))} /></label><button type="button" aria-label="Increase quantity" disabled={quantity >= maximum} onClick={() => onChange(quantity + 1)}>+</button></div></fieldset>;
 }
 
 const LEGACY_BASE_FALLBACK = ["Thin Crust", "Thick Crust", "Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"];
@@ -420,7 +434,7 @@ const LEGACY_BASE_FALLBACK = ["Thin Crust", "Thick Crust", "Lightly Done", "Well
 // Deals build each pizza with the same choices, in the same order, as a pizza
 // ordered on its own — cheese, crust, bake & sauce, then toppings — and
 // group them under a heading per pizza so a two-pizza deal reads as two pizzas.
-export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onClose, onAdd }: { product: CustomizerProduct; toppings: CustomizerTopping[]; halfToppingUnitsBps: number; onClose: () => void; onAdd: (line: BuiltItem) => void }) {
+export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onClose, onAdd, initialItem, onSave }: { product: CustomizerProduct; toppings: CustomizerTopping[]; halfToppingUnitsBps: number; onClose: () => void; onAdd: (line: BuiltItem) => void; initialItem?: BuiltItem; onSave?: (line: BuiltItem) => void }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   // Retired groups are dropped here, so they neither render nor consume a step
   // number. Deals seeded before halal was withdrawn still carry one in their
@@ -446,13 +460,21 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
         initial[section.id] = defaultSectionValues(section).map((value) => ({ value, label: value }));
       }
     }
+    if (initialItem) {
+      for (const section of sections) {
+        const values = initialItem.modifiers?.find((modifier) => modifier.id === section.id)?.values ?? [];
+        initial[section.id] = section.source === "toppings"
+          ? normalizeModifierValues(values).map((entry) => ({ ...entry, label: values.find((value) => value.value === entry.value)?.label ?? entry.value }))
+          : values;
+      }
+    }
     return initial;
   });
-  const [instructions, setInstructions] = useState("");
-  const quantitySelectable = Boolean(product.configuration.quantitySelectable);
-  const maximumQuantity = Math.max(1, Math.min(100, Number(product.configuration.maxQuantity) || 20));
+  const [instructions, setInstructions] = useState(initialItem?.specialInstructions ?? "");
+  const quantitySelectable = Boolean(product.configuration.quantitySelectable) || Boolean(initialItem) || product.product_type === "simple";
+  const maximumQuantity = Math.max(1, Math.min(99, Number(product.configuration.maxQuantity) || 99));
   const unitLabel = String(product.configuration.unitLabel ?? "item");
-  const [quantity, setQuantity] = useState(1);
+  const [quantity, setQuantity] = useState(initialItem?.quantity ?? 1);
   const optionsFor = (section: ModifierSection): Array<{ value: string; label: string }> => {
     if (section.source === "toppings") return toppings.map((entry) => ({ value: entry.id, label: entry.name }));
     if (section.source === "sauce") return SAUCE_OPTIONS.map((entry) => ({ value: entry, label: entry }));
@@ -487,24 +509,11 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
   }));
   const unitsFor = (section: ModifierSection) =>
     modifierUnitsBps(normalizeModifierValues(valuesOf(section.id).map((entry) => ({ value: entry.value, placement: entry.placement }))), halfToppingUnitsBps);
-  const valid = sections.every((section) => valuesOf(section.id).length >= section.min);
-  let extras = 0;
-  const sharedUnits = new Map<string, number>();
-  for (const section of sections) {
-    const values = valuesOf(section.id);
-    extras += values.reduce((sum, entry) => sum + (sectionOptionPrices(section)[entry.value] ?? 0), 0);
-    if (section.source === "toppings") {
-      const units = unitsFor(section);
-      if (section.sharedGroup) sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + units);
-      else extras += priceToppingUnits(units, (section.included ?? 0) * 10_000, section.extraPriceCents ?? 0);
-    } else {
-      extras += Math.max(0, values.length - (section.included ?? section.max)) * (section.extraPriceCents ?? 0);
-    }
-  }
-  for (const [group, units] of sharedUnits) {
-    const grouped = sections.filter((section) => section.sharedGroup === group);
-    extras += priceToppingUnits(units, (grouped[0]?.sharedIncluded ?? 0) * 10_000, grouped[0]?.extraPriceCents ?? 0);
-  }
+  const valid = sections.every((section) => valuesOf(section.id).length >= section.min && valuesOf(section.id).length <= section.max);
+  const pricing = priceModifierSelections(sections, sections.map((section) => ({ id: section.id, values: valuesOf(section.id) })), halfToppingUnitsBps);
+  const extras = pricing.extraCents;
+  const drinkPools = includedDrinkPools(sections);
+  const pooledIds = new Set(drinkPools.flatMap((slots) => slots.map((slot) => slot.id)));
   const modifiers: ModifierSelection[] = sections
     .map((section) => ({ id: section.id, label: section.group ? `${section.group} · ${section.label}` : section.label, values: valuesOf(section.id) }))
     .filter((section) => section.values.length);
@@ -523,16 +532,25 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
       <section ref={dialogRef} className="customizer" role="dialog" aria-modal="true" aria-labelledby="bundle-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <div className="customizer-head"><div><p className="eyebrow dark"><span /> Complete your choices</p><h2 id="bundle-title">{product.name}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
         <div className="customizer-body">
-          {quantitySelectable ? <fieldset className="quantity-choice"><legend>How many {unitLabel}s?</legend><p>This special is priced at {formatMoney(product.base_price_cents)} per {unitLabel}.</p><div><button type="button" aria-label={`Remove one ${unitLabel}`} disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximumQuantity} inputMode="numeric" value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(maximumQuantity, Number(event.target.value) || 1)))} /></label><button type="button" aria-label={`Add one ${unitLabel}`} disabled={quantity >= maximumQuantity} onClick={() => setQuantity((current) => Math.min(maximumQuantity, current + 1))}>+</button></div><small>Up to {maximumQuantity} {unitLabel}s per order.</small></fieldset> : null}
+          {quantitySelectable ? <fieldset className="quantity-choice"><legend>How many {unitLabel}s?</legend><p>This item is priced at {formatMoney(product.base_price_cents)} per {unitLabel}.</p><div><button type="button" aria-label={`Remove one ${unitLabel}`} disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))}>−</button><label><span>Quantity</span><input type="number" min="1" max={maximumQuantity} inputMode="numeric" value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(maximumQuantity, Number(event.target.value) || 1)))} /></label><button type="button" aria-label={`Add one ${unitLabel}`} disabled={quantity >= maximumQuantity} onClick={() => setQuantity((current) => Math.min(maximumQuantity, current + 1))}>+</button></div><small>Up to {maximumQuantity} {unitLabel}s per order.</small></fieldset> : null}
           {layout.map(({ section, step, groupHeading, firstOfItsKind }) => {
+            if (pooledIds.has(section.id)) {
+              const slots = drinkPools.find((pool) => pool[0].id === section.id);
+              if (!slots) return null;
+              const allValues = slots.flatMap((slot) => valuesOf(slot.id));
+              return <fieldset key={section.id} className="drink-quantities"><legend><span>{step}</span> Included canned drinks</legend><p role="status">{allValues.length} of {slots.length} drinks selected</p>{optionsFor(section).map((option) => {
+                const count = allValues.filter((value) => value.value === option.value).length;
+                return <div className="drink-quantity" key={option.value}><strong>{option.label}</strong><button type="button" disabled={!count} aria-label={`Remove one ${option.label}`} onClick={() => setSelected((current) => changeDrinkQuantity(slots, current, option.value, -1))}>−</button><output aria-label={`${option.label} quantity`}>{count}</output><button type="button" disabled={allValues.length >= slots.length} aria-label={`Add one ${option.label}`} onClick={() => setSelected((current) => changeDrinkQuantity(slots, current, option.value, 1))}>+</button></div>;
+              })}</fieldset>;
+            }
             const values = valuesOf(section.id);
             const included = section.sharedGroup ? section.sharedIncluded ?? 0 : section.included ?? 0;
             const isToppings = section.source === "toppings";
             const isFinish = section.source === "sauce" || section.source === "pizza_extras";
             const units = isToppings ? unitsFor(section) / 10_000 : values.length;
-            const sectionExtras = isToppings && !section.sharedGroup
-              ? priceToppingUnits(units * 10_000, included * 10_000, section.extraPriceCents ?? 0)
-              : values.reduce((sum, entry) => sum + (sectionOptionPrices(section)[entry.value] ?? 0), 0);
+            const pool = section.sharedGroup ? pricing.pools[section.sharedGroup] : null;
+            const sectionExtras = pool?.extraCents ?? pricing.sections.find((entry) => entry.id === section.id)?.extraCents ?? 0;
+            const displayedUnits = pool ? pool.unitsBps / 10_000 : units;
             return <div key={section.id}>
               {groupHeading ? <h3 className="section-group">{groupHeading}</h3> : null}
               <fieldset>
@@ -550,13 +568,13 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
                       onPlacement={(toppingId, placement) => setPlacement(section.id, toppingId, placement)}
                     />
                   : <div className="topping-grid">{optionsFor(section).map((option) => { const active = values.some((entry) => entry.value === option.value); const price = section.optionPrices?.[option.value]; return <button className={active ? "active" : ""} type="button" key={option.value} aria-pressed={active} onClick={() => toggle(section, option)}><span>{active ? "✓" : "+"}</span>{option.label}{price ? <small>+{formatMoney(price)}</small> : null}</button>; })}</div>}
-                <div className="allowance-meter"><span>{isToppings ? `${formatUnits(units)} selected` : `${values.length} selected`}</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : isFinish ? (section.source === "sauce" ? "No charge" : "Optional") : section.min && values.length < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>
+                <div className="allowance-meter"><span>{isToppings ? `${formatUnits(displayedUnits)} units selected · ${included} included${pool ? " across this deal" : ""}` : `${values.length} selected`}</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : isFinish ? (section.source === "sauce" ? "No charge" : "Optional") : section.min && values.length < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>
               </fieldset>
             </div>;
           })}
           <label className="instructions-label">Special instructions <small>Use this for requests the selectors do not cover.</small><textarea value={instructions} maxLength={500} onChange={(event) => setInstructions(event.target.value)} /></label>
         </div>
-        <div className="customizer-footer"><div><small>{quantitySelectable ? `${quantity} ${unitLabel}${quantity === 1 ? "" : "s"} · ${formatMoney(product.base_price_cents)} each` : "Your item"}</small><strong>{formatMoney((product.base_price_cents + extras) * quantity)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => onAdd({ key: crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>Add to order <ArrowIcon /></button></div>
+        <div className="customizer-footer"><div><small>{quantitySelectable ? `${quantity} ${unitLabel}${quantity === 1 ? "" : "s"} · ${formatMoney(product.base_price_cents)} each` : "Your item"}</small><strong>{formatMoney((product.base_price_cents + extras) * quantity)}</strong></div><button className="primary-button" disabled={!valid} onClick={() => (onSave ?? onAdd)({ ...initialItem, key: initialItem?.key ?? crypto.randomUUID(), productId: product.id, name: product.name, categoryId: product.category_id, quantity, unitPriceCents: product.base_price_cents + extras, taxable: Boolean(product.taxable), modifiers, modifierSections: sections, freeDelivery: Boolean(product.configuration.freeDelivery), specialInstructions: instructions.trim() })}>{initialItem ? "Save changes" : "Add to order"} <ArrowIcon /></button>{initialItem ? <button className="staff-button" onClick={onClose}>Cancel</button> : null}</div>
       </section>
     </div>
   );

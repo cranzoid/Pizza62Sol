@@ -2138,3 +2138,37 @@ fieldset.clover-card-fields {
 .finish-grid button { flex-wrap: wrap; }
 .finish-grid small { white-space: nowrap; }
 .product-visual .new-badge { position: absolute; left: 12px; top: 12px; z-index: 2; margin: 0; padding: 4px 9px; font-size: 11px; }
+/* Shared ordering controls: readable labels and 44px touch targets on phones/tablets. */
+.till-order-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.topping-groups h4 { margin: 12px 0; font-size: 16px; }
+.topping-groups .topping-grid button { font-size: 14px; min-height: 48px; }
+.topping-groups .topping-chip > button { flex-wrap: wrap; }
+.topping-groups .topping-chip > button small { flex-basis: 100%; margin-left: 33px; font-size: 12px; }
+.topping-groups .placement-switch button { min-height: 44px; padding: 6px 2px; font-size: 12px; }
+.drink-quantity { display: grid; grid-template-columns: 1fr 48px 32px 48px; align-items: center; gap: 10px; margin: 8px 0; }
+.drink-quantity button { min-height: 44px; font-size: 22px; border: 1px solid var(--line); background: white; cursor: pointer; }
+.drink-quantity output { text-align: center; font-weight: 700; }
+.drink-quantity button:disabled { opacity: .4; cursor: not-allowed; }
+.till-pos .till-quantity { flex-wrap: wrap; }
+.till-pos .till-quantity button { width: auto; min-width: 44px; min-height: 44px; height: auto; padding: 8px; }
+.till-pos .till-cash { margin-top: 16px; }
+.till-pos .till-cash h3, .till-pos .till-cash span, .till-pos .till-cash label, .till-pos .till-cash-note, .till-pos .till-cash-breakdown { font-size: 14px; }
+.till-pos .till-cash button, .till-pos .segmented-range button, .till-pos .coupon-row button { min-height: 44px; }
+.till-pos .till-cash input { min-height: 48px; font-size: 18px; }
+.customizer .size-options b, .customizer .size-options small, .customizer .allowance-meter { font-size: 14px; }
+.customizer .allowance-meter { gap: 10px; flex-wrap: wrap; }
+.customizer button:focus-visible, .till-pos button:focus-visible, .customizer input:focus-visible, .till-pos input:focus-visible { outline: 3px solid var(--red); outline-offset: 3px; }
+.customizer .size-options label:focus-within { outline: 3px solid var(--red); outline-offset: 3px; }
+.customizer { height: 100dvh; }
+.customizer .customizer-footer { grid-template-columns: 1fr minmax(160px, 240px); gap: 12px; }
+.customizer .customizer-footer .staff-button { grid-column: 2; min-height: 44px; }
+@media (max-width: 640px) {
+  .customizer .customizer-footer { grid-template-columns: 1fr; padding: 12px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)); }
+  .customizer .customizer-footer .staff-button { grid-column: 1; }
+  .topping-groups .topping-grid { grid-template-columns: 1fr; }
+  .till-pos .till-cash-head { align-items: flex-start; flex-direction: column; }
+}
+
+.till-pos .staff-panel-head .staff-button { color: var(--ink); min-height: 44px; font-size: 12px; }
+.till-pos .till-line strong { font-size: 14px; }
+.till-pos .till-line small, .till-pos .till-line-price { font-size: 12px; }

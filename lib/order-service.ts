@@ -16,9 +16,9 @@ import {
   pizzaSauceSection,
   priceCart,
   pricePizza,
-  priceToppingUnits,
+  priceModifierSelections,
+  normalizeToppings,
   SAUCE_OPTIONS,
-  sectionOptionPrices,
   validateDelivery,
   type AppliedPromotion,
   type CartLinePrice,
@@ -81,11 +81,11 @@ export type OrderRequest = {
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
   /**
-   * What the review screen said the customer would be charged.
+   * What the customer or staff review screen said would be charged.
    *
    * A consent check, not a price: the server still works the total out for
-   * itself and simply refuses to exceed this. Absent from staff entry, where
-   * someone is looking at the screen. See `createOrder`.
+   * itself and simply refuses to exceed this. Both customer checkout and staff
+   * entry send their current quote. See `createOrder`.
    */
   expectedAmountDueCents?: number;
   /**
@@ -386,12 +386,9 @@ function validateModifiers(
     throw new OrderValidationError("An unsupported item option was submitted.");
   }
   const snapshot: ModifierSnapshot[] = [];
-  const sharedUnits = new Map<string, number>();
-  let extraCents = 0;
   for (const section of liveSections) {
     const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
-    const optionPrices = sectionOptionPrices(section);
     if (section.source === "toppings") {
       // Topping groups carry a placement per selection, so a half topping consumes
       // only part of the included allowance and is charged proportionally.
@@ -404,13 +401,6 @@ function validateModifiers(
       if (normalized.length < section.min || normalized.length > section.max || normalized.some((entry) => !allowed.has(entry.value))) {
         throw new OrderValidationError(`Choose valid options for ${section.label}.`);
       }
-      const unitsBps = modifierUnitsBps(normalized, halfToppingUnitsBps);
-      if (section.sharedGroup) {
-        sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + unitsBps);
-      } else {
-        extraCents += priceToppingUnits(unitsBps, (section.included ?? 0) * 10_000, section.extraPriceCents ?? 0);
-      }
-      extraCents += normalized.reduce((sum, entry) => sum + (optionPrices[entry.value] ?? 0), 0);
       if (normalized.length) {
         snapshot.push({
           id: section.id,
@@ -430,8 +420,6 @@ function validateModifiers(
     if (unique.length !== values.length || unique.length < section.min || unique.length > section.max || unique.some((value) => !allowed.has(value))) {
       throw new OrderValidationError(`Choose valid options for ${section.label}.`);
     }
-    extraCents += Math.max(0, unique.length - (section.included ?? section.max)) * (section.extraPriceCents ?? 0);
-    extraCents += unique.reduce((sum, value) => sum + (optionPrices[value] ?? 0), 0);
     if (unique.length) {
       snapshot.push({
         id: section.id,
@@ -441,11 +429,7 @@ function validateModifiers(
       });
     }
   }
-  for (const [group, unitsBps] of sharedUnits) {
-    const grouped = sections.filter((section) => section.sharedGroup === group);
-    extraCents += priceToppingUnits(unitsBps, (grouped[0]?.sharedIncluded ?? 0) * 10_000, grouped[0]?.extraPriceCents ?? 0);
-  }
-  return { snapshot, extraCents };
+  return { snapshot, extraCents: priceModifierSelections(liveSections, snapshot, halfToppingUnitsBps).extraCents };
 }
 
 function torontoParts(timestamp: number): { weekday: number; minute: number } {
@@ -599,7 +583,7 @@ async function validateItems(
           recipeOmissions.push(toppingNames.get(toppingId) ?? toppingId);
         }
         const present = new Set(
-          toppings.filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
+          normalizeToppings(toppings).filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
         );
         const missing = recipe.filter((toppingId) => !present.has(toppingId) && !omitted.has(toppingId));
         if (missing.length) {
@@ -619,6 +603,8 @@ async function validateItems(
         halfToppingUnitsBps: operations.halfToppingUnitsBps,
         toppings,
         extraCheese: Boolean(input.extraCheese),
+        recipeToppingIds: productConfiguration.fixedRecipe && Array.isArray(productConfiguration.recipeToppingIds) ? productConfiguration.recipeToppingIds.map(String) : undefined,
+        recipeExtraCheese: Boolean(productConfiguration.fixedRecipe && productConfiguration.presetExtraCheese),
       });
       if (productConfiguration.requireIncludedToppings) {
         const selectedToppingUnitsBps = modifierUnitsBps(
@@ -996,13 +982,16 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   // case, and it keeps `validateItems` (the most safety-critical function here)
   // completely unchanged rather than reworked to collect errors.
   let items: ValidatedItem[] = [];
+  let itemIndexes: number[] = [];
   try {
     items = await validateItems(submitted, fulfilment, operations, context.staffEntry);
+    itemIndexes = submitted.map((_, index) => index);
   } catch (cartError) {
     for (const [index, line] of submitted.entries()) {
       try {
         const [validated] = await validateItems([line], fulfilment, operations, context.staffEntry);
         items.push(validated);
+        itemIndexes.push(index);
       } catch (error) {
         issues.push({
           index,
@@ -1260,7 +1249,7 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
     fulfilment,
     currency: "CAD",
     lines: items.map((item, index) => ({
-      index,
+      index: itemIndexes[index],
       productId: item.productId,
       name: item.productName,
       variationName: item.variationName,
@@ -1572,9 +1561,9 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
      * A checkout left open while a promotion expires, or a gift card drained by
      * whoever else holds the code, both end with a total higher than the one on
      * the review screen. Without this the order would simply be created at the
-     * new price and the card charged for it. Optional, because the till has a
-     * person looking at the screen and does not need it; when the browser sends
-     * it, an increase is refused rather than absorbed.
+     * new price and the card charged for it. Customer checkout and the till
+     * send their reviewed amount; an increase is refused so they can review
+     * a fresh quote before collecting payment.
      */
     const expectedAmountDueCents = Number(body.expectedAmountDueCents);
     if (Number.isSafeInteger(expectedAmountDueCents) && amountDueCents > expectedAmountDueCents) {

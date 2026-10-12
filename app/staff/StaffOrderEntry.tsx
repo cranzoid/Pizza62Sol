@@ -34,8 +34,10 @@
  * refuse is refused here too, and the counter is told why.
  */
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { cashChange, compareMenuPrice, formatMoney, isWithinWeeklyAvailability, type WeeklyAvailability } from "@/lib/domain";
+import { useCallback, useEffect, useState, useSyncExternalStore, useRef } from "react";
+import { cashChange, parseCashTender, compareMenuPrice, formatMoney, isWithinWeeklyAvailability, type WeeklyAvailability } from "@/lib/domain";
+import { drinkSummary } from "@/lib/drink-slots";
+import { useServerQuote } from "@/app/menu/useServerQuote";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
 import { centsToQualify, formatEntryNumber } from "@/lib/giveaway";
@@ -90,15 +92,20 @@ function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): st
     if (!item.omitToppings?.includes(topping.toppingId)) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
   }
   for (const toppingId of item.omitToppings ?? []) parts.push(`No ${toppingNames.get(toppingId) ?? toppingId}`);
+  const drinks = drinkSummary(item.modifiers ?? [], item.modifierSections ?? []);
+  const drinkIds = new Set(drinks.flatMap((entry) => [...entry.ids]));
   for (const modifier of item.modifiers ?? []) {
+    if (drinkIds.has(modifier.id)) continue;
     parts.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
   }
   if (item.specialInstructions) parts.push(item.specialInstructions);
+  parts.push(...drinks.filter((entry) => entry.text).map((entry) => `Included drinks: ${entry.text}`));
   return parts;
 }
 
 type Quote = {
   ok: boolean;
+  lines: Array<{ index: number; unitPriceCents: number; lineTotalCents: number }>;
   totals: {
     menuSubtotalCents: number;
     discountCents: number;
@@ -142,7 +149,7 @@ const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const NEVER_CHANGES = () => () => {};
 const NO_PRINT_RESULT = () => null;
 
-export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard; onPlaced: () => Promise<void> }) {
+export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftChange }: { dashboard: Dashboard; onPlaced: () => Promise<void>; active?: boolean; onDraftChange?: (dirty: boolean) => void }) {
   const [channel, setChannel] = useState<"walk_in" | "phone">("walk_in");
   const [fulfilment, setFulfilment] = useState<"pickup" | "delivery">("pickup");
   const [name, setName] = useState("");
@@ -158,7 +165,15 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const [lines, setLines] = useState<BuiltItem[]>([]);
   // The product whose customizer is open, if any.
   const [building, setBuilding] = useState<CustomizerProduct | null>(null);
-  const [quote, setQuote] = useState<Quote | null>(null);
+  const [editing, setEditing] = useState<BuiltItem | undefined>();
+  const submittingRef = useRef(false);
+  const submission = useRef<{ signature: string; key: string } | null>(null);
+  const handoff = useRef(false);
+  useEffect(() => {
+    const resumed = () => { handoff.current = false; };
+    window.addEventListener("focus", resumed);
+    return () => window.removeEventListener("focus", resumed);
+  }, []);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
@@ -217,7 +232,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // built at the counter is charged for a half topping exactly as one built at
   // home is.
   const operations = (dashboard.settings.operations?.value ?? {}) as Record<string, unknown>;
-  const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 10_000);
+  const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 5_000);
   const activeToppings = dashboard.toppings.filter((topping) => topping.active);
   const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
   const buildingVariations = building
@@ -274,25 +289,24 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // Re-priced by the server on every change. Sequenced so a slow earlier reply
   // cannot overwrite a newer total while someone is adding items quickly.
   const serialized = JSON.stringify(body({ quoteOnly: true }));
+  const { quote, loading: quoteLoading, failed: quoteFailed, error: quoteError, retry: retryQuote } = useServerQuote<Quote>("/api/admin/orders", lines.length ? serialized : null, JSON.stringify([dashboard.settings, dashboard.products, dashboard.variations, dashboard.toppings]));
+  const dirty = Boolean(lines.length || building || name || phone || email || line1 || unit || postalCode || deliveryInstructions || couponInput || giftCardInput || birthMonth || birthDay);
+  useEffect(() => { onDraftChange?.(dirty); }, [dirty, onDraftChange]);
   useEffect(() => {
-    if (!lines.length) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        const response = await fetch("/api/admin/orders", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: serialized,
-        });
-        const result = (await response.json()) as Quote;
-        if (!cancelled && response.ok) setQuote(result);
-      })();
-    }, 150);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      if (handoff.current) return;
+      event.preventDefault(); event.returnValue = "";
     };
-  }, [serialized, lines.length]);
+    const leaving = (event: MouseEvent) => {
+      const link = (event.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.getAttribute("href")?.startsWith("#")) return;
+      if (!window.confirm("Leave this page and discard the unfinished order?")) { event.preventDefault(); event.stopPropagation(); }
+    };
+    window.addEventListener("beforeunload", warn);
+    document.addEventListener("click", leaving, true);
+    return () => { window.removeEventListener("beforeunload", warn); document.removeEventListener("click", leaving, true); };
+  }, [dirty]);
 
   const totals = quote?.totals ?? {
     menuSubtotalCents: 0,
@@ -314,13 +328,13 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const add = (item: BuiltItem) => {
     setMessage(null);
     setBuilding(null);
-    setSettled(null);
-    setCashGiven("");
+    setEditing(undefined);
+    if (settled) { setSettled(null); setCashGiven(""); }
     setLines((current) => {
       const signature = buildSignature(item);
       const existing = current.find((line) => buildSignature(line) === signature);
       if (existing) {
-        return current.map((line) => (line === existing ? { ...line, quantity: line.quantity + item.quantity } : line));
+        return current.map((line) => (line === existing ? { ...line, quantity: Math.min(99, line.quantity + item.quantity) } : line));
       }
       return [...current, item];
     });
@@ -344,7 +358,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const setQuantity = (key: string, delta: number) =>
     setLines((current) =>
       current
-        .map((line) => (line.key === key ? { ...line, quantity: line.quantity + delta } : line))
+        .map((line) => (line.key === key ? { ...line, quantity: Math.min(99, line.quantity + delta) } : line))
         .filter((line) => line.quantity > 0),
     );
 
@@ -352,6 +366,23 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // item off a six-quantity line meant six taps, and a till that makes undoing a
   // mistake slower than making it is a till people work around.
   const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
+
+  const editLine = (line: BuiltItem) => {
+    const product = dashboard.products.find((entry) => entry.id === line.productId);
+    if (!product) { setMessage({ tone: "bad", text: "This item is no longer in the menu. Remove it and choose another item." }); return; }
+    setEditing(line); setBuilding(product);
+  };
+  const saveLine = (line: BuiltItem) => {
+    setLines((current) => current.map((entry) => entry.key === editing?.key ? { ...line, key: entry.key } : entry));
+    setBuilding(null); setEditing(undefined);
+  };
+  const closeBuilder = () => { setBuilding(null); setEditing(undefined); };
+  const discard = () => {
+    if (!window.confirm("Discard this unfinished order?")) return;
+    setLines([]); closeBuilder(); setName(""); setPhone(""); setEmail(""); setBirthMonth(""); setBirthDay("");
+    setLine1(""); setUnit(""); setPostalCode(""); setDeliveryInstructions(""); setCouponCode(""); setCouponInput("");
+    setGiftCardCode(""); setGiftCardInput(""); setCashGiven(""); setSettled(null); setMessage(null); submission.current = null;
+  };
 
   // What the printer app reported on its way back. Previously deleted unread,
   // so a ticket that never printed looked exactly like one that did. This
@@ -372,6 +403,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     if (!shouldUsePassPrnt(window.navigator.userAgent)) return false;
     // Counter entry does not distinguish cash from card, so automatic printing
     // must never kick the drawer. Opening it is always a separate staff tap.
+    handoff.current = true;
     window.location.assign(buildPassPrntUri({
       order,
       toppingNames,
@@ -386,85 +418,96 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   // click handler: Android allows the PassPRNT handoff only on a direct gesture.
   const openCashDrawer = () => {
     if (!shouldUsePassPrnt(window.navigator.userAgent)) return;
+    handoff.current = true;
     window.location.assign(buildPassPrntDrawerUri({ callbackUrl: passPrntCallback() }));
   };
 
   const place = async (printRequestedAt: number) => {
+    if (submittingRef.current || !quote?.ok || quoteLoading || !lines.length || invalidTender) return;
+    submittingRef.current = true;
     setSubmitting(true);
-    setMessage(null);
-    setPrintPending(false);
-    const response = await fetch("/api/admin/orders", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body({
-        idempotencyKey: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}`,
-        // Only on a real placement, not the running quote: it changes nothing
-        // about the price, so it has no business triggering a re-quote.
-        ...(birthdayReady ? { birthday: { month: Number(birthMonth), day: Number(birthDay) } } : {}),
-      })),
-    });
-    const result = (await response.json()) as PlacedOrder;
-    setSubmitting(false);
-    if (!response.ok) {
-      setMessage({ tone: "bad", text: result.error ?? "That order could not be created." });
-      return;
-    }
-    const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
-    const canPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
-    // Android lets the page hand off to PassPRNT only for a few seconds after
-    // the tap. A delivery waits on the address check against the delivery
-    // area, which can outlast that window, and the handoff then fails without a
-    // word while this screen claims the ticket is on its way. That is why phone
-    // deliveries were not printing. Once the tap has expired, ask for one more
-    // instead of pretending. Browsers without `userActivation` keep the old
-    // behaviour.
-    const tapStillCounts = window.navigator.userActivation?.isActive ?? true;
-    const willPrint = canPrint && tapStillCounts;
-    setPrintPending(canPrint && !tapStillCounts);
-    setLastPrintOrder(printable);
-    // Kept for the cash panel, from the server's committed total rather than
-    // the quote on screen — the money about to be counted has to be the money
-    // the order was actually created for.
-    setSettled({
-      orderNumber: result.orderNumber ?? "",
-      // **Amount due, not the order total.** A gift card has already paid its
-      // part, and change counted against the full bill would hand back money
-      // the customer never put on the counter.
-      dueCents: Number(result.amountDueCents ?? totals.amountDueCents),
-      giftCardCents: Number(result.giftCardAppliedCents ?? totals.giftCardAppliedCents),
-    });
-    // The entry number is said here as well as printed, because the person at
-    // the till is the one who tells a walk-in customer they are in.
-    const entry = result.giveawayEntryNumber ? ` Giveaway entry #${formatEntryNumber(result.giveawayEntryNumber)} — tell the customer!` : "";
-    const birthdayNote = result.birthdaySaved ? " Birthday saved." : "";
-    setMessage({
-      tone: "ok",
-      text: willPrint
-        ? `${result.orderNumber} is in. Sending its ticket to the printer…${entry}${birthdayNote}`
-        : canPrint
-          ? `${result.orderNumber} is in. Tap Print ticket below to print it.${entry}${birthdayNote}`
-          : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
-    });
-    setLines([]);
-    setCouponInput("");
-    setCouponCode("");
-    setGiftCardInput("");
-    setGiftCardCode("");
-    setName("");
-    setPhone("");
-    setEmail("");
-    setBirthMonth("");
-    setBirthDay("");
-    setLine1("");
-    setUnit("");
-    setPostalCode("");
-    setDeliveryInstructions("");
-    setQuote(null);
-    // Launch before refreshing. Android permits the external-app handoff only
-    // while this still belongs to the staff member's placement tap; an extra
-    // dashboard round trip can lose it.
-    if (printable && willPrint) printPlacedOrder(printable, printRequestedAt);
-    await onPlaced();
+    try {
+      setMessage(null);
+      setPrintPending(false);
+      const signature = JSON.stringify(body());
+      if (submission.current?.signature !== signature) submission.current = { signature, key: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}` };
+      const response = await fetch("/api/admin/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body({
+          idempotencyKey: submission.current.key,
+          expectedAmountDueCents: quote.totals.amountDueCents,
+          // Only on a real placement, not the running quote: it changes nothing
+          // about the price, so it has no business triggering a re-quote.
+          ...(birthdayReady ? { birthday: { month: Number(birthMonth), day: Number(birthDay) } } : {}),
+        })),
+      });
+      const result = (await response.json()) as PlacedOrder;
+      if (!response.ok) {
+        setMessage({ tone: "bad", text: result.error ?? "That order could not be created." });
+        retryQuote();
+        return;
+      }
+      const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
+      const canPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
+      // Android lets the page hand off to PassPRNT only for a few seconds after
+      // the tap. A delivery waits on the address check against the delivery
+      // area, which can outlast that window, and the handoff then fails without a
+      // word while this screen claims the ticket is on its way. That is why phone
+      // deliveries were not printing. Once the tap has expired, ask for one more
+      // instead of pretending. Browsers without `userActivation` keep the old
+      // behaviour.
+      const tapStillCounts = window.navigator.userActivation?.isActive ?? true;
+      const willPrint = canPrint && tapStillCounts;
+      setPrintPending(canPrint && !tapStillCounts);
+      setLastPrintOrder(printable);
+      // Kept for the cash panel, from the server's committed total rather than
+      // the quote on screen — the money about to be counted has to be the money
+      // the order was actually created for.
+      setSettled({
+        orderNumber: result.orderNumber ?? "",
+        // **Amount due, not the order total.** A gift card has already paid its
+        // part, and change counted against the full bill would hand back money
+        // the customer never put on the counter.
+        dueCents: Number(result.amountDueCents ?? totals.amountDueCents),
+        giftCardCents: Number(result.giftCardAppliedCents ?? totals.giftCardAppliedCents),
+      });
+      // The entry number is said here as well as printed, because the person at
+      // the till is the one who tells a walk-in customer they are in.
+      const entry = result.giveawayEntryNumber ? ` Giveaway entry #${formatEntryNumber(result.giveawayEntryNumber)} — tell the customer!` : "";
+      const birthdayNote = result.birthdaySaved ? " Birthday saved." : "";
+      setMessage({
+        tone: "ok",
+        text: willPrint
+          ? `${result.orderNumber} is in. Sending its ticket to the printer…${entry}${birthdayNote}`
+          : canPrint
+            ? `${result.orderNumber} is in. Tap Print ticket below to print it.${entry}${birthdayNote}`
+            : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
+      });
+      setLines([]);
+      setCouponInput("");
+      setCouponCode("");
+      setGiftCardInput("");
+      setGiftCardCode("");
+      setName("");
+      setPhone("");
+      setEmail("");
+      setBirthMonth("");
+      setBirthDay("");
+      setLine1("");
+      setUnit("");
+      setPostalCode("");
+      setDeliveryInstructions("");
+      submission.current = null;
+      onDraftChange?.(false);
+      // Launch before refreshing. Android permits the external-app handoff only
+      // while this still belongs to the staff member's placement tap; an extra
+      // dashboard round trip can lose it.
+      if (printable && willPrint) printPlacedOrder(printable, printRequestedAt);
+      await onPlaced().catch(() => setMessage({ tone: "ok", text: `${result.orderNumber} was saved. Refresh Live orders to see it.` }));
+    } catch {
+      setMessage({ tone: "bad", text: "The request could not be confirmed. Retry this order; the same submission reference will prevent a duplicate." });
+    } finally { submittingRef.current = false; setSubmitting(false); }
   };
 
   /**
@@ -500,14 +543,16 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
   const birthdayReady = fulfilment === "pickup" && birthdayChosen && Boolean(email.trim() || phone.replace(/\D/g, "").length >= 10);
 
   const cashDueCents = settled ? settled.dueCents : totals.amountDueCents;
-  const tenderedCents = Math.round(Number(cashGiven.replace(/[^0-9.]/g, "")) * 100);
+  const quoteMoney = (cents: number) => lines.length && !quote ? "—" : formatMoney(cents);
+  const tenderedCents = parseCashTender(cashGiven);
   const cash =
-    cashDueCents > 0 && cashGiven.trim() && Number.isSafeInteger(tenderedCents) && tenderedCents >= 0
+    cashDueCents > 0 && cashGiven.trim() && tenderedCents !== null
       ? cashChange(cashDueCents, tenderedCents)
       : null;
   // What the total settles to in coins that exist, shown whether or not an
   // amount has been keyed in — it is the number to ask the customer for.
   const cashRounded = cashDueCents > 0 ? cashChange(cashDueCents, 0) : null;
+  const invalidTender = Boolean(cashGiven.trim() && (tenderedCents === null || (cash && cash.shortCents > 0)));
   /**
    * The notes someone actually hands over, largest first.
    *
@@ -523,10 +568,10 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
     : [];
 
   return (
-    <div className="admin-stack admin-controls till-pos">
+    <fieldset className="admin-stack admin-controls till-pos till-order-fields" disabled={submitting}>
       <section className="staff-panel">
         <div className="staff-panel-head">
-          <h2>Take an order</h2>
+          <h2>Take an order</h2>{dirty ? <button type="button" className="staff-button" onClick={discard}>Discard draft</button> : null}
           <div className="segmented-range" role="group" aria-label="Where the order came from">
             <button className={channel === "walk_in" ? "active" : ""} aria-pressed={channel === "walk_in"} onClick={() => setChannel("walk_in")}>Walk-in</button>
             <button className={channel === "phone" ? "active" : ""} aria-pressed={channel === "phone"} onClick={() => setChannel("phone")}>Phone</button>
@@ -595,7 +640,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                   ? Math.min(...variations.map((variation) => variation.base_price_cents))
                   : product.base_price_cents;
                 return (
-                  <button className="till-button till-button--choices" key={product.id} onClick={() => setBuilding(product)}>
+                  <button className="till-button till-button--choices" key={product.id} onClick={() => { setBuilding(product); setEditing(undefined); }}>
                     <strong>{product.name}</strong>
                     <span>{product.configuration.staffOnly ? "Staff only · " : ""}Choose options</span>
                     <b>{variations.length > 1 ? `from ${formatMoney(from)}` : formatMoney(from)}</b>
@@ -626,7 +671,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
         <aside className="staff-panel till-ticket">
           <div className="staff-panel-head"><h2>This order</h2><span className="live-chip">{lines.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
           <div className="till-lines">
-            {lines.map((line) => (
+            {lines.map((line, index) => (
               <div className="till-line" key={line.key}>
                 <div>
                   <strong>{line.name}</strong>
@@ -635,12 +680,13 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                       exists inside the payload is a "no onions" that gets made
                       with onions. */}
                   {describeChoices(line, toppingNames).map((choice, index) => <small key={`${index}-${choice}`}>{choice}</small>)}
-                  <em className="till-line-price">{formatMoney(line.unitPriceCents)} each</em>
+                  <em className="till-line-price">{quote?.lines.find((entry) => entry.index === index) ? formatMoney(quote.lines.find((entry) => entry.index === index)!.unitPriceCents) : "—"} each</em>
                 </div>
                 <div className="till-quantity">
                   <button onClick={() => setQuantity(line.key, -1)} aria-label={`One fewer ${line.name}`}>−</button>
                   <span>{line.quantity}</span>
                   <button onClick={() => setQuantity(line.key, 1)} aria-label={`One more ${line.name}`}>+</button>
+                  <button onClick={() => editLine(line)}>Edit</button>
                   <button className="till-remove" onClick={() => removeLine(line.key)} aria-label={`Remove ${line.name} from this order`}>Remove</button>
                 </div>
               </div>
@@ -711,14 +757,14 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           )}
 
           <div className="checkout-totals">
-            <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
+            <div><span>Subtotal</span><b>{quoteMoney(totals.menuSubtotalCents)}</b></div>
             {totals.discountCents > 0 ? <div className="checkout-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
             {totals.deliveryFeeCents > 0 ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}
-            <div><span>HST</span><b>{formatMoney(totals.taxCents)}</b></div>
+            <div><span>HST</span><b>{quoteMoney(totals.taxCents)}</b></div>
             {/* The bill, then the tender. `Total` is what the HST was worked out
                 on and what prints on the ticket; it does not move when a card is
                 applied. `Amount due` is what changes hands. */}
-            <div className="checkout-grand-total"><span>Total</span><b>{formatMoney(totals.totalCents)}</b></div>
+            <div className="checkout-grand-total"><span>Total</span><b>{quoteMoney(totals.totalCents)}</b></div>
             {totals.giftCardAppliedCents > 0 ? (
               <>
                 <div className="checkout-giftcard">
@@ -744,28 +790,8 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
             <p className="cart-blocker" role="status" key={`${index}-${issue.message}`}>{issue.message}</p>
           ))}
 
-          <button className="primary-button" disabled={!lines.length || submitting || (quote !== null && !quote.ok)} onClick={() => void place(Date.now())}>
-            {submitting
-              ? "Sending to the kitchen…"
-              : totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
-                ? `${fulfilment === "delivery" ? "Send & print" : "Print"} · paid by gift card`
-                : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.amountDueCents)}`}
-          </button>
-          <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
-          {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
-          {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
-          {lastPrintOrder ? (
-            <button
-              className={printPending ? "primary-button" : "staff-button"}
-              onClick={() => {
-                setPrintPending(false);
-                printPlacedOrder(lastPrintOrder, Date.now());
-              }}
-            >
-              {printPending ? "Print ticket" : "Print last ticket again"}
-            </button>
-          ) : null}
-
+          {quoteLoading ? <p role="status">Updating order prices…</p> : null}
+          {quoteFailed ? <p className="form-error" role="alert">{quoteError} <button type="button" onClick={retryQuote}>Retry pricing</button></p> : null}
           {/*
             Counting out the change.
 
@@ -785,7 +811,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           {cashRounded ? (
             <div className="till-cash">
               <div className="till-cash-head">
-                <h3>Cash</h3>
+                <h3>{settled ? "Last completed order" : "Payment for this order"}</h3>
                 <span>{settled ? `${settled.orderNumber || "Last order"} · ${formatMoney(cashDueCents)}` : `This order · ${formatMoney(cashDueCents)}`}</span>
               </div>
               {(settled ? settled.giftCardCents : totals.giftCardAppliedCents) > 0 ? (
@@ -800,6 +826,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                   The bill stays {formatMoney(cashDueCents)} on card or online.
                 </p>
               ) : null}
+              <div className="till-cash-change-total"><span>Amount due</span><b>{formatMoney(cashDueCents)}</b></div>
               <div className="till-cash-quick">
                 {quickTenders.map((amount) => (
                   <button type="button" key={amount} onClick={() => setCashGiven((amount / 100).toFixed(2))}>
@@ -817,6 +844,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                   aria-label="Cash received"
                 />
               </label>
+              {cashGiven.trim() && tenderedCents === null ? <p className="form-error" role="alert">Enter a valid cash amount, such as 20 or 20.00.</p> : null}
               {cash ? (
                 cash.shortCents > 0 ? (
                   <p className="till-cash-short" role="status">
@@ -824,7 +852,7 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
                   </p>
                 ) : (
                   <div className="till-cash-change" role="status">
-                    <div className="till-cash-change-total"><span>Change</span><b>{formatMoney(cash.changeCents)}</b></div>
+                    <div className="till-cash-change-total"><span>Change to give</span><b>{formatMoney(cash.changeCents)}</b></div>
                     {cash.breakdown.length ? (
                       <p className="till-cash-breakdown">
                         {cash.breakdown.map((part) => `${part.count} × ${part.label}`).join(" · ")}
@@ -840,34 +868,63 @@ export function StaffOrderEntry({ dashboard, onPlaced }: { dashboard: Dashboard;
           ) : (
             <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
           )}
+          <button className="primary-button" disabled={!lines.length || submitting || quoteLoading || !quote?.ok || invalidTender} onClick={() => void place(Date.now())}>
+            {submitting
+              ? "Sending to the kitchen…"
+              : lines.length && !quote
+                ? quoteFailed ? "Retry pricing before payment" : "Waiting for current prices…"
+              : totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
+                ? `${fulfilment === "delivery" ? "Send & print" : "Print"} · paid by gift card`
+                : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.amountDueCents)}`}
+          </button>
+          <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
+          {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
+          {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
+          {lastPrintOrder ? (
+            <button
+              className={printPending ? "primary-button" : "staff-button"}
+              onClick={() => {
+                setPrintPending(false);
+                printPlacedOrder(lastPrintOrder, Date.now());
+              }}
+            >
+              {printPending ? "Print ticket" : "Print last ticket again"}
+            </button>
+          ) : null}
+
+
         </aside>
       </div>
 
       {/* The same customizer the website mounts, over the till. `key` is the
           product id so switching straight from one product to another starts a
           fresh build rather than reusing the last one's state. */}
-      {building ? (
+      {building && active ? (
         building.product_type === "pizza" ? (
           <PizzaCustomizer
-            key={building.id}
+            key={editing?.key ?? building.id}
             product={building}
             variations={buildingVariations}
             toppings={activeToppings}
             halfToppingUnitsBps={halfToppingUnitsBps}
-            onClose={() => setBuilding(null)}
+            initialItem={editing}
+            onSave={editing ? saveLine : undefined}
+            onClose={closeBuilder}
             onAdd={add}
           />
         ) : (
           <GenericCustomizer
-            key={building.id}
+            key={editing?.key ?? building.id}
             product={building}
             toppings={activeToppings}
             halfToppingUnitsBps={halfToppingUnitsBps}
-            onClose={() => setBuilding(null)}
+            initialItem={editing}
+            onSave={editing ? saveLine : undefined}
+            onClose={closeBuilder}
             onAdd={add}
           />
         )
       ) : null}
-    </div>
+    </fieldset>
   );
 }

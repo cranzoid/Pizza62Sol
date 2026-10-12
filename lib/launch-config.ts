@@ -67,7 +67,7 @@ export const LAUNCH_SETTINGS = {
     // the thing they were just doing.
     feedbackDelayMinutes: 40,
     lowRatingThreshold: 2,
-    halfToppingUnitsBps: 10_000,
+    halfToppingUnitsBps: 5_000,
   },
   /**
    * The thank-you that goes out after someone fills in the feedback form.

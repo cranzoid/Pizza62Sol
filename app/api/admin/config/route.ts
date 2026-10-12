@@ -168,7 +168,7 @@ function settingValidation(key: string, value: Record<string, unknown>) {
       throw new Error("Feedback delay must be between 1 minute and 24 hours.");
     }
     // A half topping can be charged as anything from free up to a whole topping.
-    const halfTopping = Number(value.halfToppingUnitsBps ?? 10_000);
+    const halfTopping = Number(value.halfToppingUnitsBps ?? 5_000);
     if (!Number.isInteger(halfTopping) || halfTopping < 0 || halfTopping > 10_000) {
       throw new Error("A half topping must count as between zero and one whole topping.");
     }
