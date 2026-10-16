@@ -19,6 +19,7 @@ import {
   priceModifierSelections,
   normalizeToppings,
   SAUCE_OPTIONS,
+  storeStatus,
   validateDelivery,
   type AppliedPromotion,
   type CartLinePrice,
@@ -174,6 +175,7 @@ type OrderingSetting = {
   cashOnDeliveryEnabled: boolean;
   pickupEstimateMinutes: number;
   deliveryEstimateMinutes: number | null;
+  lastOrderCutoffMinutes?: number;
   paused: boolean;
   pauseMessage: string;
 };
@@ -479,6 +481,35 @@ function validateSchedule(
     scheduledFor: type === "scheduled" ? requested : null,
     estimatedFor: type === "scheduled" ? requested : now + estimateMinutes * 60_000,
   };
+}
+
+/**
+ * The last-order cutoff, enforced here as well as in the browser.
+ *
+ * Judged by the same `storeStatus` the website uses to disable ASAP, so the two
+ * cannot disagree about where the boundary is. Only ASAP orders from the public
+ * side are affected: a scheduled order is judged by `validateSchedule` (the
+ * website offers slots up to closing), and the till decides for itself whether
+ * the kitchen can take one more. Called after `validateSchedule` has passed, so
+ * a store that is simply shut keeps its existing "outside hours" refusal.
+ */
+function assertBeforeLastOrderCutoff(
+  scheduleType: "asap" | "scheduled",
+  hours: Array<{ weekday: number; openMinute: number; closeMinute: number }>,
+  ordering: OrderingSetting,
+  staffEntry = false,
+): void {
+  if (scheduleType !== "asap" || staffEntry) return;
+  const status = storeStatus(Date.now(), hours, "America/Toronto", {
+    lastOrderCutoffMinutes: Number(ordering.lastOrderCutoffMinutes ?? 0),
+  });
+  if (!status.open) {
+    throw new OrderValidationError(
+      "Last orders have gone in for tonight. Please schedule your order for a later time.",
+      409,
+      "LAST_ORDERS_CLOSED",
+    );
+  }
 }
 
 async function validateItems(
@@ -1230,7 +1261,8 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
 
   try {
     const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
-    validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+    const schedule = validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, context.staffEntry);
   } catch (error) {
     // Suppressed when a closure already explained it: two refusals for one cause
     // reads as two separate problems to fix.
@@ -1530,6 +1562,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
     }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, context.staffEntry);
 
     /**
      * The gift card, resolved last — immediately before anything is written.
