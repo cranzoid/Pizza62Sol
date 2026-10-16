@@ -279,8 +279,9 @@ async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
       const message = await renderRestaurantNewOrder(order);
       const alertNumber = await restaurantAlertNumber();
 
-      // Email and voice are the reliable pair (see §9's SMS caveat); SMS is a
-      // best-effort extra and is never allowed to fail the row on its own.
+      // Email and a voice call, and deliberately no SMS: the alert number is the
+      // restaurant's landline, which cannot receive texts. Sending one anyway
+      // billed a message per order that never arrived.
       let delivered = false;
       const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
       const to = row.recipient ?? business.email;
@@ -289,7 +290,6 @@ async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
         delivered = true;
       }
       if (alertNumber) {
-        await sendSms({ to: alertNumber, body: message.smsBody }).catch(() => undefined);
         const base = await publicBaseUrl();
         // The call is what actually gets someone's attention, so it is the one
         // whose failure is allowed to retry the row.

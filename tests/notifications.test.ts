@@ -433,6 +433,33 @@ withDb("claims nothing when no provider is configured", async () => {
   }
 });
 
+// --- the restaurant alert ----------------------------------------------------
+
+withDb("calls the restaurant's landline for a new order but never texts it", async () => {
+  // The alert number is a landline. A text to it cannot arrive, so the alert is
+  // an email plus a voice call and nothing else.
+  const alertNumber = `+1555${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+  process.env.RESTAURANT_ALERT_PHONE = alertNumber;
+  process.env.TWILIO_ACCOUNT_SID = "AC-test";
+  process.env.TWILIO_AUTH_TOKEN = "token";
+  process.env.TWILIO_FROM_NUMBER = "+15550000000";
+  try {
+    const { outboxId } = await seedOutbox({ kind: "restaurant_new_order", status: "pending" });
+    const { calls } = stubProviders(201);
+    await dispatchOutbox({ limit: 50 });
+
+    assert.equal((await readRow(outboxId)).status, "sent");
+    const toAlertNumber = calls.filter((call) => new URLSearchParams(call.body).get("To") === alertNumber);
+    assert.ok(toAlertNumber.some((call) => /\/Calls\.json$/.test(call.url)), "the landline is still called");
+    assert.ok(!toAlertNumber.some((call) => /\/Messages\.json$/.test(call.url)), "the landline is never texted");
+  } finally {
+    delete process.env.RESTAURANT_ALERT_PHONE;
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+    delete process.env.TWILIO_FROM_NUMBER;
+  }
+});
+
 // --- the unacknowledged-order sweep -----------------------------------------
 
 withDb("re-queues a sent alert for an order nobody acknowledged", async () => {
