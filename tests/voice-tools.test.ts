@@ -804,7 +804,7 @@ frozen("the HTTP API is off by default, then needs the bearer and the call's own
   assert.equal((await post("add_item", JSON.stringify({ notes: "x".repeat(20_000) }), good)).status, 413);
 });
 
-withDb("there is no route that mints a voice session", async () => {
+withDb("only the signed inbound route may mint a voice session", async () => {
   const root = path.join(process.cwd(), "app", "api");
   const routes: string[] = [];
   const walk = async (directory: string) => {
@@ -817,7 +817,7 @@ withDb("there is no route that mints a voice session", async () => {
   await walk(root);
   for (const route of routes) {
     const source = await readFile(route, "utf8");
-    assert.ok(!source.includes("createVoiceSession"), `${path.relative(process.cwd(), route)} must not mint voice sessions`);
+    assert.ok(!source.includes("createVoiceSession") || route === path.join(root, "voice", "inbound", "route.ts"), `${path.relative(process.cwd(), route)} must not mint voice sessions`);
   }
   assert.ok(routes.some((route) => route.includes(path.join("voice", "tools"))), "the tool route exists and was scanned");
   assert.deepEqual([...VOICE_TOOL_NAMES].sort(), [

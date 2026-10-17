@@ -15,9 +15,8 @@
  *    bearer alone opens no session: a leaked provider secret cannot read or
  *    change any call it was not handed the session secret for.
  *
- * There is deliberately no route that creates a session. The future inbound
- * call webhook will mint one after verifying Twilio's signature; until then,
- * only server code and tests can.
+ * The inbound call webhook mints sessions only after verifying Twilio's
+ * signature and admitting the caller through the internal-mode allowlist.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { logFailure } from "@/lib/log";

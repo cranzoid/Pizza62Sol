@@ -14,7 +14,7 @@ import type { Fulfilment } from "@/lib/domain";
  * `off` — the tool API answers nothing (the default, and the answer to any
  * unrecognised value). `internal`, `pilot` and `live` are the rollout stages
  * of docs/AI-RECEPTIONIST-ARCHITECTURE.md §20; the tool API treats them alike,
- * and the inbound call route (not built yet) is what will tell them apart.
+ * and the inbound call route restricts Phase 4 to internal tests.
  */
 export type VoiceAiMode = "off" | "internal" | "pilot" | "live";
 const MODES = new Set<VoiceAiMode>(["off", "internal", "pilot", "live"]);
@@ -66,3 +66,22 @@ export const VOICE_MAX_TOOL_CALLS = 150;
 export const VOICE_ESCALATE_AFTER_FAILURES = 3;
 /** The longest note a voice line may carry. Shorter than the website's: it is read back aloud. */
 export const VOICE_MAX_NOTE_LENGTH = 200;
+
+/** Strict E.164 comparison: a partial number never opens the internal line. */
+export function isVoicePhone(value: string): boolean {
+  return /^\+[1-9]\d{7,14}$/.test(value);
+}
+
+export async function voiceAiAllowlist(): Promise<ReadonlySet<string>> {
+  const raw = (await readIntegrationSecret("VOICE_AI_ALLOWLIST")) ?? "";
+  return new Set(raw.split(",").map((value) => value.trim()).filter(isVoicePhone));
+}
+
+/** Dedicated AI line, falling back to the existing Twilio number only when unset. */
+export async function voiceAiNumber(): Promise<string | null> {
+  const value = (await readIntegrationSecret("VOICE_AI_NUMBER")) ?? (await readIntegrationSecret("TWILIO_FROM_NUMBER"));
+  return value && isVoicePhone(value) ? value : null;
+}
+
+/** Shorter than Twilio's inbound webhook deadline; includes reading the response. */
+export const VOICE_REGISTER_TIMEOUT_MS = 5_000;

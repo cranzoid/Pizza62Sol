@@ -19,7 +19,7 @@
  * only ever place the exact draft the caller heard read back.
  *
  * **Sessions are minted by server code only** (`createVoiceSession`). There is
- * no route that creates one; the future inbound-call webhook will, after it has
+ * an inbound-call webhook that creates one only after it has
  * verified Twilio's signature. The session secret is returned once and stored
  * as a hash.
  */
@@ -77,6 +77,8 @@ export type VoiceSession = {
   mode: "test" | "internal" | "pilot" | "live";
   callSid: string | null;
   providerConversationId: string | null;
+  calledNumber: string | null;
+  forwardedFrom: string | null;
   callerPhone: string | null;
   callerIdStatus: CallerIdStatus;
   stage: VoiceCallStage;
@@ -129,6 +131,8 @@ function toSession(row: Row): VoiceSession {
     mode: row.mode as VoiceSession["mode"],
     callSid: (row.call_sid as string | null) ?? null,
     providerConversationId: (row.provider_conversation_id as string | null) ?? null,
+    calledNumber: (row.called_number as string | null) ?? null,
+    forwardedFrom: (row.forwarded_from as string | null) ?? null,
     callerPhone: (row.caller_phone as string | null) ?? null,
     callerIdStatus: row.caller_id_status as CallerIdStatus,
     stage: row.stage as VoiceCallStage,
@@ -172,6 +176,10 @@ async function hashSessionSecret(secret: string): Promise<string> {
 export type NewVoiceSession = {
   provider: VoiceSession["provider"];
   mode: VoiceSession["mode"];
+  calledNumber?: string | null;
+  forwardedFrom?: string | null;
+  /** Atomically claim a signed inbound CallSid; losers must not register it again. */
+  deduplicateCallSid?: boolean;
   callerPhone?: string | null;
   callerIdStatus?: CallerIdStatus;
   callSid?: string | null;
@@ -183,18 +191,23 @@ export type NewVoiceSession = {
 /**
  * A new session and its secret. **Server code only** — the secret is what lets
  * a tool call act on this session, so whatever calls this must already have
- * established who is on the line (the future inbound webhook, by Twilio's
+ * established who is on the line (the inbound webhook, by Twilio's
  * signature) or be a test. The secret is not stored and cannot be recovered.
  */
-export async function createVoiceSession(input: NewVoiceSession): Promise<{ session: VoiceSession; sessionSecret: string }> {
+type MintedVoiceSession = { session: VoiceSession; sessionSecret: string };
+export function createVoiceSession(input: NewVoiceSession & { deduplicateCallSid: true }): Promise<MintedVoiceSession | null>;
+export function createVoiceSession(input: NewVoiceSession & { deduplicateCallSid?: false }): Promise<MintedVoiceSession>;
+export async function createVoiceSession(input: NewVoiceSession): Promise<MintedVoiceSession | null> {
+  if (input.deduplicateCallSid && !input.callSid) throw new Error("An inbound session requires CallSid");
   const now = input.now ?? Date.now();
   const sessionSecret = generateOpaqueToken(32);
   const row = await getD1()
     .prepare(
       `INSERT INTO voice_calls
        (id, provider, mode, call_sid, provider_conversation_id, session_secret_hash, caller_phone, caller_id_status,
-        stage, started_at, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)
+        called_number, forwarded_from, stage, started_at, expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)
+       ON CONFLICT (call_sid) WHERE call_sid IS NOT NULL DO NOTHING
        RETURNING *`,
     )
     .bind(
@@ -206,12 +219,15 @@ export async function createVoiceSession(input: NewVoiceSession): Promise<{ sess
       await hashSessionSecret(sessionSecret),
       input.callerPhone ?? null,
       input.callerIdStatus ?? "unknown",
+      input.calledNumber ?? null,
+      input.forwardedFrom ?? null,
       now,
       now + (input.ttlMs ?? VOICE_SESSION_TTL_MS),
       now,
       now,
     )
     .first<Row>();
+  if (!row && input.deduplicateCallSid) return null;
   if (!row) throw new Error("voice session could not be created");
   return { session: toSession(row), sessionSecret };
 }

@@ -1,6 +1,6 @@
 /** Signed Twilio delivery receipts. Provider acceptance alone is not delivery. */
 import { getD1 } from "@/db/runtime";
-import { verifyTwilioSignature } from "@/app/api/notifications/voice/ack/route";
+import { verifyTwilioSignature } from "@/lib/notifications/twilio-signature";
 import { twilioConfig } from "@/lib/notifications/config";
 
 const STATES = ["accepted", "queued", "sending", "sent", "failed", "undelivered", "delivered"];
