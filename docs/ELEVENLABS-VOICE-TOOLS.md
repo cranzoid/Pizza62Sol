@@ -1,6 +1,6 @@
 # ElevenLabs Voice Tools — Contract for the Pizza 62 AI Receptionist
 
-**Status (17 October 2026):** the tool API is built and tested. It is **not connected to ElevenLabs or Twilio**, and `VOICE_AI_MODE` is `off` by default, so every HTTP tool call is refused with `503` until someone deliberately turns it on. This document describes the API as implemented in `lib/voice/tools.ts` and `app/api/voice/tools/[tool]/route.ts`. Every example below is a real response captured from those functions against the test database. The examples use a Wednesday at 6:00 PM, when the store is open.
+**Status (17 October 2026):** the tool API and Phase 4 staging telephony routes are implemented. No deployment or provider configuration has been performed. `VOICE_AI_MODE` remains `off` by default, so tool calls return `503` and signed inbound calls receive a spoken fallback until internal testing is explicitly configured. This document describes the API as implemented in `lib/voice/tools.ts` and `app/api/voice/tools/[tool]/route.ts`. Every example below is a real response captured from those functions against the test database. The examples use a Wednesday at 6:00 PM, when the store is open.
 
 Read it with `docs/AI-RECEPTIONIST-ARCHITECTURE.md`. That file covers the call routing, the transfer design and the rollout phases. This one covers what the agent's tools are and how to configure them.
 
@@ -42,7 +42,7 @@ Every tool is an ElevenLabs **webhook (server) tool**:
 | Content type | `application/json` |
 | Body | The tool's parameters only (see each tool). Every value is model-supplied. **None is session-derived**: session state lives on the server |
 | Header `Authorization` | `Bearer <VOICE_TOOL_SECRET>`. Store the value as an ElevenLabs workspace secret. It is the same for every call |
-| Header `X-Voice-Session` | The **per-call session secret**. It is minted by our backend for each call and handed to ElevenLabs as a secret dynamic variable (planned name `secret__voice_session`), so the header value is `{{secret__voice_session}}` |
+| Header `X-Voice-Session` | The **per-call session secret**. It is minted by our backend for each call and handed to ElevenLabs as a secret dynamic variable (`secret__voice_session`), so the header value is `{{secret__voice_session}}` |
 
 ### How the two credentials work together
 
@@ -50,7 +50,9 @@ Every tool is an ElevenLabs **webhook (server) tool**:
 - **`X-Voice-Session`** names one call's session and opens only that one. It is returned once when the session is minted and is stored only as a SHA-256 hash (`voice_calls.session_secret_hash`). A leaked bearer token alone cannot read or change any call. Session A's secret cannot affect session B. No request parameter can name another session, and a `sessionId` field is refused as unknown.
 - A session expires 30 minutes after it starts. Expired or closed sessions return `401`.
 
-**Who mints sessions.** No route does today, by design. The planned `/api/voice/inbound` webhook (not built; architecture §11.1) will verify Twilio's signature, create the `voice_calls` row with `createVoiceSession()`, and pass the secret to ElevenLabs register-call as `conversation_initiation_client_data.dynamic_variables.secret__voice_session`. *To verify in Phase 4:* that ElevenLabs keeps `secret__` variables out of the LLM context and out of its logs, and that they can be used in tool headers. Until that is confirmed, treat the session secret as visible to the vendor but never to the model.
+**Who mints sessions.** `/api/voice/inbound` verifies Twilio's signature, checks internal mode, the staff allowlist and destination number, creates the `voice_calls` row through `createVoiceSession()`, and passes the secret to register-call as `conversation_initiation_client_data.dynamic_variables.secret__voice_session`. Only this signed inbound route may mint sessions over HTTP.
+
+**Verified vendor behavior.** Secret dynamic variables use the `secret__` prefix, are usable only in webhook tool headers, and are excluded from the LLM prompt/first message. ElevenLabs returns their values as `<REDACTED>` in post-call webhooks and conversation APIs. `voice_session_id` is therefore sent separately as a non-secret identifier for post-call association. Never put the session secret into a prompt, ordinary variable or tool argument. See [ElevenLabs dynamic variables](https://elevenlabs.io/docs/eleven-agents/customization/personalization/dynamic-variables).
 
 ### HTTP status codes
 
@@ -581,7 +583,7 @@ Failures: `NOT_REVIEWED`, `NOT_CONFIRMED`, `CART_CHANGED`, `CONFIRMATION_EXPIRED
 
 ## 7. Configuration
 
-All of these live in the integration-secret store (`lib/integration-secrets.ts`): database first, then Key Vault / environment. None has a value yet.
+All of these use the integration-secret store (`lib/integration-secrets.ts`): database first, then Key Vault / environment. This change supplies no credential values.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -590,7 +592,7 @@ All of these live in the integration-secret store (`lib/integration-secrets.ts`)
 | `VOICE_PILOT_FULFILMENTS` | `pickup` | `pickup` or `pickup,delivery`. Setting delivery is also the owner's explicit acceptance of pay-at-the-door for AI orders (architecture §22 Q6) |
 | `VOICE_MAX_ORDER_CENTS` | `15000` | The largest amount due the AI may place (1000–100000). Larger orders escalate to staff |
 
-`ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID` and `ELEVENLABS_WEBHOOK_SECRET` are **not** added yet. They belong to Phase 4. The Admin → Integrations screen does not show the voice keys yet. The owner-facing kill switch is planned with the AI Phone admin page (architecture §14).
+Phase 4 adds `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`, `ELEVENLABS_WEBHOOK_SECRET`, `VOICE_AI_NUMBER` and `VOICE_AI_ALLOWLIST` to this same encrypted configuration system. API keys, webhook secrets and tool secrets remain masked; agent ID, AI number and allowlist are readable to the authenticated owner. The Admin → Integrations screen does not show the voice keys yet. The owner-facing kill switch is planned with the AI Phone admin page (architecture §14).
 
 Fixed in code (`lib/voice/config.ts`): session lifetime 30 minutes, confirmation lifetime 5 minutes, 150 tool calls per session, escalation after 3 consecutive failures, notes up to 200 characters.
 
@@ -631,6 +633,102 @@ It prints every tool response, with the cart version and stage. It stops at the 
 
 ## 10. Not built yet (by design)
 
-- `/api/voice/inbound`, ElevenLabs register-call, the post-call webhook, `transfer_to_store` and `request_callback`. When transfer exists, escalation routes to it. Until then the agent can only apologize and end the call.
+- `transfer_to_store` and `request_callback`. Register-call does not provide ElevenLabs-managed transfer. Until a separate transfer implementation exists, configure the staging agent to apologize and end the call when it must escalate.
 - `lookup_caller`, "the usual", reordering, saved addresses, order status, changing or cancelling a placed order, card payments and SMS payment links.
 - An admin screen for voice calls, and the kill switch in Admin → Integrations.
+
+## 11. Phase 4 staging bridge
+
+Implemented routes:
+
+| Route | Authentication | Behavior |
+|---|---|---|
+| `POST /api/voice/inbound` | Existing Twilio HMAC-SHA1 signature implementation, moved to `lib/notifications/twilio-signature.ts` | Signed URL-encoded form only; internal staff admission, session creation, register-call, TwiML response |
+| `POST /api/voice/status` | Same Twilio signature | Looks up `voice_calls` by signed `CallSid`; records status, duration and terminal time; rejects stale progress updates and ignores repeated terminal callbacks |
+| `POST /api/voice/events` | `ElevenLabs-Signature` HMAC-SHA256 over `timestamp.raw_body_bytes` | Processes `post_call_transcription`; acknowledges unsupported events without persisting their payload |
+
+Twilio verification uses the exact request URL, including query string, as existing notification webhooks do. Configure the canonical HTTPS URL directly, without redirects. Host/path/scheme rewriting at ingress must preserve that external URL; arbitrary forwarded headers are never used to reconstruct it. CallSid, From, To and optional ForwardedFrom come exclusively from the signed form, never the query string or LLM. Duplicate form keys are refused. Existing notification behavior and compatibility exports from the acknowledgement route are preserved.
+
+`VOICE_AI_MODE` defaults to `off`. This phase admits **only `internal`**; `pilot` and `live` are recognized configuration values but also return local fallback. `VOICE_AI_ALLOWLIST` is a comma-separated list of complete E.164 staff/test numbers, with exact matching. Empty or malformed lists admit nobody. `VOICE_AI_NUMBER` must match signed `To`; when unset it falls back to `TWILIO_FROM_NUMBER`. Caller ID is an internal test filter, not proof of a customer's identity.
+
+Required staging configuration:
+
+```dotenv
+VOICE_AI_MODE=off
+VOICE_AI_NUMBER=+18254626262
+VOICE_AI_ALLOWLIST=<comma-separated staff E.164 numbers>
+ELEVENLABS_API_KEY=<staging server API key>
+ELEVENLABS_AGENT_ID=<existing staging agent ID>
+ELEVENLABS_WEBHOOK_SECRET=<post-call HMAC secret>
+VOICE_TOOL_SECRET=<random URL-safe token, at least 32 characters>
+# Existing Twilio signing credential:
+TWILIO_AUTH_TOKEN=<auth token for the account receiving these calls>
+```
+
+Keep the existing defaults `VOICE_PILOT_FULFILMENTS=pickup` and `VOICE_MAX_ORDER_CENTS=15000`. Missing provider/tool/webhook credentials cause fallback before session creation. No setting is enabled by this change. Database-first encrypted configuration can be populated through the existing authenticated integrations API or environment/Key Vault; a dedicated voice settings UI remains deferred.
+
+### Exact register-call request
+
+`POST https://api.elevenlabs.io/v1/convai/twilio/register-call`, headers `Content-Type: application/json` and `xi-api-key: <ELEVENLABS_API_KEY>`:
+
+```json
+{
+  "agent_id": "<ELEVENLABS_AGENT_ID>",
+  "from_number": "<signed From>",
+  "to_number": "<signed To>",
+  "direction": "inbound",
+  "conversation_initiation_client_data": {
+    "dynamic_variables": {
+      "secret__voice_session": "<one-time per-call session secret>",
+      "voice_session_id": "<voice_calls.id>",
+      "call_sid": "<signed CallSid>",
+      "voice_mode": "internal"
+    }
+  }
+}
+```
+
+These are the **only four dynamic variables sent**. Store opening/order acceptance remains available through the existing `get_store_status` tool, so no duplicated or stale store-state calculation is introduced here. The API key, webhook secret and shared tool bearer are never sent as ordinary dynamic variables.
+
+The [register-call API](https://elevenlabs.io/docs/api-reference/integrations/twilio/register-call) documents a JSON string response containing TwiML. We decode that transport string (or accept direct XML) and return the original XML as `text/xml`, without appending redirects or reconstructing it. An empty, malformed or credential-echoing response fails safely. The five-second abort deadline covers fetching and reading the body.
+
+### Sessions, retries and completion
+
+Migration `0013_voice_telephony.sql` additively extends `voice_calls` with called number, ForwardedFrom, registration state, Twilio status/sequence, duration and post-call receipt time. It changes no ordering tables or rules. `createVoiceSession()` uses the existing unique CallSid index to atomically claim an inbound call. Only the winning insertion receives the session secret and registers with ElevenLabs. Concurrent or later retries receive the spoken fallback; we do not persist plaintext TwiML or recoverable session secrets to replay a response. This deliberately favors one registration over retrying an uncertain external operation. A process crash between insertion and delivery also fails safely on retry; start a new call.
+
+Registration failures/timeouts mark the session `registration_state=failed`, `failure_reason=register_call_failed`, close it and set its end time. The local TwiML says: “Sorry, the automated assistant is temporarily unavailable. Please try again.” It then hangs up. It also covers disabled/unlisted/misconfigured requests and database failures in the inbound handler. Invalid signatures are rejected with `403`. A Twilio-hosted fallback URL is still needed for an app that is unreachable or cannot respond.
+
+Status callbacks need only the signed CallSid, not a caller-selected session ID. Terminal statuses cannot be overwritten by late progress callbacks. Duplicates do not move the end time; callbacks for unknown calls create no records. Status and post-call completion preserve placed orders and an order placement already in flight.
+
+Post-call association uses `conversation_initiation_client_data.dynamic_variables.voice_session_id`. If present, the call SID is cross-checked against the row. Once the provider conversation ID is bound, it can identify redelivery without initiation variables. A different conversation cannot replace that binding. Missing association returns `503` for retry; conflicting association returns `409`. The session secret is never used for post-call association.
+
+HMAC validation runs against untouched request bytes before JSON parsing and uses a constant-time digest comparison. `t=<unix_seconds>,v0=<hex_digest>` is required; signatures older than 30 minutes or over one minute in the future are rejected. Multiple v0 signatures support key rotation; ambiguous timestamps are refused. This follows the [ElevenLabs signing algorithm](https://github.com/elevenlabs/elevenlabs-python/blob/main/src/elevenlabs/webhooks_custom.py), with an added future-timestamp bound. The timestamp is the delivery signature timestamp, not the conversation start or event timestamp.
+
+Post-call data is saved atomically with the conversation binding as one existing `voice_call_events` session event. A conditional update makes concurrent redeliveries idempotent. Persisted fields are conversation ID, agent ID/version when supplied, status, duration, transcript role/message/time, summary, disposition, termination/failure reason. All pass through `redactForLog()`; tool headers/results, dynamic variables, audio and arbitrary metadata are excluded. Duration and end time also populate `voice_calls`. No transcript-specific table or unredacted payload storage is introduced. Callbacks still work with mode off so in-flight calls can finish. No external HTTP calls run during post-call processing.
+
+### Manual staging setup — perform only after review
+
+1. Review and deploy this change to a chosen staging HTTPS host **manually**, including migration `0013`; verify the ingress presents the exact public URL to signature verification. Keep mode off throughout setup.
+2. Set the server configuration above; confirm the staging agent ID and staff allowlist. Generate the shared bearer securely and save the same value in ElevenLabs workspace secrets. Do not reuse the Twilio auth token as a tool or webhook secret.
+3. In the **existing ElevenLabs staging agent**, set input and output audio to **μ-law 8000 Hz** (`ulaw_8000`). Configure the existing webhook tools using §2–§5, with `Authorization: Bearer <workspace secret>` and dynamic header `X-Voice-Session: {{secret__voice_session}}`. Define the four runtime variables; keep secret__voice_session only in webhook headers. Remove any requirement for unrelated dynamic variables that this bridge does not send.
+4. Keep the prompt pickup-only, pay at store, no card collection/history/“the usual”/delivery. Require the existing review → explicit confirmation → placement sequence. Disable unavailable transfer tools; escalation must apologize and end the staging call.
+5. In ElevenLabs agent/workspace post-call settings, create/select an HMAC-authenticated webhook to `https://<canonical-staging-host>/api/voice/events`, enable transcription events, and save its signing secret server-side as `ELEVENLABS_WEBHOOK_SECRET`. Enable retries if available. Leave audio delivery disabled. Match the agent's post-call override to this webhook if one exists. No phone-number import is needed. See [post-call webhooks](https://elevenlabs.io/docs/eleven-agents/workflows/post-call-webhooks).
+6. In **Twilio Console → Phone Numbers → Manage → Active numbers → +1 825-462-6262 → Voice configuration**, first record the current settings. Under “A call comes in”, choose Webhook, set `https://<canonical-staging-host>/api/voice/inbound`, method **POST**. Set the call status changes callback to `https://<canonical-staging-host>/api/voice/status`, **POST**. Do not change messaging settings or existing restaurant alert callbacks.
+7. Set the Twilio voice fallback URL to an independently hosted static TwiML Bin containing the same apology and `<Hangup/>`, without a transfer destination. This covers app/network outages. Do not point it back at the failing app.
+8. Deliberately set **internal** mode only when ready for staff testing, call **+1 825-462-6262 directly from an allowlisted phone**, and check tool execution, one voice row, order/alert behavior, Twilio completion and the redacted transcript event. An allowlisted caller can place a real pickup/pay-at-store order through the existing engine: coordinate the test with staff. Test an unlisted caller and forced register-call failure too. Return mode to off after the test window.
+
+This code is ready for the manual staging setup and first direct-call validation after it. A live test is **not ready to start merely from these local commits**: deployment, secrets, audio/tool/webhook settings and Twilio URLs must be completed and checked first. No deployment or provider configuration was performed by the implementation agent.
+
+### Scope differences from the architecture proposal
+
+Phase 4 here is intentionally narrower than the untracked architecture proposal: no appended `<Redirect>`, after-agent route, transfer endpoints/REST redirects, native transfer, Bell forwarding, production rollout, Terraform deployment or alert rules. Caller-ID classification records the signed direct-call/forwarding fields; carrier forwarding behavior is still untested. There are no store-status dynamic variables, since the existing tool owns that decision. Transcript/debug metadata lives in the existing event JSON rather than a new transcript schema. No ordering business rules were changed.
+
+The [register-call integration guide](https://elevenlabs.io/docs/eleven-agents/phone-numbers/twilio-integration/register-call) confirms returned TwiML, manual μ-law audio setup, no ElevenLabs-managed call transfer and no phone-number dashboard import for this integration.
+
+### Local verification (17 October 2026)
+
+- Phase 4: 19 focused tests, all passed; external ElevenLabs HTTP requests mocked, no live calls.
+- Focused Phase 4 plus all existing voice/channel/alert tests: 344 passed, none skipped.
+- Complete `npm test`: 935 tests, 934 passed, one pre-existing failure, none skipped. The same untouched-HEAD baseline failure is `tests/ordering-release.test.ts:102`, “recipe omissions, normalized halves and chicken keep displayed, quoted, committed and printed prices equal”: actual `2229`, expected `2114`. That unrelated test and ordering pricing code were not changed.
+- `npx tsc --noEmit`, `npm run lint`, and `npm run build`: passed.
+- Additive migration applied and recorded only on the local `pizza62_test` database. No deployment, provider configuration, production-mode enablement, number import, real call, push or Bell forwarding was performed.

@@ -27,4 +27,3 @@ export function verifyTwilioSignature(
   const computed = Buffer.from(expected);
   return provided.length === computed.length && timingSafeEqual(provided, computed);
 }
-
