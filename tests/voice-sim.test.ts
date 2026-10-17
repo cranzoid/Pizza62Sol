@@ -60,3 +60,20 @@ withDb("a place run makes one ai_phone order with its kitchen alert", async () =
     "set_customer", "review_order", "confirm_order", "place_order",
   ]);
 });
+
+withDb("a scheduled run with a promo code and a tip reads all three back", async () => {
+  const result = await runSimulation({
+    ...script,
+    items: ["large pepperoni no cheese"],
+    lines: [{ productId: "garlic-bread" }],
+    schedule: { day: "tomorrow", time: "5:45 pm" },
+    coupon: "thanks62",
+    tip: { type: "percentage", percent: 15 },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.steps.at(-1)?.response));
+  assert.match(result.readback ?? "", /^Here is your pickup order, for tomorrow at 5:45 PM\./);
+  assert.match(result.readback ?? "", /note: No Cheese/);
+  assert.match(result.readback ?? "", /discount \$3\.99/);
+  assert.match(result.readback ?? "", /tip \$\d+\.\d\d/);
+  assert.deepEqual(result.steps.map((step) => step.tool).slice(-5), ["set_schedule", "apply_coupon", "set_tip", "set_customer", "review_order"]);
+});

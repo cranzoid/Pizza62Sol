@@ -1338,6 +1338,12 @@ export const voiceCalls = pgTable(
     /** The last delivery decision for the stored address, with the version it was made at. */
     deliveryCheckJson: text("delivery_check_json"),
     cartJson: text("cart_json").notNull().default("[]"),
+    /**
+     * The caller's checkout choices — schedule, promo code, tip — that are not
+     * lines. Choices only, never amounts: each is priced by `quoteOrder`. Part of
+     * the versioned draft, so changing one clears the review and confirmation.
+     */
+    orderOptionsJson: text("order_options_json").notNull().default("{}"),
     cartVersion: integer("cart_version").notNull().default(0),
     nextLineNumber: integer("next_line_number").notNull().default(1),
     reviewedVersion: integer("reviewed_version"),

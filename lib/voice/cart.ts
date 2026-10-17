@@ -9,16 +9,18 @@
  * a prompt injection that got as far as the arguments; refusing says so.
  *
  * **The request is built here, by the server.** Fulfilment, customer, address,
- * schedule (ASAP), payment (pay at store) and tip (none) come from the session
- * and the voice policy. Nothing the model sends reaches `OrderRequest` except
- * menu ids and choices, and those are validated and priced by `quoteOrder` /
- * `createOrder` like any website order.
+ * schedule, promo code and tip come from the session; payment (pay at the
+ * store, or the driver) comes from the voice policy. Nothing the model sends
+ * reaches `OrderRequest` except menu ids and choices, and those are validated
+ * and priced by `quoteOrder` / `createOrder` like any website order. A schedule
+ * is a slot the server chose, a code is a string the server checks, and a tip
+ * is a preset or a dollar amount the server prices — never a total.
  */
-import type { ToppingPlacement } from "@/lib/domain";
+import { CHEESE_OPTIONS, type ToppingPlacement } from "@/lib/domain";
 import { containsPaymentDetails } from "@/lib/voice/redact";
 import type { OrderRequest } from "@/lib/order-service";
 import { VOICE_MAX_NOTE_LENGTH } from "@/lib/voice/config";
-import type { VoiceCartLine, VoiceSession } from "@/lib/voice/session";
+import type { VoiceCartLine, VoiceOrderOptions, VoiceSession } from "@/lib/voice/session";
 
 export type ToolIssue = { code: string; message: string; lineId?: string | null; field?: string };
 
@@ -29,6 +31,10 @@ const FORBIDDEN_FIELDS = new Set([
   "fee", "deliveryFee", "deliveryFeeCents", "freeDelivery", "discount", "discountCents", "couponCode",
   "giftCardCode", "promotion", "promotionId", "tip", "channel", "policy", "staffEntry", "staffUserId",
   "context", "actorId", "idempotencyKey", "paymentMethod", "paymentToken", "card", "cardNumber",
+  // A time is chosen by day and clock time and matched to a server slot; a tip
+  // by preset or dollars; a gift card is never taken. None of these is a field.
+  "schedule", "scheduledFor", "estimatedFor", "tipCents", "tipAmountCents", "amountCents", "giftCard",
+  "balanceCents", "appliedCents", "cvv", "expiry",
 ]);
 
 export class ToolInputError extends Error {
@@ -94,9 +100,25 @@ export function readText(value: unknown, field: string, issues: ToolIssue[], opt
 }
 
 /** The parts of a line a caller can choose. Every field optional, so the same reader serves add and update. */
-export type LineChoices = Partial<Pick<VoiceCartLine, "productId" | "variationId" | "quantity" | "toppings" | "omitToppings" | "extraCheese" | "modifiers" | "notes">>;
+export type LineChoices = Partial<Pick<VoiceCartLine, "productId" | "variationId" | "quantity" | "toppings" | "omitToppings" | "extraCheese" | "cheese" | "modifiers" | "notes">>;
 
-export const LINE_FIELDS = ["productId", "variationId", "quantity", "toppings", "omitToppings", "extraCheese", "modifiers", "notes"] as const;
+export const LINE_FIELDS = ["productId", "variationId", "quantity", "toppings", "omitToppings", "extraCheese", "cheese", "modifiers", "notes"] as const;
+
+/** The website customizer's cheese step, as a tool takes it. */
+export const CHEESE_CHOICES = ["none", "light", "regular", "extra"] as const;
+export type CheeseChoice = (typeof CHEESE_CHOICES)[number];
+
+/**
+ * How the website writes a light or no-cheese pizza: the option's own name at
+ * the front of the item's special instructions ("No Cheese · cut in squares"),
+ * which is what the kitchen ticket prints. Extra cheese is the structured
+ * `extraCheese` flag instead, priced as a topping. Voice writes them the same
+ * way so the two channels' tickets cannot differ.
+ */
+export const CHEESE_NOTE: Readonly<Record<"none" | "light", string>> = Object.freeze({
+  none: CHEESE_OPTIONS[0],
+  light: CHEESE_OPTIONS[1],
+});
 
 export function readLineChoices(record: Record<string, unknown>, issues: ToolIssue[]): LineChoices {
   const choices: LineChoices = {};
@@ -130,6 +152,18 @@ export function readLineChoices(record: Record<string, unknown>, issues: ToolIss
   if ("extraCheese" in record) {
     if (typeof record.extraCheese !== "boolean") issues.push({ code: "INVALID_INPUT", field: "extraCheese", message: "extraCheese must be true or false." });
     else choices.extraCheese = record.extraCheese;
+  }
+  if ("cheese" in record) {
+    const cheese = record.cheese;
+    if (!CHEESE_CHOICES.includes(cheese as CheeseChoice)) {
+      issues.push({ code: "INVALID_INPUT", field: "cheese", message: "cheese must be none, light, regular or extra." });
+    } else if (choices.extraCheese !== undefined && choices.extraCheese !== (cheese === "extra")) {
+      issues.push({ code: "INVALID_INPUT", field: "cheese", message: "cheese and extraCheese disagree. Send cheese only." });
+    } else {
+      // One choice, two stored fields, exactly as the customizer stores it.
+      choices.extraCheese = cheese === "extra";
+      choices.cheese = cheese === "none" || cheese === "light" ? cheese : null;
+    }
   }
   if ("modifiers" in record) {
     if (!Array.isArray(record.modifiers) || record.modifiers.length > 60) {
@@ -176,8 +210,15 @@ export type RecipeLookup = (productId: string) => string[] | null;
  * names additions and omissions ("a Hawaiian, no ham"), and `validateItems`
  * still sees the full recipe it checks.
  */
+/** The item's special instructions as the website writes them: the cheese choice first, then the note. */
+export function lineInstructions(line: Pick<VoiceCartLine, "cheese" | "notes">): string | null {
+  const cheese = line.cheese === "none" || line.cheese === "light" ? CHEESE_NOTE[line.cheese] : "";
+  return [cheese, line.notes?.trim() ?? ""].filter(Boolean).join(" · ") || null;
+}
+
 export function toOrderItem(line: VoiceCartLine, recipeFor: RecipeLookup): NonNullable<OrderRequest["items"]>[number] {
   const recipe = recipeFor(line.productId);
+  const instructions = lineInstructions(line);
   const toppings = recipe
     ? [
         ...recipe.filter((toppingId) => !line.omitToppings.includes(toppingId)).map((toppingId) => ({ toppingId, placement: "whole" as const })),
@@ -192,22 +233,30 @@ export function toOrderItem(line: VoiceCartLine, recipeFor: RecipeLookup): NonNu
     ...(recipe && line.omitToppings.length ? { omitToppings: line.omitToppings } : {}),
     ...(line.extraCheese ? { extraCheese: true } : {}),
     ...(line.modifiers.length ? { modifiers: line.modifiers } : {}),
-    ...(line.notes ? { specialInstructions: line.notes } : {}),
+    ...(instructions ? { specialInstructions: instructions } : {}),
   };
 }
 
 /**
  * The session's draft as an order request — every field the server's to set.
  * `idempotencyKey` and `expectedAmountDueCents` are added by `place_order` only.
+ * `options` lets a tool price a candidate choice (a code, a tip, a time) before
+ * committing it, through exactly the request it would become.
  */
-export function toOrderRequest(session: VoiceSession, recipeFor: RecipeLookup, cart: VoiceCartLine[] = session.cart): OrderRequest {
+export function toOrderRequest(
+  session: VoiceSession,
+  recipeFor: RecipeLookup,
+  cart: VoiceCartLine[] = session.cart,
+  options: VoiceOrderOptions = session.orderOptions,
+): OrderRequest {
   return {
     fulfilment: session.fulfilment ?? "pickup",
     items: cart.map((line) => toOrderItem(line, recipeFor)),
     customer: { name: session.customerName ?? "", phone: session.customerPhone ?? "" },
-    schedule: { type: "asap" },
+    schedule: options.schedule.type === "scheduled" ? { type: "scheduled", scheduledFor: options.schedule.scheduledFor } : { type: "asap" },
     paymentMethod: "pay_at_store",
-    tip: { type: "none" },
+    tip: options.tip,
+    ...(options.couponCode ? { couponCode: options.couponCode } : {}),
     ...(session.fulfilment === "delivery" && session.deliveryAddress ? { address: session.deliveryAddress } : {}),
   };
 }

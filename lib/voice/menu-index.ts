@@ -224,7 +224,25 @@ const OPTION_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ["non breaded", "Classic (non-breaded)"],
   ["classic", "Classic (non-breaded)"],
   ["plain", "Classic (non-breaded)"],
+  // The pizza's bake & sauce and crust choices, as callers ask for them.
+  ["light sauce", "Easy on the Sauce"],
+  ["easy sauce", "Easy on the Sauce"],
+  ["less sauce", "Easy on the Sauce"],
+  ["light on the sauce", "Easy on the Sauce"],
+  ["more sauce", "Extra Sauce"],
+  ["light bake", "Lightly Done"],
+  ["lightly baked", "Lightly Done"],
+  ["well baked", "Well Done"],
+  ["thin", "Thin Crust"],
+  ["thick", "Thick Crust"],
 ];
+
+/** Words before "cheese" that say how much, mapped onto the customizer's cheese step. */
+const CHEESE_AMOUNT_WORDS: Readonly<Record<string, "none" | "light" | "extra">> = {
+  no: "none", without: "none", hold: "none", minus: "none",
+  light: "light", lite: "light", easy: "light", less: "light", little: "light",
+  extra: "extra", double: "extra", more: "extra",
+};
 
 /** Polite filler a caller wraps an order in. Never evidence of anything. */
 const STOPWORDS = new Set([
@@ -237,6 +255,7 @@ const STOPWORDS = new Set([
   "so", "then", "maybe", "think", "guess", "actually", "really", "oh", "hmm", "how", "about", "on", "side",
   "lemme", "gonna", "gotta", "kinda", "sorta", "umm", "uhh", "er", "erm", "know", "yknow", "sir", "maam", "buddy",
   "bud", "mean", "said", "say", "go", "with", "great", "good", "perfect", "sure", "alright", "right", "now",
+  "only",
 ]);
 
 /** Words that say which way the order goes, recorded and otherwise ignored. */
@@ -367,6 +386,8 @@ type IndexedProduct = {
   /** A count can be read as a quantity of this product: two slices, three pops, two poutines. */
   unit: Noun | "lb" | "item" | null;
   acceptsToppings: boolean;
+  /** The website customizer asks this pizza's cheese (none, light, regular, extra). */
+  cheeseStep: boolean;
   recipeToppingIds: string[];
   options: OptionPhrase[];
   fulfilments: Fulfilment[];
@@ -561,6 +582,8 @@ export function buildMenuIndex(catalog: VoiceCatalog, options: { now?: number } 
       markers,
       unit,
       acceptsToppings: product.productType === "pizza" || sections.some((section) => section.source === "toppings"),
+      // The same test the customizer makes: shown unless switched off.
+      cheeseStep: product.productType === "pizza" && product.configuration.cheeseEnabled !== false,
       recipeToppingIds: Array.isArray(product.configuration.recipeToppingIds) ? (product.configuration.recipeToppingIds as unknown[]).map(String) : [],
       options: optionPhrases(sections),
       fulfilments: [
@@ -733,6 +756,8 @@ export type MenuCandidate = {
     toppings: DetectedTopping[];
     omitToppings: Array<{ toppingId: string; name: string }>;
     extraCheese: boolean;
+    /** The cheese step, when the caller said one: "no cheese", "light cheese", "extra cheese". */
+    cheese: "none" | "light" | "extra" | null;
     options: Array<{ sectionId: string; value: string }>;
   };
 };
@@ -819,8 +844,9 @@ function evaluate(
       if (span.value.ids.length !== 1) continue;
       const toppingId = span.value.ids[0];
       const name = index.toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId;
-      const before = tokens.slice(Math.max(0, span.start - 2), span.start);
-      const after = tokens.slice(span.end, span.end + 3);
+      // "only" says nothing about where a topping goes ("bacon only on the left"), so it is skipped here.
+      const before = tokens.slice(0, span.start).filter((word) => word !== "only").slice(-2);
+      const after = tokens.slice(span.end).filter((word) => word !== "only").slice(0, 3);
       if (before.some((word) => NEGATIONS.has(word))) {
         omitted.push({ toppingId, name });
         continue;
@@ -832,7 +858,27 @@ function evaluate(
       if (!entry.recipeToppingIds.includes(toppingId) || placement !== "whole") detectedToppings.push({ toppingId, name, placement });
     }
   }
-  const extraCheese = isPizza && tokens.some((word, at) => word === "extra" && tokens[at + 1] === "cheese");
+  // How much cheese, for a pizza that has the cheese step. "Feta cheese" is a
+  // topping, not this, so a "cheese" inside a topping name is skipped.
+  let cheese: MenuCandidate["detected"]["cheese"] = null;
+  if (entry.cheeseStep) {
+    const inTopping = new Set(toppingSpans.flatMap((span) => Array.from({ length: span.end - span.start }, (_, offset) => span.start + offset)));
+    tokens.forEach((word, at) => {
+      if (word !== "cheese" || inTopping.has(at)) return;
+      // "easy on the cheese": look past the little words, at most three back.
+      for (let back = at - 1; back >= Math.max(0, at - 3); back -= 1) {
+        const amount = CHEESE_AMOUNT_WORDS[tokens[back]];
+        if (amount) {
+          cheese = amount;
+          explained.add(back);
+          break;
+        }
+        if (!["on", "the", "a", "bit", "of"].includes(tokens[back])) break;
+        explained.add(back);
+      }
+    });
+  }
+  const extraCheese = isPizza && (cheese === "extra" || tokens.some((word, at) => word === "extra" && tokens[at + 1] === "cheese"));
   // "cheese pizza" is the plain pizza; "extra cheese" is an option on one.
   if (isPizza) tokens.forEach((word, at) => word === "cheese" && explained.add(at));
   if (entry.family === "pizza") tokens.forEach((word, at) => BUILD_YOUR_OWN_WORDS.has(word) && explained.add(at));
@@ -1003,7 +1049,7 @@ function evaluate(
     distinctiveMatched,
     sizeResolved,
     quantity,
-    detected: { toppings: detectedToppings, omitToppings: omitted, extraCheese, options: optionMatches.map((match) => ({ sectionId: match.value.sectionId, value: match.value.value })) },
+    detected: { toppings: detectedToppings, omitToppings: omitted, extraCheese, cheese, options: optionMatches.map((match) => ({ sectionId: match.value.sectionId, value: match.value.value })) },
   };
 }
 
@@ -1033,7 +1079,7 @@ function toCandidate(evaluation: Evaluation | Rejection, reason?: MenuCandidate[
     unavailableReason,
     availabilityLabel: entry.availabilityLabel,
     suggestedQuantity: "quantity" in evaluation ? evaluation.quantity : null,
-    detected: "detected" in evaluation ? evaluation.detected : { toppings: [], omitToppings: [], extraCheese: false, options: [] },
+    detected: "detected" in evaluation ? evaluation.detected : { toppings: [], omitToppings: [], extraCheese: false, cheese: null, options: [] },
   };
 }
 

@@ -3,6 +3,8 @@
 **Date:** 17 October 2026 · **Branch inspected:** `release/r1-runway` @ `8b82e0e`
 **Status of this original discovery:** planning snapshot at `8b82e0e`. Subsequent implementation through Phase 4 is described in [ELEVENLABS-VOICE-TOOLS.md](ELEVENLABS-VOICE-TOOLS.md#11-phase-4-staging-bridge), which takes precedence for current routes and configuration. Phase 4 is being released with voice mode off; forwarding, transfer and provider configuration remain deferred.
 
+**Website parity pass (17 October 2026, later, local and not deployed).** Voice now reaches functional parity with the website's ordering flow wherever that is safe: business facts, scheduled orders (including while closed), promo codes, tips and the cheese step, all through `quoteOrder`/`createOrder`. Gift cards and card payment stay unavailable by voice for stated reasons. See [VOICE-WEB-PARITY.md](VOICE-WEB-PARITY.md); it supersedes §15's pilot-only restrictions on codes and tips and §22 Q12's open question on scheduled next-day orders. The production prompt is [VOICE-AGENT-PROMPT.md](VOICE-AGENT-PROMPT.md).
+
 **Revision 2 (17 October 2026, after review).** No implementation was done for this revision.
 
 1. Corrected the WebSocket finding (§1, §2, §7, §16): App Service can host WebSockets; what the app lacks is a tested WebSocket server. Provider scores were re-evaluated.
@@ -801,7 +803,7 @@ Build it in Phase 6. Until then, the ElevenLabs conversation history plus a SQL 
 |---|---|---|
 | **Pilot (Phases 6–7)** | **A. Pickup only, pay at pickup** (`paymentMethod: "pay_at_store"`) | Zero new payment surface. `createOrder` already supports it for non-staff contexts when `payAtStorePickupEnabled`. The restaurant alert already says "COLLECT PAYMENT AT THE STORE" |
 | **Phase 8** | **Delivery, pay at the door** (cash or the card machine the driver carries), exactly as staff phone deliveries work today | **Decision:** the owner must accept pay-on-delivery for AI-taken orders. The web refuses it for strangers on purpose (`createOrder` comment). Mitigations: verified callback number required, value cap, per-number daily cap, and returning-caller history |
-| **Phase 9 (optional)** | **B. SMS payment link** using the existing `createCloverCheckout` (Hosted Checkout `href`) | Blocked until customer SMS is reliable (registered or verified sender). The order sits in `awaiting_payment` with notifications parked until Clover's webhook, and is reaped after 20 min, which makes the voice "your order is in" promise conditional. Better suited to pre-paid scheduled orders |
+| **Phase 9 (optional)** | **B. SMS payment link** using the existing `createCloverCheckout` (Hosted Checkout `href`) | Blocked until customer SMS is reliable (registered or verified sender). The order sits in `awaiting_payment` with notifications parked until Clover's webhook, and is reaped after 20 min, which makes the voice "your order is in" promise conditional. Better suited to pre-paid scheduled orders. Exact flow: VOICE-WEB-PARITY.md §7 |
 | **Not recommended** | **C. Card numbers over the phone** to the LLM, or a DTMF capture flow | PCI DSS scope; Twilio `<Pay>` needs a supported payment connector, and Clover support is UNKNOWN. Never let the LLM hear, transcribe or store PANs |
 
 ---
@@ -1188,7 +1190,7 @@ Each scenario runs in Phase 3 (text simulation, exact expected cart), again by v
 9. **Decision:** dip flavours — model them, or note them as text?
 10. **Decision:** "light or no cheese" on standalone pizzas — keep the free-text prefix, or add a structured option?
 11. Languages: English only at launch? (Any Punjabi, Hindi or Urdu demand?)
-12. After-hours: information only, or also take a message? Scheduled next-day orders?
+12. After-hours: information only, or also take a message? *(Scheduled orders for later are now supported, exactly as the website takes them; VOICE-WEB-PARITY.md §8.)*
 13. Recording and transcript retention period; greeting wording; privacy-page update.
 14. ElevenLabs data residency and retention options, and acceptability under PIPEDA.
 15. Should AI orders auto-print, like till orders, or wait for staff like website orders?

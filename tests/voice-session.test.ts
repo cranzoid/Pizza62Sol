@@ -38,6 +38,7 @@ const {
   loadVoiceSession,
   recordConfirmation,
   recordReview,
+  parseOrderOptions,
   recordToolEvent,
   startDraft,
 } = await import("@/lib/voice/session");
@@ -384,4 +385,34 @@ withDb("tool calls are logged append-only and move the session's counters", asyn
   assert.equal(rows.rows.length, 3);
   assert.equal(rows.rows[0].issue_codes_json, JSON.stringify(["ITEM_UNAVAILABLE"]));
   await assert.rejects(getPool().query("UPDATE voice_call_events SET ok = 1 WHERE id = $1", [rows.rows[0].id]), /append-only/);
+});
+
+test("stored checkout choices are read defensively: anything unreadable is ASAP, no code, no tip", () => {
+  const nothing = { schedule: { type: "asap" }, couponCode: null, tip: { type: "none" } };
+  assert.deepEqual(parseOrderOptions("{}"), nothing, "a row from before the column existed");
+  assert.deepEqual(parseOrderOptions("not json"), nothing);
+  assert.deepEqual(parseOrderOptions(JSON.stringify({ schedule: { type: "scheduled", scheduledFor: "soon" }, tip: { type: "percentage", valueBps: 1.5 }, couponCode: 7 })), nothing);
+  assert.deepEqual(
+    parseOrderOptions(JSON.stringify({ schedule: { type: "scheduled", scheduledFor: 1792078200000 }, couponCode: "THANKS62", tip: { type: "custom", amountCents: 500 } })),
+    { schedule: { type: "scheduled", scheduledFor: 1792078200000 }, couponCode: "THANKS62", tip: { type: "custom", amountCents: 500 } },
+  );
+});
+
+withDb("a change to the checkout choices is a change to the draft: a new version, and the review is gone", async () => {
+  const { session } = await createVoiceSession({ provider: "test", mode: "test" });
+  const draft = await startDraft(session, { fulfilment: "pickup" });
+  assert.ok(draft.ok);
+  const withLine = await applyDraftChange(draft.session, { cart: [line("L1")], nextLineNumber: 2 });
+  assert.ok(withLine.ok);
+  const reviewed = await recordReview(withLine.session, 899);
+  assert.ok(reviewed.ok);
+  const changed = await applyDraftChange(reviewed.session, { options: { ...reviewed.session.orderOptions, tip: { type: "custom", amountCents: 200 } } });
+  assert.ok(changed.ok);
+  assert.equal(changed.session.cartVersion, reviewed.session.cartVersion + 1);
+  assert.equal(changed.session.reviewedVersion, null);
+  assert.equal(changed.session.stage, "building");
+  assert.deepEqual((await loadVoiceSession(session.id))!.orderOptions.tip, { type: "custom", amountCents: 200 });
+  // The stored column holds choices only — never an amount the server computed.
+  const raw = (await getPool().query<{ order_options_json: string }>("SELECT order_options_json FROM voice_calls WHERE id = $1", [session.id])).rows[0];
+  assert.deepEqual(Object.keys(JSON.parse(raw.order_options_json)).sort(), ["couponCode", "schedule", "tip"]);
 });

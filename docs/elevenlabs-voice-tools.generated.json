@@ -1,0 +1,1011 @@
+{
+  "agentId": "agent_8801m53jzznme7ms8vhygeg4ggvh",
+  "branchId": "agtbrch_9701m53k01mbea0acens2x8pma6x",
+  "existingGetStoreStatusId": "tool_2401m53vwa7tfj2vrjdgkwymf9m3",
+  "sourceSha256": {
+    "docs/ELEVENLABS-VOICE-TOOLS.md": "05c0efcf20112e8eb9a821084ed283c224d443d4519418566d295fdf51d65b6e",
+    "lib/voice/tools.ts": "4a71726ad8b2199859b8a788802f06bda1593a712c564d900eea277c52433c10",
+    "lib/voice/cart.ts": "c833d6abbc86a10ee47cbed4b072ba4f345dabc8adb05f3b9bf700e6531d9396",
+    "lib/voice/schedule.ts": "70169a7e4f3d73c78ceab4ab781051c74bef37c18a8a9cf6894e76c919381b60",
+    "app/api/voice/tools/[tool]/route.ts": "02af84ab042cf179d65b88c197d5be1eb5ef0e822f9d64ab853e66565d49e5f2"
+  },
+  "tools": [
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_store_status",
+        "description": "Check whether Pizza 62 is taking orders right now, whether it can take an order for later (even while closed), when last orders are, and whether pickup and delivery are available by phone. Call at the start of every call. If acceptingOrdersNow is false but acceptingScheduledOrders is true, offer to take the order for a later time.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_store_status",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_business_info",
+        "description": "Get Pizza 62's address, phone number, website, opening hours for the week and the next seven days, how pickup and delivery work by phone, payment options and ordering rules, from the restaurant's live settings. Call it whenever the caller asks where we are, how to reach us, when we open or close, or how ordering works. Never answer these from memory.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_business_info",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "search_menu",
+        "description": "Find menu items matching what the caller said, for example \"large pepperoni\" or \"24 honey garlic wings\". Returns real menu ids. Never guess an id; always use one from this tool. If the status is `ambiguous`, ask the caller the `clarify` question. Search one item at a time.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/search_menu",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "The caller's words for one item; required, nonempty, at most 200 characters."
+              },
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              },
+              "category": {
+                "type": "string",
+                "description": "Optional menu category ID to narrow the search. Omit if unknown; never substitute a category display name. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_menu_item",
+        "description": "Get everything needed to configure one menu item: its sizes and prices, recipe, toppings, and every option section with which ones are required and how many choices each allows. Call it before adding anything that has sizes or required choices.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_menu_item",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "productId": {
+                "type": "string",
+                "description": "Product ID returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              },
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              }
+            },
+            "required": [
+              "productId"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_deals",
+        "description": "List the deals and specials available right now (combos, 2-for-1s, pickup specials, time-limited offers) with their current prices, plus any automatic promotions. Call when the caller asks what deals there are.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_deals",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              }
+            },
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_cart",
+        "description": "Look at the order as it stands: lines, totals, customer and address. It changes nothing. Use it when unsure what is in the order or which `lineId` to change.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_cart",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "start_order",
+        "description": "Start the caller's order, with pickup or delivery if they have said. Call once before adding items. Calling it again starts over with an empty order.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/start_order",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              }
+            },
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "reset_order",
+        "description": "Empty the order and start again, keeping pickup or delivery and the caller's name and number. Use when the caller wants to start over.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/reset_order",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "add_item",
+        "description": "Add one item to the order using ids from `search_menu` or `get_menu_item`. Include the size (`variationId`) when the item has sizes, the toppings with their placement, recipe toppings to leave off (`omitToppings`), the cheese choice (`cheese`: none, light, regular or extra) for pizzas, and the choices for each option section (`modifiers`). Never send prices. The server prices the order and returns the new total.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/add_item",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "productId": {
+                "type": "string",
+                "description": "Product ID returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              },
+              "variationId": {
+                "type": "string",
+                "description": "Size/variation ID; omit when no size selection is needed returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              },
+              "quantity": {
+                "type": "integer",
+                "description": "Whole number from 1 to 100; defaults to 1 on add. The server also enforces the product-specific maximum."
+              },
+              "toppings": {
+                "type": "array",
+                "description": "At most 30 toppings. Specialty pizza additions only; recipe toppings are supplied by the server. On update, replaces the whole list; [] clears additions.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "toppingId": {
+                      "type": "string",
+                      "description": "Topping ID returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+                    },
+                    "placement": {
+                      "type": "string",
+                      "description": "Whole pizza, left half or right half. Omit for whole.",
+                      "enum": [
+                        "whole",
+                        "left",
+                        "right"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "toppingId"
+                  ]
+                }
+              },
+              "omitToppings": {
+                "type": "array",
+                "description": "At most 20 recipe topping IDs to leave off a specialty pizza. On update, replaces the whole list; [] clears omissions.",
+                "items": {
+                  "type": "string",
+                  "description": "Recipe topping ID to omit returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+                }
+              },
+              "extraCheese": {
+                "type": "boolean",
+                "description": "Older form of cheese \"extra\". Prefer cheese. Pizza only."
+              },
+              "cheese": {
+                "type": "string",
+                "description": "Pizza cheese, as get_menu_item lists it: none, light, regular or extra. Only for items whose get_menu_item pizza.cheese is not null. Extra is priced by the server as one topping; none and light cost nothing.",
+                "enum": [
+                  "none",
+                  "light",
+                  "regular",
+                  "extra"
+                ]
+              },
+              "modifiers": {
+                "type": "array",
+                "description": "At most 60 option sections. Include all required choices from get_menu_item. On update, replaces the whole modifier list; [] clears it.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Exact option section ID from get_menu_item; required, nonempty and at most 80 characters."
+                    },
+                    "values": {
+                      "type": "array",
+                      "description": "At most 20 selected values for this section. Include placement for topping sections when needed.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Exact option value or topping ID from get_menu_item; at most 80 characters."
+                          },
+                          "placement": {
+                            "type": "string",
+                            "description": "Whole pizza, left half or right half. Omit for whole.",
+                            "enum": [
+                              "whole",
+                              "left",
+                              "right"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "value"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "values"
+                  ]
+                }
+              },
+              "notes": {
+                "type": "string",
+                "description": "Optional kitchen notes, at most 200 characters, such as \"cut into squares\". Never payment/card details, never extra items, never allergy promises, never prices. Cheese goes in cheese, not here. On update, an empty string clears notes."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "productId"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "update_item",
+        "description": "Change one line already in the order: its size, quantity, toppings, halves, options or notes. Only the fields you send change. Use the `lineId` from `add_item` or `get_cart`.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/update_item",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "lineId": {
+                "type": "string",
+                "description": "Exact lineId returned by add_item or get_cart, for example L1. Required; at most 20 characters."
+              },
+              "productId": {
+                "type": "string",
+                "description": "Product ID returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              },
+              "variationId": {
+                "type": "string",
+                "description": "Size/variation ID; omit when no size selection is needed returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+              },
+              "quantity": {
+                "type": "integer",
+                "description": "Whole number from 1 to 100; defaults to 1 on add. The server also enforces the product-specific maximum."
+              },
+              "toppings": {
+                "type": "array",
+                "description": "At most 30 toppings. Specialty pizza additions only; recipe toppings are supplied by the server. On update, replaces the whole list; [] clears additions.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "toppingId": {
+                      "type": "string",
+                      "description": "Topping ID returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+                    },
+                    "placement": {
+                      "type": "string",
+                      "description": "Whole pizza, left half or right half. Omit for whole.",
+                      "enum": [
+                        "whole",
+                        "left",
+                        "right"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "toppingId"
+                  ]
+                }
+              },
+              "omitToppings": {
+                "type": "array",
+                "description": "At most 20 recipe topping IDs to leave off a specialty pizza. On update, replaces the whole list; [] clears omissions.",
+                "items": {
+                  "type": "string",
+                  "description": "Recipe topping ID to omit returned by search_menu or get_menu_item. Use the exact ID; do not invent it. At most 80 characters; lowercase letters, digits and hyphens, beginning with a letter or digit."
+                }
+              },
+              "extraCheese": {
+                "type": "boolean",
+                "description": "Older form of cheese \"extra\". Prefer cheese. Pizza only."
+              },
+              "cheese": {
+                "type": "string",
+                "description": "Pizza cheese, as get_menu_item lists it: none, light, regular or extra. Only for items whose get_menu_item pizza.cheese is not null. Extra is priced by the server as one topping; none and light cost nothing.",
+                "enum": [
+                  "none",
+                  "light",
+                  "regular",
+                  "extra"
+                ]
+              },
+              "modifiers": {
+                "type": "array",
+                "description": "At most 60 option sections. Include all required choices from get_menu_item. On update, replaces the whole modifier list; [] clears it.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Exact option section ID from get_menu_item; required, nonempty and at most 80 characters."
+                    },
+                    "values": {
+                      "type": "array",
+                      "description": "At most 20 selected values for this section. Include placement for topping sections when needed.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Exact option value or topping ID from get_menu_item; at most 80 characters."
+                          },
+                          "placement": {
+                            "type": "string",
+                            "description": "Whole pizza, left half or right half. Omit for whole.",
+                            "enum": [
+                              "whole",
+                              "left",
+                              "right"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "value"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "values"
+                  ]
+                }
+              },
+              "notes": {
+                "type": "string",
+                "description": "Optional kitchen notes, at most 200 characters, such as \"cut into squares\". Never payment/card details, never extra items, never allergy promises, never prices. Cheese goes in cheese, not here. On update, an empty string clears notes."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "lineId"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "remove_item",
+        "description": "Remove one line from the order by its `lineId`.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/remove_item",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "lineId": {
+                "type": "string",
+                "description": "Exact lineId returned by add_item or get_cart, for example L1. Required; at most 20 characters."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "lineId"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "set_fulfilment",
+        "description": "Switch the order between pickup and delivery. Items that exist for the new choice stay. A build-your-own pizza moves to its exact equivalent if one exists. Anything else blocks the switch and must be asked about.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/set_fulfilment",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "fulfilment"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "set_customer",
+        "description": "Save the caller's name and a callback number for the order. Use the caller ID only if the caller agrees, and always read the number back.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/set_customer",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Caller's name; required, 2 to 100 characters."
+              },
+              "phone": {
+                "type": "string",
+                "description": "Callback number spoken by the caller, at most 30 characters before formatting is removed. At least 10 digits; normalized number at most 16 characters. Required unless useCallerId is true and the server has a presented caller number. Read it back."
+              },
+              "useCallerId": {
+                "type": "boolean",
+                "description": "True only if the caller explicitly agrees to use caller ID. Server accepts only a presented caller number; forwarded, withheld or unknown caller ID cannot be used. Read the number back."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "check_delivery_address",
+        "description": "Check whether Pizza 62 delivers to an address, and whether the order meets the delivery minimum. Send only the address the caller gave.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/check_delivery_address",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "line1": {
+                "type": "string",
+                "description": "Required street number and name; nonempty, at most 160 characters."
+              },
+              "unit": {
+                "type": "string",
+                "description": "Optional unit/apartment; at most 40 characters."
+              },
+              "city": {
+                "type": "string",
+                "description": "Optional city; defaults to Hamilton. At most 80 characters."
+              },
+              "province": {
+                "type": "string",
+                "description": "Optional province; defaults to ON. At most 2 characters."
+              },
+              "postalCode": {
+                "type": "string",
+                "description": "Required postal code; nonempty, at most 10 characters."
+              },
+              "instructions": {
+                "type": "string",
+                "description": "Optional delivery instructions for the driver, such as \"call when you arrive\"; at most 200 characters. To change them, call this again with the same address."
+              }
+            },
+            "required": [
+              "line1",
+              "postalCode"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "get_order_slots",
+        "description": "Find out when an order can be for, without changing the order: whether as-soon-as-possible is available now, the earliest time, and the times on a day the caller names. Use it when the caller asks what times are available or when the earliest is. Times come from the same slots the website's checkout offers.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/get_order_slots",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "fulfilment": {
+                "type": "string",
+                "description": "Pickup or delivery. Delivery by phone is accepted only when enabled by the restaurant.",
+                "enum": [
+                  "pickup",
+                  "delivery"
+                ]
+              },
+              "day": {
+                "type": "string",
+                "description": "The day the caller named: \"today\", \"tomorrow\", a weekday such as \"friday\", or a date as YYYY-MM-DD. At most 40 characters. Never convert it to a timestamp; the server works out the date in Hamilton time."
+              }
+            },
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "set_schedule",
+        "description": "Set when the order is for: as soon as possible, or a later day and time the caller names, such as tomorrow at 11:30 or 5:45 tonight. Pass the day and time as the caller said them; never work out a date or timestamp yourself. If the time is not available the server says why and offers the nearest times.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/set_schedule",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "when": {
+                "type": "string",
+                "description": "\"asap\" for as soon as possible, or \"scheduled\" for a later time the caller named.",
+                "enum": [
+                  "asap",
+                  "scheduled"
+                ]
+              },
+              "day": {
+                "type": "string",
+                "description": "The day the caller named: \"today\", \"tomorrow\", a weekday such as \"friday\", or a date as YYYY-MM-DD. At most 40 characters. Never convert it to a timestamp; the server works out the date in Hamilton time."
+              },
+              "time": {
+                "type": "string",
+                "description": "Required when scheduled: the local clock time the caller named, as 24-hour HH:MM (17:45 for 5:45 PM). At most 20 characters. Times are on a 15-minute grid; the server refuses others and offers the nearest."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "when"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "apply_coupon",
+        "description": "Apply a promo code the caller has. Send only the code, as the caller says or spells it. The server decides whether it is valid and what it takes off; read its answer. Never say what a code is worth before the server answers, and never use this for a gift card.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/apply_coupon",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "The promo code exactly as the caller says or spells it; at most 40 characters. Never a discount amount and never a gift card."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "code"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "remove_coupon",
+        "description": "Take the promo code off the order, for example when the caller changes their mind or the server says the code is not valid.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/remove_coupon",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "set_tip",
+        "description": "Add, change or remove a tip, only when the caller offers one. Use type none for no tip, percentage with one of the restaurant's preset percentages (10, 15 or 18), or custom with the dollar amount the caller names. Never suggest an amount and never calculate it; the server prices the tip and returns the new total.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/set_tip",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "none, percentage (one of the restaurant's preset percentages) or custom (a dollar amount the caller names).",
+                "enum": [
+                  "none",
+                  "percentage",
+                  "custom"
+                ]
+              },
+              "percent": {
+                "type": "integer",
+                "description": "Whole-number percentage the caller asked for, when type is percentage; must be a preset such as 10, 15 or 18."
+              },
+              "amount": {
+                "type": "string",
+                "description": "Dollar amount the caller named, when type is custom, such as \"5\" or \"5.50\". Never cents, never computed by you."
+              },
+              "expectedCartVersion": {
+                "type": "integer",
+                "description": "Optional nonnegative safe integer cartVersion from the last response. Omit if unavailable; a stale version is refused with CART_CHANGED."
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "review_order",
+        "description": "When the caller has finished ordering, get the official read-back of the order. Read the returned `say` to the caller word for word. Do not summarize the order yourself.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/review_order",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "confirm_order",
+        "description": "Record that the caller said yes to the read-back just given. Pass the `cartVersion` from `review_order` and the caller's words. Only call it after a clear yes to the whole read-back.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/confirm_order",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "cartVersion": {
+                "type": "integer",
+                "description": "Required safe integer cartVersion returned by review_order, unchanged through confirm_order and place_order. Never guess a version."
+              },
+              "utterance": {
+                "type": "string",
+                "description": "Caller's explicit confirmation words, at most 300 characters. Only call after a clear yes to the complete review_order read-back."
+              }
+            },
+            "required": [
+              "cartVersion"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "tool_config": {
+        "type": "webhook",
+        "name": "place_order",
+        "description": "Place the confirmed order. Pass the same `cartVersion` the caller confirmed. If this times out or fails, call it again with the same `cartVersion`: it never places a second order. Read the order number and time from the response.",
+        "api_schema": {
+          "url": "https://pizza62.ca/api/voice/tools/place_order",
+          "method": "POST",
+          "request_headers": {
+            "Authorization": {
+              "secret_id": "5OcBS12S6S6HJ5LeaMo8"
+            },
+            "X-Voice-Session": {
+              "variable_name": "secret__voice_session"
+            },
+            "Content-Type": "application/json"
+          },
+          "request_body_schema": {
+            "type": "object",
+            "properties": {
+              "cartVersion": {
+                "type": "integer",
+                "description": "Required safe integer cartVersion returned by review_order, unchanged through confirm_order and place_order. Never guess a version."
+              }
+            },
+            "required": [
+              "cartVersion"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

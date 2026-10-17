@@ -11,6 +11,9 @@
  * - **No tool accepts money.** Prices, subtotals, tax, fees, free delivery,
  *   discounts, the channel and idempotency keys are refused by name
  *   (lib/voice/cart.ts). Every amount comes from `quoteOrder` / `createOrder`.
+ *   A promo code is a string the server checks; a tip is a preset percentage
+ *   or a dollar amount the server prices; an order time is a day and a clock
+ *   time the server matches to the website's own slots.
  * - **Only real menu ids.** `search_menu` and `get_menu_item` read the public
  *   catalogue; `add_item` checks the product is in it, then `quoteOrder` with
  *   the AI policy validates it exactly as the website would.
@@ -37,6 +40,7 @@ import {
 } from "@/lib/domain";
 import { closureMessage, loadActiveClosures } from "@/lib/closures";
 import { logFailure } from "@/lib/log";
+import { publicBaseUrl } from "@/lib/notifications/config";
 import { aiPhoneOrderContext } from "@/lib/order-policy";
 import {
   checkCartDeliveryEligibility,
@@ -48,6 +52,7 @@ import {
 } from "@/lib/order-service";
 import {
   assertOnlyFields,
+  CHEESE_CHOICES,
   LINE_FIELDS,
   readId,
   readLineChoices,
@@ -56,6 +61,19 @@ import {
   ToolInputError,
   type ToolIssue,
 } from "@/lib/voice/cart";
+import {
+  clockLabel,
+  dayLabel,
+  localDate,
+  minuteLabel,
+  orderSlots,
+  parseDay,
+  resolveSlot,
+  SCHEDULE_INTERVAL_MINUTES,
+  spokenWhen,
+  upcomingDays,
+  type SlotResolution,
+} from "@/lib/voice/schedule";
 import {
   VOICE_CONFIRMATION_TTL_MS,
   VOICE_ESCALATE_AFTER_FAILURES,
@@ -90,6 +108,7 @@ import {
   type DraftChange,
   type TransitionResult,
   type VoiceCartLine,
+  type VoiceOrderOptions,
   type VoiceSession,
 } from "@/lib/voice/session";
 
@@ -114,6 +133,12 @@ type Outcome = {
   say?: string;
   escalate?: boolean;
   escalationReason?: string;
+  /**
+   * A refusal that is an ordinary answer — "we can't do 5:40, would 5:45 work?"
+   * — rather than something going wrong. Logged as not ok, but it does not
+   * count towards the consecutive failures that hand the caller to staff.
+   */
+  soft?: boolean;
   /** The session after the tool, when it changed. */
   session?: VoiceSession;
 };
@@ -206,11 +231,73 @@ async function aiContext(session: VoiceSession) {
 
 type Priced = { quote: OrderQuote | null; items: QuotedItemDetail[]; itemsValid: boolean };
 
-/** The draft (or a candidate cart) priced by the server, as the AI policy sees it. */
-async function priceCart(session: VoiceSession, catalog: VoiceCatalog, cart: VoiceCartLine[] = session.cart): Promise<Priced> {
+/** The draft (or a candidate cart, or candidate checkout choices) priced by the server, as the AI policy sees it. */
+async function priceCart(
+  session: VoiceSession,
+  catalog: VoiceCatalog,
+  cart: VoiceCartLine[] = session.cart,
+  options: VoiceOrderOptions = session.orderOptions,
+): Promise<Priced> {
   if (!cart.length) return { quote: null, items: [], itemsValid: true };
-  return quoteOrderDetailed(toOrderRequest({ ...session, fulfilment: session.fulfilment ?? "pickup" }, recipeLookup(catalog), cart), await aiContext(session));
+  return quoteOrderDetailed(toOrderRequest({ ...session, fulfilment: session.fulfilment ?? "pickup" }, recipeLookup(catalog), cart, options), await aiContext(session));
 }
+
+// --- the store's settings, as the website reads them --------------------------------------
+
+type OrderingSettings = {
+  enabled: boolean;
+  paused: boolean;
+  pauseMessage: string;
+  pickupEnabled: boolean;
+  deliveryEnabled: boolean;
+  payAtStorePickupEnabled?: boolean;
+  pickupEstimateMinutes: number;
+  deliveryEstimateMinutes: number | null;
+  lastOrderCutoffMinutes?: number;
+};
+
+type StoreSettings = {
+  ordering: OrderingSettings;
+  hours: WeeklyHours;
+  closures: Awaited<ReturnType<typeof loadActiveClosures>>;
+  pilot: ReadonlySet<Fulfilment>;
+};
+
+async function storeSettings(now: number): Promise<StoreSettings> {
+  const [ordering, hours, closures, pilot] = await Promise.all([
+    getSetting<OrderingSettings>("ordering"),
+    getSetting<WeeklyHours>("hours"),
+    loadActiveClosures(now),
+    voicePilotFulfilments(),
+  ]);
+  return { ordering, hours, closures, pilot };
+}
+
+/** The lead time `quoteOrder` and `createOrder` apply to this fulfilment. */
+const leadMinutes = (ordering: OrderingSettings, fulfilment: Fulfilment) =>
+  fulfilment === "delivery" ? ordering.deliveryEstimateMinutes ?? 30 : ordering.pickupEstimateMinutes;
+
+const orderingOn = (ordering: OrderingSettings) => ordering.enabled && !ordering.paused;
+const fulfilmentOn = (settings: StoreSettings, fulfilment: Fulfilment) =>
+  orderingOn(settings.ordering) &&
+  (fulfilment === "delivery" ? settings.ordering.deliveryEnabled && settings.pilot.has("delivery") : settings.ordering.pickupEnabled);
+
+/** Whether an ASAP order of this fulfilment would be accepted right now: the website's own test. */
+function asapAvailable(settings: StoreSettings, fulfilment: Fulfilment, now: number): boolean {
+  return fulfilmentOn(settings, fulfilment) && storeStatus(now, settings.hours, TZ, {
+    closures: settings.closures,
+    fulfilment,
+    lastOrderCutoffMinutes: Number(settings.ordering.lastOrderCutoffMinutes ?? 0),
+  }).open;
+}
+
+/** The times this fulfilment can be scheduled for, as the checkout offers them, less closures. */
+function slotsFor(settings: StoreSettings, fulfilment: Fulfilment, now: number): number[] {
+  if (!fulfilmentOn(settings, fulfilment)) return [];
+  return orderSlots({ now, hours: settings.hours, closures: settings.closures, fulfilment, leadMinutes: leadMinutes(settings.ordering, fulfilment) });
+}
+
+const slotView = (slot: number, now: number) => ({ at: slot, date: localDate(slot), time: clockLabel(slot), when: spokenWhen(slot, now) });
 
 function quoteIssues(quote: OrderQuote | null, cart: VoiceCartLine[]): ToolIssue[] {
   return (quote?.issues ?? []).map((issue) => ({
@@ -228,20 +315,38 @@ function totalsView(quote: OrderQuote | null) {
     discountCents: totals.discountCents,
     deliveryFeeCents: totals.deliveryFeeCents,
     taxCents: totals.taxCents,
+    tipCents: totals.tipCents,
     totalCents: totals.totalCents,
     amountDueCents: totals.amountDueCents,
     spokenTotal: formatMoney(totals.amountDueCents),
   };
 }
 
-function cartView(session: VoiceSession, priced: Priced, catalog: VoiceCatalog) {
+/** The caller's checkout choices as the agent may read them: the time, the code and what it did, the tip. */
+function optionsView(session: VoiceSession, quote: OrderQuote | null, now: number) {
+  const { schedule, couponCode, tip } = session.orderOptions;
+  return {
+    schedule: schedule.type === "scheduled" ? { type: "scheduled" as const, ...slotView(schedule.scheduledFor, now) } : { type: "asap" as const },
+    coupon: quote?.coupon
+      ? { code: quote.coupon.code, status: quote.coupon.status, message: quote.coupon.message }
+      : couponCode
+        ? { code: couponCode, status: "unpriced" as const, message: null }
+        : null,
+    tip,
+    appliedPromotions: (quote?.appliedPromotions ?? []).map((promotion) => ({ name: promotion.name, discountCents: promotion.discountCents })),
+  };
+}
+
+function cartView(session: VoiceSession, priced: Priced, catalog: VoiceCatalog, now: number) {
   return {
     cartVersion: session.cartVersion,
     stage: session.stage,
     fulfilment: session.fulfilment,
     customer: session.customerName ? { name: session.customerName, phone: session.customerPhone ? spokenPhone(session.customerPhone) : null, phoneSource: session.customerPhoneSource } : null,
     deliveryAddress: addressLine(session.deliveryAddress),
+    deliveryInstructions: session.deliveryAddress?.instructions ?? null,
     lines: describeLines(session.cart, priced.items, toppingNamesOf(catalog)),
+    ...optionsView(session, priced.quote, now),
     totals: totalsView(priced.quote),
     issues: quoteIssues(priced.quote, session.cart),
   };
@@ -252,6 +357,17 @@ function catalogProduct(catalog: VoiceCatalog, index: MenuIndex, productId: stri
   return catalog.products.find((product) => product.id === productId) ?? catalog.products.find((product) => product.id === id) ?? null;
 }
 
+/** Whether the website asks this item's cheese: pizzas, unless the owner switched the step off. */
+function hasCheeseStep(product: VoiceCatalogProduct): boolean {
+  return product.productType === "pizza" && product.configuration.cheeseEnabled !== false;
+}
+
+/** A cheese choice sent for an item the website offers none on is refused rather than dropped. */
+function cheeseRefusal(product: VoiceCatalogProduct, args: Record<string, unknown>): Outcome | null {
+  if (args.cheese === undefined || hasCheeseStep(product)) return null;
+  return refuse("CHEESE_NOT_OFFERED", `${product.name} doesn't have a cheese choice.`);
+}
+
 /** A line's topping units as the menu counts them: halves are half, chicken counts double. */
 function toppingUnitsOf(line: VoiceCartLine): number {
   return line.toppings.reduce((sum, topping) => sum + toppingWeight(topping.toppingId) * (topping.placement === "whole" ? 1 : 0.5), 0);
@@ -260,49 +376,159 @@ function toppingUnitsOf(line: VoiceCartLine): number {
 // --- information tools --------------------------------------------------------------------
 
 async function getStoreStatus(context: Context): Promise<Outcome> {
-  const [ordering, hours, closures, pilot] = await Promise.all([
-    getSetting<{ enabled: boolean; paused: boolean; pauseMessage: string; pickupEnabled: boolean; deliveryEnabled: boolean; pickupEstimateMinutes: number; deliveryEstimateMinutes: number | null; lastOrderCutoffMinutes?: number }>("ordering"),
-    getSetting<WeeklyHours>("hours"),
-    loadActiveClosures(context.now),
-    voicePilotFulfilments(),
-  ]);
+  const settings = await storeSettings(context.now);
+  const { ordering, hours, closures, pilot } = settings;
   const cutoff = Number(ordering.lastOrderCutoffMinutes ?? 0);
   const accepting = (fulfilment: Fulfilment) => storeStatus(context.now, hours, TZ, { closures, fulfilment, lastOrderCutoffMinutes: cutoff });
   const pickup = accepting("pickup");
   const delivery = accepting("delivery");
   const doors = storeStatus(context.now, hours, TZ, { closures });
-  const orderingOn = ordering.enabled && !ordering.paused;
-  const pickupNow = orderingOn && ordering.pickupEnabled && pickup.open;
-  const deliveryNow = orderingOn && ordering.deliveryEnabled && delivery.open && pilot.has("delivery");
+  const on = orderingOn(ordering);
+  const pickupNow = on && ordering.pickupEnabled && pickup.open;
+  const deliveryNow = on && ordering.deliveryEnabled && delivery.open && pilot.has("delivery");
   const open = isStoreOpenAt(context.now, hours, TZ) && !doors.closure;
   const closure = pickup.closure ?? delivery.closure;
+  // Orders for later, exactly as the website takes them while the store is shut.
+  const pickupSlots = slotsFor(settings, "pickup", context.now);
+  const deliverySlots = slotsFor(settings, "delivery", context.now);
   const data = {
     acceptingOrdersNow: pickupNow || deliveryNow,
+    acceptingScheduledOrders: pickupSlots.length > 0 || deliverySlots.length > 0,
     open,
     lastOrdersAt: pickup.acceptingUntil ? clock(pickup.acceptingUntil) : null,
     asapCutoffPassed: open && !pickup.open && !closure,
     closesAt: open && doors.changesAt ? clock(doors.changesAt) : null,
-    nextOpenAt: !open && doors.changesAt ? new Date(doors.changesAt).toLocaleString("en-CA", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone: TZ }) : null,
+    // "tomorrow at 11:00 AM": en-CA's own "Thursday 11:00 a.m." read as a doubled full stop mid-sentence.
+    nextOpenAt: !open && doors.changesAt ? spokenWhen(doors.changesAt, context.now) : null,
     paused: ordering.paused || !ordering.enabled,
     pauseMessage: ordering.paused || !ordering.enabled ? ordering.pauseMessage : null,
     closureMessage: closure ? closureMessage(closure) : null,
-    pickup: { enabled: ordering.pickupEnabled, acceptingNow: pickupNow, estimateMinutes: ordering.pickupEstimateMinutes },
+    pickup: {
+      enabled: ordering.pickupEnabled,
+      acceptingNow: pickupNow,
+      estimateMinutes: ordering.pickupEstimateMinutes,
+      earliestScheduled: pickupSlots.length ? slotView(pickupSlots[0], context.now) : null,
+    },
     delivery: {
       enabled: ordering.deliveryEnabled,
       availableByPhone: pilot.has("delivery"),
       acceptingNow: deliveryNow,
       estimateMinutes: ordering.deliveryEstimateMinutes ?? 30,
+      earliestScheduled: deliverySlots.length ? slotView(deliverySlots[0], context.now) : null,
+    },
+    scheduling: { intervalMinutes: SCHEDULE_INTERVAL_MINUTES, latest: pickupSlots.length ? slotView(pickupSlots[pickupSlots.length - 1], context.now) : null },
+  };
+  const later = pickupSlots.length ? ` I can take a pickup order for later; the earliest time is ${spokenWhen(pickupSlots[0], context.now)}.` : "";
+  const say = !on
+    ? ordering.pauseMessage
+    : pickupNow
+      ? `We're taking orders until ${data.lastOrdersAt}. Pickup takes about ${ordering.pickupEstimateMinutes} minutes.${pilot.has("delivery") ? "" : " By phone we can take pickup orders only."}`
+      : closure
+        ? `${closureMessage(closure)}${later}`
+        : open
+          ? `Last orders have gone in for tonight.${later}`
+          : `We're closed right now${data.nextOpenAt ? `; we open ${data.nextOpenAt}` : ""}.${later}`;
+  return { ok: true, data, say };
+}
+
+/** "pizza62.ca" from the configured public origin; never an internal hostname. */
+function websiteName(base: string | null): string | null {
+  if (!base) return null;
+  try {
+    const host = new URL(base).hostname.replace(/^www\./, "");
+    return host === "localhost" || host.endsWith(".azurewebsites.net") ? null : host;
+  } catch {
+    return null;
+  }
+}
+
+/** "55 Parkdale Ave N, Hamilton, ON" as a person says it. Display text is kept as stored. */
+function spokenAddress(address: string): string {
+  const words: Record<string, string> = {
+    Ave: "Avenue", St: "Street", Rd: "Road", Blvd: "Boulevard", Dr: "Drive", Hwy: "Highway",
+    N: "North", S: "South", E: "East", W: "West", ON: "Ontario",
+  };
+  return address.replace(/\b(Ave|St|Rd|Blvd|Dr|Hwy|N|S|E|W|ON)\b\.?/g, (word: string) => words[word.replace(".", "")] ?? word);
+}
+
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const WEEKDAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * The restaurant's own facts — where it is, how to reach it, when it is open,
+ * how ordering works — read from the same settings the website renders. Nothing
+ * here is written into a prompt, so a change in Admin → Settings is the answer
+ * the next caller gets.
+ */
+async function getBusinessInfo(context: Context): Promise<Outcome> {
+  const [business, delivery, taxTips, settings, base] = await Promise.all([
+    getSetting<{ name?: string; phone?: string; address?: string }>("business"),
+    getSetting<{ radiusKm: number; feeCents: number; minimumCents: number }>("delivery"),
+    getSetting<{ tippingEnabled?: boolean }>("taxAndTips"),
+    storeSettings(context.now),
+    publicBaseUrl(),
+  ]);
+  const { ordering, hours, closures, pilot } = settings;
+  const cutoff = Number(ordering.lastOrderCutoffMinutes ?? 0);
+  const days = upcomingDays({ now: context.now, hours, closures, lastOrderCutoffMinutes: cutoff, closureMessage: (closure) => closureMessage(closure) });
+  const website = websiteName(base);
+  const name = business.name ?? "Pizza 62";
+  const phone = business.phone ? spokenPhone(business.phone) : null;
+  const deliveryByPhone = ordering.deliveryEnabled && pilot.has("delivery");
+  const data = {
+    name,
+    address: business.address ?? null,
+    addressSpoken: business.address ? spokenAddress(business.address) : null,
+    phone,
+    website,
+    timeZone: TZ,
+    weeklyHours: WEEK_ORDER.map((weekday) => {
+      const entry = hours.find((day) => day.weekday === weekday);
+      return { day: WEEKDAY[weekday], open: Boolean(entry), opensAt: entry ? minuteLabel(entry.openMinute) : null, closesAt: entry ? minuteLabel(entry.closeMinute) : null };
+    }),
+    upcomingDays: days,
+    pickup: {
+      offered: ordering.pickupEnabled,
+      byPhone: ordering.pickupEnabled,
+      estimateMinutes: ordering.pickupEstimateMinutes,
+      payment: ordering.payAtStorePickupEnabled === false
+        ? "Pickup orders are paid online on our website."
+        : "Pay at the store when you pick up: cash, debit or credit card.",
+    },
+    delivery: {
+      offered: ordering.deliveryEnabled,
+      byPhone: deliveryByPhone,
+      estimateMinutes: ordering.deliveryEstimateMinutes ?? 30,
+      area: "Hamilton, Ontario",
+      radiusKm: delivery.radiusKm,
+      feeCents: delivery.feeCents,
+      minimumCents: delivery.minimumCents,
+      payment: deliveryByPhone
+        ? "By phone, delivery orders are paid to the driver at the door. On our website they are paid online by card."
+        : "Delivery orders are placed and paid online by card on our website.",
+    },
+    ordering: {
+      paused: !orderingOn(ordering),
+      pauseMessage: orderingOn(ordering) ? null : ordering.pauseMessage,
+      lastOrderCutoffMinutes: cutoff,
+      scheduleIntervalMinutes: SCHEDULE_INTERVAL_MINUTES,
+      promoCodesByPhone: true,
+      giftCardsByPhone: false,
+      cardPaymentByPhone: false,
+      tipsByPhone: Boolean(taxTips.tippingEnabled),
     },
   };
-  const say = !orderingOn
-    ? ordering.pauseMessage
-    : closure
-      ? closureMessage(closure)
-      : pickupNow
-        ? `We're taking orders until ${data.lastOrdersAt}. Pickup takes about ${ordering.pickupEstimateMinutes} minutes.${pilot.has("delivery") ? "" : " By phone we can take pickup orders only."}`
-        : open
-          ? "Last orders have gone in for tonight."
-          : `We're closed right now${data.nextOpenAt ? `; we open ${data.nextOpenAt}` : ""}.`;
+  const today = days[0];
+  const todaySay = !today
+    ? ""
+    : today.closed || !today.opensAt
+      ? today.closureMessage ?? "We're closed today."
+      : `Today we're open from ${today.opensAt} to ${today.closesAt}.`;
+  const say = [
+    data.addressSpoken ? `${name} is at ${data.addressSpoken}.` : null,
+    phone ? `Our phone number is ${phone}${website ? ` and our website is ${website}` : ""}.` : website ? `Our website is ${website}.` : null,
+    todaySay || null,
+  ].filter(Boolean).join(" ");
   return { ok: true, data, say };
 }
 
@@ -369,7 +595,14 @@ async function getMenuItem(context: Context, args: Record<string, unknown>): Pro
           requiresIncludedToppings: Boolean(config.requireIncludedToppings),
           halfToppings: "A topping can be on the whole pizza, the left half or the right half. A half counts as half a topping.",
           chicken: "Real Chicken counts as two toppings.",
-          extraCheese: "extraCheese adds extra cheese, charged as one extra topping. Light or no cheese goes in notes.",
+          // The website customizer's cheese step, offered where it offers it.
+          cheese: hasCheeseStep(product)
+            ? {
+                options: [...CHEESE_CHOICES],
+                default: "regular",
+                note: "Send cheese as none, light, regular or extra. Extra cheese is charged as one extra topping at this size's rate; none and light cost nothing.",
+              }
+            : null,
           toppings: catalog.toppings.map((topping) => ({ toppingId: topping.id, name: topping.name })),
         }
       : null,
@@ -447,7 +680,7 @@ async function getDeals(context: Context, args: Record<string, unknown>): Promis
 
 async function getCart(context: Context): Promise<Outcome> {
   const catalog = await context.catalog();
-  return { ok: true, data: cartView(context.session, await priceCart(context.session, catalog), catalog) };
+  return { ok: true, data: cartView(context.session, await priceCart(context.session, catalog), catalog, context.now) };
 }
 
 // --- building the order ---------------------------------------------------------------------
@@ -460,7 +693,7 @@ async function startOrder(context: Context, args: Record<string, unknown>, reset
     return refuse("VOICE_DELIVERY_UNAVAILABLE", "By phone we can take pickup orders only. Delivery orders can be placed on our website.");
   }
   if (context.session.stage === "placed") return refuse("ORDER_ALREADY_PLACED", "This order has already been placed. Changes to it go to the restaurant staff.");
-  const result = await startDraft(context.session, { fulfilment, now: context.now });
+  const result = await startDraft(context.session, { fulfilment, keepSchedule: reset, now: context.now });
   if (!result.ok) return failedTransition(result);
   return {
     ok: true,
@@ -510,7 +743,7 @@ async function commitCart(context: Context, catalog: VoiceCatalog, change: Draft
   const result = await applyDraftChange(context.session, change, { expectedVersion: version, now: context.now });
   if (!result.ok) return failedTransition(result);
   const priced = await priceCart(result.session, catalog);
-  const view = cartView(result.session, priced, catalog);
+  const view = cartView(result.session, priced, catalog, context.now);
   return { ok: true, session: result.session, data: { ...extra, ...view }, say: say ?? (view.totals ? `Your total so far is ${view.totals.spokenTotal}.` : undefined) };
 }
 
@@ -528,6 +761,8 @@ async function addItem(context: Context, args: Record<string, unknown>): Promise
   if (!product) return refuse("PRODUCT_NOT_FOUND", "That isn't on the menu. Use search_menu to find the item.");
   const variation = resolveVariation(product, choices.variationId);
   if (variation.issue) return { ok: false, issues: [variation.issue], say: variation.issue.message };
+  const noCheese = cheeseRefusal(product, args);
+  if (noCheese) return noCheese;
   const line: VoiceCartLine = {
     lineId: `L${context.session.nextLineNumber}`,
     productId: product.id,
@@ -536,6 +771,7 @@ async function addItem(context: Context, args: Record<string, unknown>): Promise
     toppings: choices.toppings ?? [],
     omitToppings: choices.omitToppings ?? [],
     extraCheese: choices.extraCheese ?? false,
+    cheese: choices.cheese ?? null,
     modifiers: choices.modifiers ?? [],
     notes: choices.notes ?? null,
   };
@@ -562,6 +798,8 @@ async function updateItem(context: Context, args: Record<string, unknown>): Prom
   if (!product) return refuse("PRODUCT_NOT_FOUND", "That isn't on the menu. Use search_menu to find the item.");
   const variation = resolveVariation(product, choices.variationId !== undefined ? choices.variationId : productChanged ? null : current.variationId);
   if (variation.issue) return { ok: false, issues: [{ ...variation.issue, lineId }], say: variation.issue.message };
+  const noCheese = cheeseRefusal(product, args);
+  if (noCheese) return noCheese;
   const updated: VoiceCartLine = {
     ...current,
     productId: product.id,
@@ -570,6 +808,8 @@ async function updateItem(context: Context, args: Record<string, unknown>): Prom
     toppings: choices.toppings ?? current.toppings,
     omitToppings: choices.omitToppings ?? (productChanged ? [] : current.omitToppings),
     extraCheese: choices.extraCheese ?? current.extraCheese,
+    // A product without the cheese step cannot keep a light/no-cheese choice from the one before.
+    cheese: choices.cheese !== undefined ? choices.cheese : hasCheeseStep(product) ? current.cheese ?? null : null,
     modifiers: choices.modifiers ?? current.modifiers,
     notes: choices.notes !== undefined ? choices.notes : current.notes,
   };
@@ -727,6 +967,248 @@ async function checkDeliveryAddress(context: Context, args: Record<string, unkno
   return { ok: true, session: stored.session, data: { ...data, stored: true, cartVersion: stored.session.cartVersion }, say };
 }
 
+// --- when, promo code, tip ------------------------------------------------------------------
+
+/** The sentence for a time that is not one of the slots, with the nearest that are. */
+function slotRefusal(resolution: Extract<SlotResolution, { ok: false }>, fulfilment: Fulfilment, now: number): Outcome {
+  const kind = fulfilment === "delivery" ? "delivery" : "pickup";
+  const options = resolution.suggestions.map((slot) => spokenWhen(slot, now));
+  const earliest = options[0] ? ` The earliest ${kind} time is ${options[0]}.` : "";
+  const day = resolution.date ? dayLabel(resolution.date, now) : null;
+  const message = {
+    invalid_day: "Which day would you like it: today, tomorrow, or a day of the week?",
+    invalid_time: "What time would you like it?",
+    past: `That time has already passed.${earliest}`,
+    too_soon: `That's sooner than we can have a ${kind} order ready.${earliest}`,
+    beyond_horizon: `We can't schedule that far ahead yet.${options[0] ? ` The latest ${kind} time we can book right now is ${options[0]}.` : ""}`,
+    closure: `${resolution.closure ? closureMessage(resolution.closure) : "We're closed then."}${options.length ? ` Would ${options.join(" or ")} work?` : ""}`,
+    closed_that_day: `We're closed ${day ?? "that day"}.${options[0] ? ` The next ${kind} time is ${options[0]}.` : ""}`,
+    outside_hours: day && resolution.suggestions.length === 2 && resolution.suggestions.every((slot) => localDate(slot) === resolution.date)
+      ? `${day[0].toUpperCase()}${day.slice(1)} we take ${kind} orders from ${clockLabel(resolution.suggestions[0])} to ${clockLabel(resolution.suggestions[1])}.`
+      : `We're not open then.${earliest}`,
+    off_grid: `We schedule orders in ${SCHEDULE_INTERVAL_MINUTES}-minute steps.${options.length ? ` Would ${options.join(" or ")} work?` : ""}`,
+  }[resolution.reason];
+  const code = resolution.reason === "invalid_day" || resolution.reason === "invalid_time" ? "INVALID_INPUT" : "TIME_UNAVAILABLE";
+  return {
+    ok: false,
+    soft: true,
+    issues: [{ code, message, ...(code === "INVALID_INPUT" ? { field: resolution.reason === "invalid_day" ? "day" : "time" } : {}) }],
+    data: { reason: resolution.reason, suggestions: resolution.suggestions.map((slot) => slotView(slot, now)) },
+    say: message,
+  };
+}
+
+/**
+ * When the order can be for, without changing anything.
+ *
+ * ASAP when the store is taking orders now; otherwise, and always for later,
+ * the slots the website's checkout would offer for this fulfilment.
+ */
+async function getOrderSlots(context: Context, args: Record<string, unknown>): Promise<Outcome> {
+  const issues: ToolIssue[] = [];
+  const fulfilment = readFulfilment(args.fulfilment, issues) ?? context.session.fulfilment ?? "pickup";
+  const dayText = readText(args.day, "day", issues, { max: 40 });
+  if (issues.length) return { ok: false, issues, say: issues[0].message };
+  const settings = await storeSettings(context.now);
+  if (fulfilment === "delivery" && !settings.pilot.has("delivery")) {
+    return refuse("VOICE_DELIVERY_UNAVAILABLE", "By phone we can take pickup orders only. Delivery orders can be placed on our website.");
+  }
+  if (!orderingOn(settings.ordering)) return refuse("ORDERING_PAUSED", settings.ordering.pauseMessage);
+  const date = dayText ? parseDay(dayText, context.now) : null;
+  if (dayText && !date) {
+    return { ok: false, soft: true, issues: [{ code: "INVALID_INPUT", field: "day", message: "Which day would you like it: today, tomorrow, or a day of the week?" }], say: "Which day would you like it: today, tomorrow, or a day of the week?" };
+  }
+  const slots = slotsFor(settings, fulfilment, context.now);
+  const asap = asapAvailable(settings, fulfilment, context.now);
+  const lead = leadMinutes(settings.ordering, fulfilment);
+  const byDay = new Map<string, number[]>();
+  for (const slot of slots) byDay.set(localDate(slot), [...(byDay.get(localDate(slot)) ?? []), slot]);
+  const days = [...byDay].map(([day, list]) => ({ date: day, label: dayLabel(day, context.now), first: clockLabel(list[0]), last: clockLabel(list[list.length - 1]), count: list.length }));
+  const daySlots = date ? byDay.get(date) ?? [] : [];
+  const kind = fulfilment === "delivery" ? "delivery" : "pickup";
+  const label = date ? dayLabel(date, context.now) : null;
+  const say = date
+    ? daySlots.length
+      ? `${label![0].toUpperCase()}${label!.slice(1)} we can take a ${kind} order for any time from ${clockLabel(daySlots[0])} to ${clockLabel(daySlots[daySlots.length - 1])}, in ${SCHEDULE_INTERVAL_MINUTES}-minute steps.`
+      : `We can't take ${kind} orders for ${label}.${slots[0] ? ` The earliest ${kind} time is ${spokenWhen(slots[0], context.now)}.` : ""}`
+    : asap
+      ? `We can have it as soon as possible, in about ${lead} minutes, or schedule it for a time later${slots.length ? `, up to ${spokenWhen(slots[slots.length - 1], context.now)}` : ""}.`
+      : slots[0]
+        ? `We're not taking orders for right now. The earliest ${kind} time is ${spokenWhen(slots[0], context.now)}.`
+        : "We can't take orders for later right now.";
+  return {
+    ok: true,
+    data: {
+      fulfilment,
+      asapAvailable: asap,
+      asapEstimateMinutes: lead,
+      earliest: slots[0] !== undefined ? slotView(slots[0], context.now) : null,
+      day: date ? { date, label, times: daySlots.map((slot) => clockLabel(slot)) } : null,
+      days,
+      intervalMinutes: SCHEDULE_INTERVAL_MINUTES,
+      latest: slots.length ? slotView(slots[slots.length - 1], context.now) : null,
+    },
+    say,
+  };
+}
+
+/**
+ * When the order is for: as soon as possible, or a time the caller named.
+ *
+ * The model sends a day and a clock time in words; the server matches them to
+ * one of the website's slots and stores that slot's own timestamp. Anything
+ * else is refused with the nearest times that exist. A change moves the
+ * version, so a read-back given for another time can never be confirmed.
+ */
+async function setSchedule(context: Context, args: Record<string, unknown>): Promise<Outcome> {
+  const blocked = editable(context.session);
+  if (blocked) return blocked;
+  const fulfilment = context.session.fulfilment;
+  if (!fulfilment) return refuse("FULFILMENT_REQUIRED", "Is the order for pickup or delivery? The times depend on it.");
+  const issues: ToolIssue[] = [];
+  const version = expectedVersion(args, issues);
+  const when = args.when;
+  if (when !== "asap" && when !== "scheduled") issues.push({ code: "INVALID_INPUT", field: "when", message: "when must be asap or scheduled." });
+  const day = readText(args.day, "day", issues, { max: 40 });
+  const time = readText(args.time, "time", issues, { max: 20 });
+  if (when === "scheduled" && (!day || !time) && !issues.length) {
+    issues.push({ code: "INVALID_INPUT", field: day ? "time" : "day", message: day ? "What time would you like it?" : "Which day would you like it?" });
+  }
+  if (issues.length) return { ok: false, issues, say: issues[0].message };
+  const settings = await storeSettings(context.now);
+  if (!orderingOn(settings.ordering)) return refuse("ORDERING_PAUSED", settings.ordering.pauseMessage);
+  const kind = fulfilment === "delivery" ? "delivery" : "pickup";
+  let schedule: VoiceOrderOptions["schedule"];
+  if (when === "asap") {
+    if (!asapAvailable(settings, fulfilment, context.now)) {
+      const earliest = slotsFor(settings, fulfilment, context.now)[0];
+      const message = `We're not taking ${kind} orders for right now.${earliest !== undefined ? ` The earliest time is ${spokenWhen(earliest, context.now)}.` : ""}`;
+      return { ok: false, soft: true, issues: [{ code: "ASAP_UNAVAILABLE", message }], data: { suggestions: earliest !== undefined ? [slotView(earliest, context.now)] : [] }, say: message };
+    }
+    schedule = { type: "asap" };
+  } else {
+    const resolution = resolveSlot(day!, time!, {
+      now: context.now,
+      hours: settings.hours,
+      closures: settings.closures,
+      fulfilment,
+      leadMinutes: leadMinutes(settings.ordering, fulfilment),
+    });
+    if (!resolution.ok) return slotRefusal(resolution, fulfilment, context.now);
+    schedule = { type: "scheduled", scheduledFor: resolution.slot };
+  }
+  const catalog = await context.catalog();
+  const say = schedule.type === "asap"
+    ? `Okay, as soon as possible: about ${leadMinutes(settings.ordering, fulfilment)} minutes.`
+    : `Okay, ${kind} ${spokenWhen(schedule.scheduledFor, context.now)}.`;
+  return commitCart(context, catalog, { options: { ...context.session.orderOptions, schedule } }, version, {}, say);
+}
+
+/** A promo code needs something to be priced against, exactly as the website's checkout does. */
+function needsCart(session: VoiceSession, what: string): Outcome | null {
+  if (!session.fulfilment) return refuse("FULFILMENT_REQUIRED", "Ask whether the order is for pickup or delivery, then call set_fulfilment.");
+  if (!session.cart.length) return refuse("CART_EMPTY", `Let's add something to the order first, then I can add the ${what}.`);
+  return null;
+}
+
+/**
+ * A promo code the caller has. Only the code comes from the call: whether it
+ * is real, live, for this fulfilment, and what it takes off, is decided by the
+ * same `quoteOrder` the website's promo box uses. A code that is not one we
+ * honour is never stored, because `createOrder` would refuse the order.
+ */
+async function applyCoupon(context: Context, args: Record<string, unknown>): Promise<Outcome> {
+  const blocked = editable(context.session) ?? needsCart(context.session, "promo code");
+  if (blocked) return blocked;
+  const issues: ToolIssue[] = [];
+  const version = expectedVersion(args, issues);
+  const code = readText(args.code, "code", issues, { required: true, max: 40 });
+  if (issues.length || !code) return { ok: false, issues, say: issues[0]?.message ?? "What's the promo code?" };
+  const catalog = await context.catalog();
+  const candidate: VoiceOrderOptions = { ...context.session.orderOptions, couponCode: code };
+  let priced: Priced;
+  try {
+    priced = await priceCart(context.session, catalog, context.session.cart, candidate);
+  } catch (error) {
+    if (error instanceof OrderValidationError) return refuse(error.code, error.message);
+    throw error;
+  }
+  const coupon = priced.quote?.coupon;
+  if (!coupon || coupon.status === "invalid") {
+    return refuse("PROMO_CODE_INVALID", coupon?.message ?? "That promo code isn't valid right now.");
+  }
+  const total = formatMoney(priced.quote!.totals.amountDueCents);
+  const say = coupon.status === "applied"
+    ? `${coupon.code} is applied. Your total is now ${total}.`
+    : `${coupon.message ?? `${coupon.code} doesn't apply to this order.`} Your total is ${total}.`;
+  return commitCart(context, catalog, { options: { ...candidate, couponCode: coupon.code } }, version, { coupon: { code: coupon.code, status: coupon.status, message: coupon.message } }, say);
+}
+
+async function removeCoupon(context: Context, args: Record<string, unknown>): Promise<Outcome> {
+  const blocked = editable(context.session);
+  if (blocked) return blocked;
+  const issues: ToolIssue[] = [];
+  const version = expectedVersion(args, issues);
+  if (issues.length) return { ok: false, issues };
+  if (!context.session.orderOptions.couponCode) return { ok: true, data: { removed: false }, say: "There's no promo code on the order." };
+  const catalog = await context.catalog();
+  const priced = await priceCart(context.session, catalog, context.session.cart, { ...context.session.orderOptions, couponCode: null });
+  const total = priced.quote ? ` Your total is ${formatMoney(priced.quote.totals.amountDueCents)}.` : "";
+  return commitCart(context, catalog, { options: { ...context.session.orderOptions, couponCode: null } }, version, { removed: true }, `I've taken the promo code off.${total}`);
+}
+
+/** Dollars as a caller says them ("5", "5.50", "$5") to cents; null when it is not an amount. */
+function dollarsToCents(value: unknown): number | null {
+  const text = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim().replace(/^\$\s*/, "") : "";
+  if (!/^\d{1,4}(\.\d{1,2})?$/.test(text)) return null;
+  const cents = Math.round(Number(text) * 100);
+  return Number.isSafeInteger(cents) ? cents : null;
+}
+
+/**
+ * A tip the caller offers. The website's checkout offers none, its preset
+ * percentages, or a dollar amount; so does this. The server works out what a
+ * percentage comes to and enforces the same ceiling a custom tip has online.
+ */
+async function setTip(context: Context, args: Record<string, unknown>): Promise<Outcome> {
+  const blocked = editable(context.session) ?? needsCart(context.session, "tip");
+  if (blocked) return blocked;
+  const issues: ToolIssue[] = [];
+  const version = expectedVersion(args, issues);
+  const type = args.type;
+  if (type !== "none" && type !== "percentage" && type !== "custom") issues.push({ code: "INVALID_INPUT", field: "type", message: "type must be none, percentage or custom." });
+  if (issues.length) return { ok: false, issues, say: issues[0].message };
+  const taxTips = await getSetting<{ tippingEnabled?: boolean; tipPresetBps?: number[]; customTipEnabled?: boolean }>("taxAndTips");
+  let tip: VoiceOrderOptions["tip"] = { type: "none" };
+  if (type !== "none") {
+    if (!taxTips.tippingEnabled) return { ...refuse("TIPS_UNAVAILABLE", "We aren't taking tips on orders right now."), soft: true };
+    const presets = (taxTips.tipPresetBps ?? []).filter((bps) => Number.isSafeInteger(bps) && bps > 0);
+    const offered = `${presets.map((bps) => bps / 100).join(", ")} percent${taxTips.customTipEnabled ? ", or a dollar amount" : ""}`;
+    if (type === "percentage") {
+      const percent = Number(args.percent);
+      if (!Number.isSafeInteger(percent) || !presets.includes(percent * 100)) {
+        return { ...refuse("TIP_NOT_OFFERED", `I can add a tip of ${offered}.`), soft: true };
+      }
+      tip = { type: "percentage", valueBps: percent * 100 };
+    } else {
+      if (!taxTips.customTipEnabled) return { ...refuse("TIP_NOT_OFFERED", `I can add a tip of ${offered}.`), soft: true };
+      const cents = dollarsToCents(args.amount);
+      if (cents === null || cents <= 0) return refuse("INVALID_INPUT", "How much would you like to tip, in dollars?", { issues: [{ code: "INVALID_INPUT", field: "amount", message: "amount must be a dollar amount such as 5 or 5.50." }] });
+      tip = { type: "custom", amountCents: cents };
+    }
+  }
+  const catalog = await context.catalog();
+  const candidate: VoiceOrderOptions = { ...context.session.orderOptions, tip };
+  const priced = await priceCart(context.session, catalog, context.session.cart, candidate);
+  const tipIssue = priced.quote?.issues.find((issue) => issue.code === "TIP_INVALID");
+  if (tipIssue) return { ...refuse("TIP_INVALID", "That tip is more than we can add to this order."), soft: true };
+  const totals = priced.quote!.totals;
+  const say = tip.type === "none"
+    ? `Okay, no tip. Your total is ${formatMoney(totals.amountDueCents)}.`
+    : `Added a ${formatMoney(totals.tipCents)} tip. Your total is now ${formatMoney(totals.amountDueCents)}.`;
+  return commitCart(context, catalog, { options: candidate }, version, {}, say);
+}
+
 // --- review, confirm, place --------------------------------------------------------------------
 
 async function reviewOrder(context: Context): Promise<Outcome> {
@@ -748,8 +1230,27 @@ async function reviewOrder(context: Context): Promise<Outcome> {
     );
     if (!check.eligible) issues.push({ code: "DELIVERY_ADDRESS_INELIGIBLE", message: check.message ?? "That address can't be delivered to." });
   }
+  // The time, judged against the slots the website would offer now. Said in
+  // the caller's terms first, ahead of the engine's own refusal of the same.
+  const settings = await storeSettings(context.now);
+  const fulfilment = session.fulfilment!;
+  if (orderingOn(settings.ordering) && fulfilmentOn(settings, fulfilment)) {
+    const slots = slotsFor(settings, fulfilment, context.now);
+    const earliest = slots[0] !== undefined ? ` The earliest time is ${spokenWhen(slots[0], context.now)}.` : "";
+    const { schedule } = session.orderOptions;
+    if (schedule.type === "asap" && !asapAvailable(settings, fulfilment, context.now)) {
+      issues.push({ code: "SCHEDULE_REQUIRED", message: `We're not taking orders for right now, so this order needs a time.${earliest} What time would you like it?` });
+    } else if (schedule.type === "scheduled" && !slots.includes(schedule.scheduledFor)) {
+      const chosen = spokenWhen(schedule.scheduledFor, context.now);
+      issues.push({ code: "TIME_UNAVAILABLE", message: `${chosen[0].toUpperCase()}${chosen.slice(1)} is no longer available.${earliest}` });
+    }
+  }
   const priced = await priceCart(session, catalog);
   issues.push(...quoteIssues(priced.quote, session.cart));
+  // A code that is not one we honour makes `createOrder` refuse the order, though the quote prices around it.
+  if (priced.quote?.coupon?.status === "invalid") {
+    issues.push({ code: "PROMO_CODE_INVALID", message: `${priced.quote.coupon.message ?? "That promo code isn't valid right now."} I'll take it off unless you have another.` });
+  }
   if (issues.length) return { ok: false, issues, say: issues[0].message };
   const amountDue = priced.quote!.totals.amountDueCents;
   if (amountDue > (await voiceMaxOrderCents())) {
@@ -764,6 +1265,7 @@ async function reviewOrder(context: Context): Promise<Outcome> {
     items: priced.items,
     toppingNames: toppingNamesOf(catalog),
     deliveryAddress: session.deliveryAddress,
+    options: session.orderOptions,
     now: context.now,
   });
   return {
@@ -774,8 +1276,11 @@ async function reviewOrder(context: Context): Promise<Outcome> {
       readback: readback.text,
       lines: readback.lines,
       deliveryAddress: readback.deliveryAddress,
+      deliveryInstructions: readback.deliveryInstructions,
       totals: readback.totals,
       promotions: readback.promotions,
+      coupon: readback.coupon,
+      tip: session.orderOptions.tip,
       payment: readback.payment,
       estimate: readback.estimate,
       customer: { name: session.customerName, phone: spokenPhone(session.customerPhone ?? "") },
@@ -802,22 +1307,29 @@ async function confirmOrder(context: Context, args: Record<string, unknown>): Pr
   return { ok: true, session: confirmed.session, data: { cartVersion: version, confirmedAmountCents: confirmed.session.confirmedAmountCents }, say: "Great, placing your order now." };
 }
 
-async function placedResult(orderId: string, duplicate: boolean, fulfilment: Fulfilment | null): Promise<Outcome> {
+async function placedResult(orderId: string, duplicate: boolean, fulfilment: Fulfilment | null, now: number): Promise<Outcome> {
   const order = await getD1()
-    .prepare("SELECT order_number, estimated_for, total_cents, gift_card_applied_cents, fulfilment FROM orders WHERE id = ?")
+    .prepare("SELECT order_number, estimated_for, schedule_type, total_cents, gift_card_applied_cents, fulfilment FROM orders WHERE id = ?")
     .bind(orderId)
-    .first<{ order_number: string; estimated_for: number; total_cents: number; gift_card_applied_cents: number; fulfilment: Fulfilment }>();
+    .first<{ order_number: string; estimated_for: number; schedule_type: string; total_cents: number; gift_card_applied_cents: number; fulfilment: Fulfilment }>();
   if (!order) return refuse("ORDER_LOOKUP_FAILED", "The order was placed, but I couldn't read it back. The restaurant has it.");
   const number = order.order_number.replace("P62-", "");
   const due = Number(order.total_cents) - Number(order.gift_card_applied_cents ?? 0);
   const kind = order.fulfilment ?? fulfilment ?? "pickup";
-  const say = `Your order is in. Your order number is ${number.split("").join(" ")}. ${kind === "delivery" ? `It should arrive around ${clock(Number(order.estimated_for))}.` : `It will be ready around ${clock(Number(order.estimated_for))}.`} ${kind === "delivery" ? "Please pay the driver" : "Please pay at the store when you pick it up"}: ${formatMoney(due)}.`;
+  const at = Number(order.estimated_for);
+  const scheduled = order.schedule_type === "scheduled";
+  const when = scheduled
+    ? kind === "delivery" ? `It will be delivered ${spokenWhen(at, now)}.` : `It will be ready for pickup ${spokenWhen(at, now)}.`
+    : kind === "delivery" ? `It should arrive around ${clock(at)}.` : `It will be ready around ${clock(at)}.`;
+  const say = `Your order is in. Your order number is ${number.split("").join(" ")}. ${when} ${kind === "delivery" ? "Please pay the driver" : "Please pay at the store when you pick it up"}: ${formatMoney(due)}.`;
   return {
     ok: true,
     data: {
       orderNumber: order.order_number,
-      estimateAt: Number(order.estimated_for),
-      readyAround: clock(Number(order.estimated_for)),
+      estimateAt: at,
+      scheduled,
+      when: scheduled ? spokenWhen(at, now) : null,
+      readyAround: clock(at),
       amountDueCents: due,
       payment: kind === "delivery" ? "pay the driver" : "pay at the store",
       duplicate,
@@ -831,7 +1343,7 @@ async function placeOrder(context: Context, args: Record<string, unknown>): Prom
   if (!Number.isSafeInteger(version)) return refuse("INVALID_INPUT", "cartVersion must be the cartVersion the caller confirmed.");
   let session = context.session;
   // Already placed: a retry gets the same order back, never a second one.
-  if (session.orderId) return placedResult(session.orderId, true, session.fulfilment);
+  if (session.orderId) return placedResult(session.orderId, true, session.fulfilment, context.now);
   if (session.stage !== "confirmed" && session.stage !== "placing") {
     return refuse(session.stage === "review" ? "NOT_CONFIRMED" : "NOT_REVIEWED", "Read the order back with review_order and get the caller's yes with confirm_order first.");
   }
@@ -845,7 +1357,7 @@ async function placeOrder(context: Context, args: Record<string, unknown>): Prom
   const locked = await beginPlacement(session, version, { now: context.now });
   if (!locked.ok) {
     const current = await loadVoiceSession(session.id);
-    if (current?.orderId) return placedResult(current.orderId, true, current.fulfilment);
+    if (current?.orderId) return placedResult(current.orderId, true, current.fulfilment, context.now);
     return failedTransition(locked);
   }
   session = locked.session;
@@ -894,7 +1406,7 @@ async function placeOrder(context: Context, args: Record<string, unknown>): Prom
   }
   const orderId = String(created.orderId);
   const placed = await completePlacement(session, orderId, { now: context.now });
-  const result = await placedResult(orderId, Boolean(created.duplicate), session.fulfilment);
+  const result = await placedResult(orderId, Boolean(created.duplicate), session.fulfilment, context.now);
   return { ...result, session: placed.ok ? placed.session : session };
 }
 
@@ -902,6 +1414,8 @@ async function placeOrder(context: Context, args: Record<string, unknown>): Prom
 
 const TOOLS: Record<string, Tool> = {
   get_store_status: { fields: [], run: (context) => getStoreStatus(context) },
+  get_business_info: { fields: [], run: (context) => getBusinessInfo(context) },
+  get_order_slots: { fields: ["fulfilment", "day"], run: getOrderSlots },
   search_menu: { fields: ["query", "fulfilment", "category"], run: searchMenuTool },
   get_menu_item: { fields: ["productId", "fulfilment"], run: getMenuItem },
   get_deals: { fields: ["fulfilment"], run: getDeals },
@@ -914,6 +1428,10 @@ const TOOLS: Record<string, Tool> = {
   set_fulfilment: { fields: ["fulfilment", "expectedCartVersion"], run: setFulfilment },
   set_customer: { fields: ["name", "phone", "useCallerId", "expectedCartVersion"], run: setCustomer },
   check_delivery_address: { fields: ["line1", "unit", "city", "province", "postalCode", "instructions"], run: checkDeliveryAddress },
+  set_schedule: { fields: ["when", "day", "time", "expectedCartVersion"], run: setSchedule },
+  apply_coupon: { fields: ["code", "expectedCartVersion"], run: applyCoupon },
+  remove_coupon: { fields: ["expectedCartVersion"], run: removeCoupon },
+  set_tip: { fields: ["type", "percent", "amount", "expectedCartVersion"], run: setTip },
   review_order: { fields: [], run: (context) => reviewOrder(context) },
   confirm_order: { fields: ["cartVersion", "utterance"], run: confirmOrder },
   place_order: { fields: ["cartVersion"], run: placeOrder },
@@ -977,6 +1495,7 @@ export async function runVoiceTool(
     request: redactForLog(input),
     response: redactForLog({ ok: outcome.ok, data: outcome.data, issues: outcome.issues, say: outcome.say }),
     ok: outcome.ok,
+    countsAsFailure: !outcome.ok && !outcome.soft,
     issueCodes,
     latencyMs: Date.now() - started,
     cartVersionBefore: session.cartVersion,

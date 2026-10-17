@@ -735,6 +735,23 @@ function hasCode(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Why a code on this order cannot be accepted from this caller, or null.
+ *
+ * One function for the quote and the order, like `paymentMethodRefusal`, so a
+ * review screen cannot accept a code the order then refuses. Promo codes and
+ * gift cards are separate permissions: the AI receptionist may take the first
+ * and never the second (lib/order-policy.ts).
+ */
+function codeRefusal(body: Pick<OrderRequest, "couponCode" | "giftCardCode">, policy: OrderPolicy): string | null {
+  const coupon = hasCode(body.couponCode) && !policy.allowCouponCodes;
+  const giftCard = hasCode(body.giftCardCode) && !policy.allowGiftCards;
+  if (coupon && giftCard) return "Promo codes and gift cards cannot be used on this order.";
+  if (coupon) return "Promo codes cannot be used on this order.";
+  if (giftCard) return "Gift cards cannot be used on this order.";
+  return null;
+}
+
 async function validateItems(
   items: OrderRequest["items"],
   fulfilment: Fulfilment,
@@ -1182,7 +1199,13 @@ export type OrderQuote = {
   taxRateBps: number;
   deliveryFeeTaxable: boolean;
   appliedPromotions: Array<{ id: string; name: string; discountCents: number }>;
-  coupon: { code: string; accepted: boolean; message: string | null } | null;
+  /**
+   * `status` says which of three things happened to a code: it came off the
+   * bill (`applied`), it is a live code that takes nothing off this cart
+   * (`not_applied` — still placeable, at full price), or it is not a code we
+   * honour right now (`invalid` — `createOrder` refuses an order carrying it).
+   */
+  coupon: { code: string; accepted: boolean; message: string | null; status: "applied" | "not_applied" | "invalid" } | null;
   /** Null until a gift card code is entered. Never carries the code itself. */
   giftCard: GiftCardQuote | null;
   delivery: {
@@ -1348,7 +1371,7 @@ async function priceQuote(
   let coupon: OrderQuote["coupon"] = null;
   try {
     promotions = await activePromotions(fulfilment, couponCode);
-    if (couponCode) coupon = { code: couponCode, accepted: true, message: null };
+    if (couponCode) coupon = { code: couponCode, accepted: true, message: null, status: "applied" };
   } catch (error) {
     // A bad code must not stop the rest of the cart being priced — the customer
     // needs to see their total *and* that the code did not apply.
@@ -1357,6 +1380,7 @@ async function priceQuote(
       code: couponCode ?? "",
       accepted: false,
       message: error instanceof Error ? error.message : "That promo code isn't valid right now.",
+      status: "invalid",
     };
   }
   if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
@@ -1433,6 +1457,7 @@ async function priceQuote(
         code: acceptedCoupon.code,
         accepted: false,
         message: await describeCouponMiss(couponRule, cartLines, fulfilment, price.appliedPromotions),
+        status: "not_applied",
       };
     }
   }
@@ -1528,13 +1553,9 @@ async function priceQuote(
       message: paymentRefusal,
     });
   }
-  if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
-    issues.push({
-      index: null,
-      productId: null,
-      code: "CODES_NOT_ACCEPTED",
-      message: "Promo codes and gift cards cannot be used on this order.",
-    });
+  const refusedCode = codeRefusal(body, policy);
+  if (refusedCode) {
+    issues.push({ index: null, productId: null, code: "CODES_NOT_ACCEPTED", message: refusedCode });
   }
   if (body.paymentMethod === "online" && !paymentRefusal && !(await cloverCheckoutConfigured())) {
     issues.push({
@@ -1769,9 +1790,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // unreachable from a request body — see lib/order-policy.ts.
     const paymentRefusal = paymentMethodRefusal(paymentMethod, fulfilment, ordering, policy);
     if (paymentRefusal) throw new OrderValidationError(paymentRefusal);
-    if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
-      throw new OrderValidationError("Promo codes and gift cards cannot be used on this order.", 400, "CODES_NOT_ACCEPTED");
-    }
+    const refusedCode = codeRefusal(body, policy);
+    if (refusedCode) throw new OrderValidationError(refusedCode, 400, "CODES_NOT_ACCEPTED");
     if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
       throw new OrderValidationError(
         "Online payment is ready for the restaurant's Clover credentials. No payment was taken.",

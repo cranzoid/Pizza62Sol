@@ -821,8 +821,9 @@ withDb("only the signed inbound route may mint a voice session", async () => {
   }
   assert.ok(routes.some((route) => route.includes(path.join("voice", "tools"))), "the tool route exists and was scanned");
   assert.deepEqual([...VOICE_TOOL_NAMES].sort(), [
-    "add_item", "check_delivery_address", "confirm_order", "get_cart", "get_deals", "get_menu_item", "get_store_status",
-    "place_order", "remove_item", "reset_order", "review_order", "search_menu", "set_customer", "set_fulfilment", "start_order", "update_item",
+    "add_item", "apply_coupon", "check_delivery_address", "confirm_order", "get_business_info", "get_cart", "get_deals", "get_menu_item",
+    "get_order_slots", "get_store_status", "place_order", "remove_coupon", "remove_item", "reset_order", "review_order", "search_menu",
+    "set_customer", "set_fulfilment", "set_schedule", "set_tip", "start_order", "update_item",
   ]);
 });
 
