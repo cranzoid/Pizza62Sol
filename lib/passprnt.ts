@@ -13,6 +13,7 @@
 import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
 import { formatEntryNumber, GIVEAWAY_DEFAULTS } from "@/lib/giveaway";
+import { orderChannelTicketLabel } from "@/lib/order-channels";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -71,9 +72,7 @@ export function buildPassPrntTicketHtml(
     ? Number(order.scheduled_for)
     : null;
   const paid = String(order.payment_status ?? "") === "paid";
-  const origin = String(order.channel ?? "online") === "online"
-    ? "WEBSITE"
-    : String(order.channel ?? "").replaceAll("_", " ").toUpperCase();
+  const origin = orderChannelTicketLabel(order.channel);
   const payment = String(order.payment_method ?? "").replaceAll("_", " ").toUpperCase();
 
   const itemMarkup = items.map((item, index) => {

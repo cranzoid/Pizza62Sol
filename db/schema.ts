@@ -81,10 +81,14 @@ export const PAYMENT_STATUSES = [
 
 /**
  * Where the order came from. `online` is the customer web app; `phone` and
- * `walk_in` are staff-entered at the counter. Every order carries one so the
- * owner can answer "how many were in store" without reconciling two systems.
+ * `walk_in` are staff-entered at the counter; `ai_phone` is a phone call taken
+ * by the automated receptionist, kept apart from `phone` so a staff-taken call
+ * and an AI-taken one are never counted, alerted or ticketed as the same thing.
+ * Every order carries one so the owner can answer "how many were in store"
+ * without reconciling two systems. Only a trusted server context can set it —
+ * see lib/order-policy.ts.
  */
-export const ORDER_CHANNELS = ["online", "phone", "walk_in"] as const;
+export const ORDER_CHANNELS = ["online", "phone", "walk_in", "ai_phone"] as const;
 
 /** The outbox vocabulary the dispatcher, the reaper and the webhook all share. */
 export const OUTBOX_STATUSES = [

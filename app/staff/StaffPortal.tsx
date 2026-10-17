@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/domain";
 import { snapshotDetails, snapshotFlags, totalRows, type ItemSnapshot } from "@/lib/order-presentation";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
+import { orderChannelTicketLabel } from "@/lib/order-channels";
 import { AdminMenuPanel, AdminSettingsPanel, AdminTeamPanel, AdminWebsitePanel } from "@/app/staff/AdminControls";
 import { AdminAnalyticsPanel } from "@/app/staff/AdminAnalytics";
 import { EmployeeTimeClock } from "@/app/staff/TimeClock";
@@ -211,7 +212,7 @@ function PrintableTicket({ order, toppingNames, printedAt }: { order: Record<str
       {/* Where it came from, so a counter query about "the phone order" can be
           matched to paper without going back to a screen. */}
       <div className="pt-origin">
-        {String(order.channel ?? "online") === "online" ? "WEBSITE" : String(order.channel).replaceAll("_", " ").toUpperCase()}
+        {orderChannelTicketLabel(order.channel)}
         {" · "}
         {String(order.payment_method ?? "").replaceAll("_", " ").toUpperCase()}
       </div>

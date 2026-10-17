@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { type GiveawaySetting, type NudgeKind } from "@/lib/giveaway";
+import { orderChannelLabel } from "@/lib/order-channels";
 
 type Entry = {
   id: string;
@@ -90,8 +91,6 @@ const STATUS_LABELS: Record<Overview["status"], string> = {
   open: "Live",
   closed: "Entries closed",
 };
-
-const CHANNELS: Record<string, string> = { online: "Website", phone: "Phone", walk_in: "Walk-in" };
 
 export const when = (value: number | null | undefined) =>
   value
@@ -212,7 +211,7 @@ export function AdminGiveawayPanel() {
                 <tr key={entry.id}>
                   <th scope="row">#{entry.entry_label}{entry.picked_at ? <small>Picked {when(entry.picked_at)}</small> : !entry.eligible ? <small>Not eligible · order cancelled or refunded</small> : null}</th>
                   <td>{entry.customer_name}<small>{[entry.customer_phone, entry.customer_email].filter(Boolean).join(" · ") || "No contact details"}</small></td>
-                  <td>{entry.order_number}<small>{CHANNELS[entry.channel] ?? entry.channel} · {entry.fulfilment}</small></td>
+                  <td>{entry.order_number}<small>{orderChannelLabel(entry.channel)} · {entry.fulfilment}</small></td>
                   <td>{formatMoney(entry.qualifying_cents)}</td>
                   <td>{when(entry.created_at)}</td>
                 </tr>

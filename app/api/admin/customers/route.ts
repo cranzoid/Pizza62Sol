@@ -248,7 +248,8 @@ export async function GET(request: Request) {
                   SUM(CASE WHEN fulfilment = 'delivery' THEN 1 ELSE 0 END) AS delivery_count,
                   SUM(CASE WHEN channel = 'online' THEN 1 ELSE 0 END) AS online_count,
                   SUM(CASE WHEN channel = 'phone' THEN 1 ELSE 0 END) AS phone_count,
-                  SUM(CASE WHEN channel = 'walk_in' THEN 1 ELSE 0 END) AS walk_in_count
+                  SUM(CASE WHEN channel = 'walk_in' THEN 1 ELSE 0 END) AS walk_in_count,
+                  SUM(CASE WHEN channel = 'ai_phone' THEN 1 ELSE 0 END) AS ai_phone_count
            FROM scoped WHERE customer_key IN (SELECT customer_key FROM matching)
            GROUP BY customer_key
          )
@@ -256,7 +257,7 @@ export async function GET(request: Request) {
                 latest.order_number AS last_order_number, latest.status AS last_status,
                 latest.channel AS last_channel, latest.fulfilment AS last_fulfilment, latest.last_order_at,
                 agg.order_count, agg.paid_count, agg.lifetime_cents, agg.first_seen, agg.pickup_count,
-                agg.delivery_count, agg.online_count, agg.phone_count, agg.walk_in_count,
+                agg.delivery_count, agg.online_count, agg.phone_count, agg.walk_in_count, agg.ai_phone_count,
                 COUNT(*) OVER() AS full_count
          FROM latest JOIN agg USING (customer_key)
          ORDER BY ${sort}

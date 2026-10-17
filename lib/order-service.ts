@@ -281,12 +281,28 @@ function normalizeCustomer(customer: OrderRequest["customer"], contactPolicy: Co
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
   const email = customer?.email?.trim().toLowerCase() ?? "";
   if (name.length < 2 || name.length > 100) {
-    throw new OrderValidationError(contactPolicy === "name_only" ? "Give the order a name so staff can call it out." : "Enter your full name.");
+    throw new OrderValidationError(
+      contactPolicy === "name_only"
+        ? "Give the order a name so staff can call it out."
+        : contactPolicy === "name_and_phone"
+          ? "A name is needed for this order."
+          : "Enter your full name.",
+    );
   }
   if (contactPolicy === "name_only") {
     if (phone && (phone.length < 10 || phone.length > 16)) {
       throw new OrderValidationError("That phone number does not look right.");
     }
+    if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
+      throw new OrderValidationError("That email address does not look right.");
+    }
+    return { name, phone, email };
+  }
+  if (contactPolicy === "name_and_phone") {
+    // A phone call the AI took: nobody at the restaurant has seen this
+    // customer, so the callback number is required; an email is not asked for.
+    if (!phone) throw new OrderValidationError("A callback phone number is needed for this order.");
+    if (phone.length < 10 || phone.length > 16) throw new OrderValidationError("That phone number does not look right.");
     if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
       throw new OrderValidationError("That email address does not look right.");
     }
@@ -1911,12 +1927,17 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         .prepare(
           `INSERT INTO order_events
            (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
-           VALUES (?, ?, NULL, ?, 'system', NULL, ?, ?)`,
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
           orderId,
           orderStatus,
+          // The server validated it either way; an AI-taken order also names
+          // the voice session that placed it, so it can be traced to its call.
+          // Every other order keeps the 'system' creation event it always had.
+          policy.actorType === "ai_receptionist" ? "ai_receptionist" : "system",
+          policy.actorType === "ai_receptionist" ? context.actorId ?? null : null,
           fullyCoveredByGiftCard
             ? `Order paid in full by gift card ending ${giftCardResult?.quote.suffix ?? "????"}`
             : settledOnCreation

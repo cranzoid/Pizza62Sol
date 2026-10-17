@@ -25,13 +25,17 @@
 /**
  * Where an order was taken. Mirrors `ORDER_CHANNELS` in db/schema.ts, which is
  * the database constraint; `tests/order-policy.test.ts` keeps the two equal.
+ *
+ * `ai_phone` is not `phone`: `phone` means a member of staff took the call and
+ * keyed it in at the till. An order the automated receptionist took is a
+ * different thing to the kitchen, to the owner's figures and to an audit.
  */
-export type OrderChannel = "online" | "phone" | "walk_in";
+export type OrderChannel = "online" | "phone" | "walk_in" | "ai_phone";
 
 export type PaymentMethod = "pay_at_store" | "online";
 
 /** Who is answerable for an order being placed. */
-export type OrderActorType = "customer" | "staff";
+export type OrderActorType = "customer" | "staff" | "ai_receptionist";
 
 /**
  * How much contact detail an order must carry.
@@ -41,10 +45,14 @@ export type OrderActorType = "customer" | "staff";
  * - `name_only` — the counter: a name to call out; phone and email are optional
  *   but checked when given (see `normalizeCustomer` on why a demanded email at
  *   a counter produces `x@x.com`).
+ * - `name_and_phone` — a phone call taken by the AI receptionist: a name and a
+ *   callback number, because nobody at the restaurant has seen this customer
+ *   and the number is the only way back to them. Email is optional, as it is on
+ *   a staff-taken phone order; a caller is not asked to spell one out.
  *
  * A delivery needs a phone number for the driver under every policy.
  */
-export type ContactPolicy = "full" | "name_only";
+export type ContactPolicy = "full" | "name_only" | "name_and_phone";
 
 export type OrderPolicy = Readonly<{
   /** Stored on the order; drives the alert wording, the ticket and reporting. */
@@ -85,6 +93,12 @@ export type CreateOrderContext = {
   policy: OrderPolicy;
   /** The member of staff who keyed the order in, for the audit trail. */
   staffUserId?: string;
+  /**
+   * For an order the AI receptionist placed, the voice session that placed it.
+   * Recorded on the order's creation event so the order can be traced back to
+   * its call. Server-derived, like everything else in a context.
+   */
+  actorId?: string;
 };
 
 const BOTH_PAYMENT_METHODS: readonly PaymentMethod[] = Object.freeze(["pay_at_store", "online"]);
@@ -130,6 +144,32 @@ export const STAFF_WALK_IN_ORDER_POLICY: OrderPolicy = Object.freeze({
   alertRestaurant: false,
 });
 
+/**
+ * An order taken over the phone by the AI receptionist.
+ *
+ * Not a staff context: no counter-only products, no cutoff exemption, no codes,
+ * no card payments (nothing about a card is ever taken by voice). Pay-at-store
+ * on a pickup follows the same website setting a stranger's order does.
+ * Pay-at-the-door on a delivery is off; `aiPhoneOrderContext` can turn it on
+ * only when the voice configuration explicitly allows delivery.
+ */
+export const AI_PHONE_ORDER_POLICY: OrderPolicy = Object.freeze({
+  channel: "ai_phone",
+  actorType: "ai_receptionist",
+  contactPolicy: "name_and_phone",
+  allowStaffOnlyItems: false,
+  paymentMethods: Object.freeze(["pay_at_store"]) as readonly PaymentMethod[],
+  payAtStorePickup: "setting",
+  allowPayOnDelivery: false,
+  bypassLastOrderCutoff: false,
+  recordAttribution: false,
+  alertRestaurant: true,
+  allowCodes: false,
+});
+
+/** The AI preset with pay-at-the-door allowed — only for a voice config that explicitly enables delivery. */
+const AI_PHONE_PAY_ON_DELIVERY_POLICY: OrderPolicy = Object.freeze({ ...AI_PHONE_ORDER_POLICY, allowPayOnDelivery: true });
+
 export function websiteOrderContext(): CreateOrderContext {
   return { policy: WEBSITE_ORDER_POLICY };
 }
@@ -142,12 +182,25 @@ export function staffOrderContext(channel: "phone" | "walk_in", staffUserId?: st
   };
 }
 
+/**
+ * The AI receptionist's context, built by the voice tool service from the
+ * authenticated voice session — never from anything the model sent.
+ * `allowPayOnDelivery` is the voice configuration's explicit decision; it
+ * defaults to off.
+ */
+export function aiPhoneOrderContext(options: { voiceSessionId: string; allowPayOnDelivery?: boolean }): CreateOrderContext {
+  return {
+    policy: options.allowPayOnDelivery ? AI_PHONE_PAY_ON_DELIVERY_POLICY : AI_PHONE_ORDER_POLICY,
+    actorId: options.voiceSessionId,
+  };
+}
+
 /** Every channel a policy may name; equal to `ORDER_CHANNELS` (tested). */
-export const POLICY_CHANNELS: readonly OrderChannel[] = Object.freeze(["online", "phone", "walk_in"]);
+export const POLICY_CHANNELS: readonly OrderChannel[] = Object.freeze(["online", "phone", "walk_in", "ai_phone"]);
 
 const CHANNELS = new Set<string>(POLICY_CHANNELS);
-const CONTACT_POLICIES = new Set<string>(["full", "name_only"]);
-const ACTOR_TYPES = new Set<string>(["customer", "staff"]);
+const CONTACT_POLICIES = new Set<string>(["full", "name_only", "name_and_phone"]);
+const ACTOR_TYPES = new Set<string>(["customer", "staff", "ai_receptionist"]);
 
 /**
  * The policy a context actually carries, or the website's when it carries

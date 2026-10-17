@@ -78,6 +78,13 @@
       "when": 1791486040531,
       "tag": "0010_giveaway_history_index",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792196784210,
+      "tag": "0011_ai_phone_channel",
+      "breakpoints": true
     }
   ]
 }
