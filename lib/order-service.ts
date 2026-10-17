@@ -1220,6 +1220,85 @@ export async function quoteOrder(
   body: OrderRequest,
   context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
 ): Promise<OrderQuote> {
+  return (await priceQuote(body, context)).quote;
+}
+
+/** One quoted line as the server validated it, with the snapshot the order would store. */
+export type QuotedItemDetail = {
+  /** Index into the submitted cart. */
+  index: number;
+  productId: string;
+  productName: string;
+  variationName: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  lineTotalCents: number;
+  /** Exactly what `order_items.snapshot_json` would hold — what the ticket and emails describe. */
+  snapshot: Record<string, unknown>;
+  instructions: string | null;
+};
+
+/**
+ * The quote, plus the validated snapshot of every line that passed.
+ *
+ * For a read-back that must describe the order in the same words as the
+ * kitchen ticket and the confirmation email: those are rendered from these
+ * snapshots by lib/order-presentation.ts, so describing a quote from anything
+ * else would let what the caller hears drift from what the kitchen makes.
+ */
+export async function quoteOrderDetailed(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<{ quote: OrderQuote; items: QuotedItemDetail[]; itemsValid: boolean }> {
+  const { quote, items, itemIndexes, itemsValid } = await priceQuote(body, context);
+  return {
+    quote,
+    // Whether the cart's items validated together. A problem with the order
+    // as a whole (the store is closed) is reported with no line index, as a
+    // problem with the items as a whole is, and only this tells them apart.
+    itemsValid,
+    items: items.map((item, position) => ({
+      index: itemIndexes[position],
+      productId: item.productId,
+      productName: item.productName,
+      variationName: item.variationName,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      lineTotalCents: item.unitPriceCents * item.quantity,
+      snapshot: item.snapshot,
+      instructions: item.instructions,
+    })),
+  };
+}
+
+/**
+ * Whether an address can be delivered to *with this cart*, deciding the
+ * subtotal and free delivery from the cart's lines as the server prices them.
+ *
+ * The voice tool's `check_delivery_address` uses this so that its only input is
+ * an address: the minimum and the fee come from `validateItems`, never from a
+ * number the caller (or the model) supplies. Lines that cannot be delivered do
+ * not count towards the minimum, exactly as they could not on an order. An
+ * empty cart is a subtotal of zero.
+ */
+export async function checkCartDeliveryEligibility(
+  body: Pick<OrderRequest, "items" | "address">,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<DeliveryEligibilityCheck> {
+  const items = body.items?.length
+    ? (await priceQuote({ items: body.items, fulfilment: "delivery", tip: { type: "none" } }, context)).items
+    : [];
+  return checkDeliveryEligibility({
+    address: body.address,
+    menuSubtotalCents: items.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0),
+    items,
+  });
+}
+
+async function priceQuote(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy">,
+): Promise<{ quote: OrderQuote; items: ValidatedItem[]; itemIndexes: number[]; itemsValid: boolean }> {
   await ensureDatabase();
   const policy = resolveOrderPolicy(context);
   const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
@@ -1241,10 +1320,12 @@ export async function quoteOrder(
   // completely unchanged rather than reworked to collect errors.
   let items: ValidatedItem[] = [];
   let itemIndexes: number[] = [];
+  let itemsValid = true;
   try {
     items = await validateItems(submitted, fulfilment, operations, policy.allowStaffOnlyItems);
     itemIndexes = submitted.map((_, index) => index);
   } catch (cartError) {
+    itemsValid = false;
     for (const [index, line] of submitted.entries()) {
       try {
         const [validated] = await validateItems([line], fulfilment, operations, policy.allowStaffOnlyItems);
@@ -1514,7 +1595,7 @@ export async function quoteOrder(
     }
   }
 
-  return {
+  const quote: OrderQuote = {
     ok: issues.length === 0,
     fulfilment,
     currency: "CAD",
@@ -1553,6 +1634,7 @@ export async function quoteOrder(
     estimateMinutes,
     issues,
   };
+  return { quote, items, itemIndexes, itemsValid };
 }
 
 // `origin` used to be a parameter here: Stripe's success_url was built per

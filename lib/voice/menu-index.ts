@@ -58,6 +58,7 @@ export type VoiceCatalogVariation = {
 export type VoiceCatalogProduct = {
   id: string;
   name: string;
+  description: string;
   categoryId: string;
   categoryName: string;
   productType: string;
@@ -110,6 +111,7 @@ export async function loadVoiceCatalog(): Promise<VoiceCatalog> {
       return {
         id: String(product.id),
         name: String(product.name),
+        description: String(product.description ?? ""),
         categoryId: String(product.category_id),
         categoryName: categoryNames.get(String(product.category_id)) ?? String(product.category_id),
         productType: String(product.product_type),
