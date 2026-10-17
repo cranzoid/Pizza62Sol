@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { OrderDetailDrawer } from "@/app/staff/OrderDetail";
+import { orderChannelLabel } from "@/lib/order-channels";
 
 type CustomerRow = {
   customer_key: string;
@@ -54,7 +55,6 @@ const SORTS = [
   ["spend", "Highest spend"],
 ] as const;
 
-const CHANNEL_LABELS: Record<string, string> = { online: "Website", phone: "Phone", walk_in: "Walk-in" };
 
 const when = (value: unknown) =>
   value ? new Date(Number(value)).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" }) : "—";
@@ -193,7 +193,7 @@ export function AdminCustomersPanel() {
             {selected.orders.map((order) => <tr key={String(order.id)} className="order-history-row" onClick={() => setOpenOrderId(String(order.id))}>
               <th scope="row">{String(order.order_number)}</th>
               <td>{when(order.created_at)}</td>
-              <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
+              <td>{orderChannelLabel(order.channel)}<small>{String(order.fulfilment)}</small></td>
               <td>{String(order.status).replaceAll("_", " ")}</td>
               <td>{formatMoney(Number(order.total_cents))}</td>
             </tr>)}

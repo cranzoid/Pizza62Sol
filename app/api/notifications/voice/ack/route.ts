@@ -12,37 +12,11 @@
  * keep in sync: acknowledging on the kitchen screen stops the phone ringing, and
  * pressing 1 clears the banner on the screen.
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { verifyTwilioSignature } from "@/lib/notifications/twilio-signature";
+// Compatibility for existing consumers of the acknowledgement route.
+export { twilioSignature, verifyTwilioSignature } from "@/lib/notifications/twilio-signature";
 import { ensureDatabase, getD1 } from "@/db/runtime";
 import { twilioConfig } from "@/lib/notifications/config";
-
-/**
- * Twilio signs `URL + sorted(key + value)` with HMAC-SHA1, base64-encoded.
- *
- * The URL must be exactly the one Twilio requested, query string included —
- * which is why the ack callback carries `?order=` rather than putting the id in
- * the body: it has to be part of the signed material either way, and in the URL
- * it cannot be swapped without breaking the signature.
- */
-export function twilioSignature(authToken: string, url: string, params: Record<string, string>): string {
-  const material = Object.keys(params)
-    .sort()
-    .reduce((accumulator, key) => accumulator + key + params[key], url);
-  return createHmac("sha1", authToken).update(Buffer.from(material, "utf8")).digest("base64");
-}
-
-export function verifyTwilioSignature(
-  authToken: string,
-  url: string,
-  params: Record<string, string>,
-  header: string | null,
-): boolean {
-  if (!header) return false;
-  const expected = twilioSignature(authToken, url, params);
-  const provided = Buffer.from(header);
-  const computed = Buffer.from(expected);
-  return provided.length === computed.length && timingSafeEqual(provided, computed);
-}
 
 /** TwiML, since Twilio reads the response of a Gather callback as more TwiML. */
 function say(message: string): Response {

@@ -1,5 +1,8 @@
 "use client";
 
+import { useServerQuote } from "@/app/menu/useServerQuote";
+import { drinkSummary } from "@/lib/drink-slots";
+
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
@@ -50,6 +53,7 @@ type CartLine = BuiltItem;
  */
 type Quote = {
   ok: boolean;
+  lines: Array<{ index: number; unitPriceCents: number; lineTotalCents: number }>;
   totals: {
     menuSubtotalCents: number;
     discountCents: number;
@@ -113,60 +117,12 @@ function useOrderQuote(input: {
   giftCardCode?: string;
   schedule?: { type: "asap" | "scheduled"; scheduledFor?: number };
   enabled?: boolean;
-}): { quote: Quote | null; loading: boolean; failed: boolean } {
+  revision?: string;
+}) {
   const { cart, fulfilment, tip, couponCode, giftCardCode, schedule, enabled = true } = input;
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  // Serialised so the body is a stable dependency rather than a new object each
-  // render, which would re-fetch forever.
   const body = JSON.stringify({ fulfilment, items: toOrderItems(cart), tip, couponCode, giftCardCode, schedule });
-  const empty = cart.length === 0;
+  return useServerQuote<Quote>("/api/orders/quote", enabled && cart.length ? body : null, input.revision);
 
-  useEffect(() => {
-    // An empty or disabled cart is handled by *deriving* the result below rather
-    // than by resetting state here — clearing it in the effect body would be a
-    // synchronous setState on every such render, and a cascade of them.
-    if (!enabled || empty) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      // Flipped inside the debounce, not in the effect body: no synchronous
-      // setState on every keystroke, and "Updating…" appears only when a request
-      // is actually about to go out rather than flickering on every character.
-      setLoading(true);
-      void (async () => {
-        try {
-          const response = await fetch("/api/orders/quote", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body,
-          });
-          const result = (await response.json()) as Quote & { error?: string };
-          if (cancelled) return;
-          if (!response.ok) {
-            setFailed(true);
-            setQuote(null);
-          } else {
-            setFailed(false);
-            setQuote(result);
-          }
-        } catch {
-          if (!cancelled) setFailed(true);
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-      })();
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [body, enabled, empty]);
-
-  // Derived, not stored: an empty cart has no quote by definition, and a stale
-  // one from before the last item was removed must never be shown as current.
-  if (!enabled || empty) return { quote: null, loading: false, failed: false };
-  return { quote, loading, failed };
 }
 
 const FALLBACK_PHONE = "(905) 547-5777";
@@ -357,16 +313,18 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   const menuRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    if (!initialCatalog) {
-      fetch("/api/catalog")
-        .then(async (response) => {
-          if (!response.ok) throw new Error("Menu unavailable");
-          return response.json() as Promise<Catalog>;
-        })
-        .then(setCatalog)
-        .catch(() => setLoadingError("We couldn't load the live menu. Please try again or call the store."));
-    }
+    let cancelled = false;
+    const refresh = () => { void fetch("/api/catalog", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("Menu unavailable");
+      return response.json() as Promise<Catalog>;
+    }).then((next) => { if (!cancelled) setCatalog(next); }).catch(() => {
+      if (!cancelled && !initialCatalog) setLoadingError("We couldn't load the live menu. Please try again or call the store.");
+    }); };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
     trackEvent("website_visit");
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [initialCatalog]);
 
   useEffect(() => {
@@ -441,7 +399,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     }));
   const heroImageUrl = String(content.heroImageUrl ?? "");
   // How much of the included-topping allowance a half topping consumes, owner-set.
-  const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 10_000);
+  const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 5_000);
   const hours = useMemo<WeeklyHours>(
     () => (Array.isArray(catalog?.settings.hours?.value) ? catalog.settings.hours.value as unknown as WeeklyHours : []),
     [catalog],
@@ -558,7 +516,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // and HST arithmetic here and call the answer "estimated"; two implementations
   // of tax drift, and when they do the customer is charged something they never
   // agreed to. There is now one implementation, and it lives on the server.
-  const { quote: cartQuote, loading: cartQuoteLoading } = useOrderQuote({ cart, fulfilment });
+  const { quote: cartQuote, loading: cartQuoteLoading, failed: cartQuoteFailed, retry: retryCartQuote } = useOrderQuote({ cart, fulfilment, revision: JSON.stringify(catalog) });
   const upsellsEnabled = Boolean(catalog?.settings.featureFlags?.value.upsellsEnabled);
   const upsellRecommendations = useMemo(
     () => upsellsEnabled && catalog
@@ -1150,6 +1108,8 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
           cart={cart}
           quote={cartQuote}
           loading={cartQuoteLoading}
+          failed={cartQuoteFailed}
+          onRetry={retryCartQuote}
           fulfilment={fulfilment}
           toppingNames={toppingNames}
           recommendations={upsellRecommendations}
@@ -1208,13 +1168,17 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
   for (const topping of line.toppings ?? []) {
     if (!line.omitToppings?.includes(topping.toppingId)) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
   }
+  const drinks = drinkSummary(line.modifiers ?? [], line.modifierSections ?? []);
+  const drinkIds = new Set(drinks.flatMap((entry) => [...entry.ids]));
   for (const modifier of line.modifiers ?? []) {
+    if (drinkIds.has(modifier.id)) continue;
     options.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
   }
   for (const omitted of line.omitToppings ?? []) {
     const name = toppingNames.get(omitted);
     if (name) options.push(`No ${name.toLowerCase()}`);
   }
+  options.push(...drinks.filter((entry) => entry.text).map((entry) => `Included drinks: ${entry.text}`));
   return options;
 }
 
@@ -1230,10 +1194,12 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
  * problems by cart position, so an item that cannot be ordered says so *here*,
  * next to a button that removes it, rather than at the payment screen.
  */
-function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommendations, giveaway, onClose, onRemove, onUpsell, onCheckout }: {
+function CartDrawer({ cart, quote, loading, failed, onRetry, fulfilment, toppingNames, recommendations, giveaway, onClose, onRemove, onUpsell, onCheckout }: {
   cart: CartLine[];
   quote: Quote | null;
   loading: boolean;
+  failed: boolean;
+  onRetry: () => void;
   fulfilment: "pickup" | "delivery";
   toppingNames: Map<string, string>;
   recommendations: UpsellRecommendation<Product>[];
@@ -1245,23 +1211,25 @@ function CartDrawer({ cart, quote, loading, fulfilment, toppingNames, recommenda
 }) {
   const dialogRef = useDialogBehavior<HTMLElement>(true, onClose);
   const totals = quote?.totals ?? EMPTY_TOTALS;
+  const quoteMoney = (cents: number) => cart.length && !quote ? "—" : formatMoney(cents);
   const lineIssue = (index: number) => quote?.issues.find((issue) => issue.index === index) ?? null;
   const orderIssues = quote?.issues.filter((issue) => issue.index === null) ?? [];
   const blocked = Boolean(quote && !quote.ok);
   return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}><aside ref={dialogRef} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow dark"><span /> {fulfilment}</p><h2 id="cart-title">Your order</h2></div><button className="modal-close" onClick={onClose} aria-label="Close cart">×</button></div>
     <div className="cart-lines">{cart.length ? <>
-      {cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{lineOptions(line, toppingNames).map((option, position) => <small key={`${position}-${option}`}>{option}</small>)}{line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{formatMoney(line.unitPriceCents * line.quantity)}</strong></article>; })}
+      {cart.map((line, index) => { const issue = lineIssue(index); return <article className={`cart-line${issue ? " cart-line--blocked" : ""}`} key={line.key}><span className="line-number">{String(index + 1).padStart(2, "0")}</span><div><h3>{line.name}</h3>{lineOptions(line, toppingNames).map((option, position) => <small key={`${position}-${option}`}>{option}</small>)}{line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}{issue ? <p className="cart-line-issue" role="status">{issue.message}</p> : null}<button onClick={() => onRemove(line.key)}>Remove</button></div><strong>{quote?.lines.find((entry) => entry.index === index) ? formatMoney(quote.lines.find((entry) => entry.index === index)!.lineTotalCents) : "—"}</strong></article>; })}
       <UpsellTray recommendations={recommendations} onChoose={onUpsell} />
     </> : <div className="empty-cart"><PizzaMark large /><h3>Your bag is empty</h3><p>Add something delicious from the live menu.</p></div>}</div>
     <div className="cart-summary">
-      <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
+      <div><span>Subtotal</span><b>{quoteMoney(totals.menuSubtotalCents)}</b></div>
       {totals.discountCents > 0 ? <div className="cart-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
-      {fulfilment === "delivery" ? <div><span>Delivery</span><b>{totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
-      <div><span>HST{quote ? ` ${(quote.taxRateBps / 100).toFixed(0)}%` : ""}</span><b>{formatMoney(totals.taxCents)}</b></div>
-      <div className="cart-total"><span>Total{loading ? <small>Updating…</small> : <small>Priced by Pizza 62</small>}</span><b>{formatMoney(totals.totalCents)}</b></div>
+      {fulfilment === "delivery" ? <div><span>Delivery</span><b>{!quote ? "—" : totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
+      <div><span>HST{quote ? ` ${(quote.taxRateBps / 100).toFixed(0)}%` : ""}</span><b>{quoteMoney(totals.taxCents)}</b></div>
+      <div className="cart-total"><span>Total{loading ? <small>Updating…</small> : quote ? <small>Priced by Pizza 62</small> : null}</span><b>{quoteMoney(totals.totalCents)}</b></div>
       {cart.length && quote ? <GiveawayProgress giveaway={giveaway} totals={totals} /> : null}
       {orderIssues.map((issue) => <p className="cart-blocker" role="status" key={issue.code}>{issue.message}</p>)}
-      <button className="primary-button" disabled={!cart.length || blocked} onClick={onCheckout}>Go to checkout <ArrowIcon /></button>
+      {failed ? <p className="form-error" role="alert">Unable to update prices. <button type="button" onClick={onRetry}>Retry pricing</button></p> : null}
+      <button className="primary-button" disabled={!cart.length || loading || !quote || blocked} onClick={onCheckout}>Go to checkout <ArrowIcon /></button>
       <p className="secure-note">Every price here is calculated by Pizza 62, not by your browser, so this is what you will be charged.</p>
     </div>
   </aside></div>;
@@ -1370,15 +1338,17 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   // H-24: the review screen is priced by the server, on exactly the cart, tip,
   // coupon and time that will be submitted. Whatever it shows is what will be
   // charged — there is no browser-side arithmetic left to disagree with it.
-  const { quote, loading: quoting } = useOrderQuote({
+  const { quote, loading: quoting, failed: quoteFailed, retry: retryQuote } = useOrderQuote({
     cart,
     fulfilment,
+    revision: JSON.stringify(settings),
     tip: tipRequest,
     couponCode: couponCode || undefined,
     giftCardCode: giftCardCode || undefined,
     schedule: { type: scheduleType, scheduledFor: scheduleType === "scheduled" && scheduledFor ? Number(scheduledFor) : undefined },
   });
   const totals = quote?.totals ?? EMPTY_TOTALS;
+  const quoteMoney = (cents: number) => quote ? formatMoney(cents) : "—";
   const blockingIssues = quote?.issues ?? [];
   const contactComplete = name.trim().length > 1 && phone.trim().length >= 10 && /\S+@\S+\.\S+/.test(email);
   const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
@@ -1550,7 +1520,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             sent back to the bag to take one thing out is the point people
             abandon a checkout rather than fix it. */}
         <ul className="summary-items">
-          {cart.map((line) => {
+          {cart.map((line, index) => {
             const options = lineOptions(line, toppingNames);
             return <li key={line.key}>
               <span className="summary-qty">{line.quantity}</span>
@@ -1560,7 +1530,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
                 {line.specialInstructions ? <small>Note: {line.specialInstructions}</small> : null}
                 <button type="button" className="summary-remove" onClick={() => onRemove(line.key)} aria-label={`Remove ${line.name} from your order`}>Remove</button>
               </div>
-              <b className="summary-price">{formatMoney(line.unitPriceCents * line.quantity)}</b>
+              <b className="summary-price">{quote?.lines.find((entry) => entry.index === index) ? formatMoney(quote.lines.find((entry) => entry.index === index)!.lineTotalCents) : "—"}</b>
             </li>;
           })}
         </ul>
@@ -1665,17 +1635,17 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
           only as a single "estimated total".
         */}
         <div className="checkout-totals">
-          <div><span>Subtotal</span><b>{formatMoney(totals.menuSubtotalCents)}</b></div>
+          <div><span>Subtotal</span><b>{quoteMoney(totals.menuSubtotalCents)}</b></div>
           {totals.discountCents > 0 ? (
             <div className="checkout-discount">
               <span>Discount{quote?.appliedPromotions.length ? ` · ${quote.appliedPromotions.map((entry) => entry.name).join(", ")}` : ""}</span>
               <b>−{formatMoney(totals.discountCents)}</b>
             </div>
           ) : null}
-          {fulfilment === "delivery" ? <div><span>Delivery fee</span><b>{totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
+          {fulfilment === "delivery" ? <div><span>Delivery fee</span><b>{!quote ? "—" : totals.deliveryFeeCents === 0 ? "Free" : formatMoney(totals.deliveryFeeCents)}</b></div> : null}
           <div>
             <span>HST {quote ? `${(quote.taxRateBps / 100).toFixed(0)}%` : ""}{quote?.deliveryFeeTaxable && fulfilment === "delivery" ? <small>on food and delivery</small> : null}</span>
-            <b>{formatMoney(totals.taxCents)}</b>
+            <b>{quoteMoney(totals.taxCents)}</b>
           </div>
           {totals.tipCents > 0 ? <div><span>Tip</span><b>{formatMoney(totals.tipCents)}</b></div> : null}
           {/*
@@ -1689,7 +1659,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
           */}
           <div className="checkout-grand-total">
             <span>{totals.giftCardAppliedCents > 0 ? "Total" : paymentMethod === "online" ? "Total charged now" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
-            <b>{formatMoney(totals.totalCents)}</b>
+            <b>{quoteMoney(totals.totalCents)}</b>
           </div>
           {totals.giftCardAppliedCents > 0 ? (
             <>
@@ -1704,6 +1674,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             </>
           ) : null}
         </div>
+        {quoteFailed ? <p className="form-error" role="alert">Unable to update prices. <button type="button" onClick={retryQuote}>Retry pricing</button></p> : null}
         {quote ? <GiveawayProgress giveaway={giveaway} totals={totals} /> : null}
 
         {blockingIssues.map((issue) => <p className="cart-blocker" role="status" key={`${issue.code}-${issue.index ?? "order"}`}>{issue.message}</p>)}
@@ -1735,6 +1706,8 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
               a button reading "Pay C$0.00" would be both wrong and alarming. */}
           {submitting
             ? "Confirming…"
+            : !quote
+              ? quoteFailed ? "Retry pricing to continue" : "Updating prices…"
             : totals.amountDueCents === 0 && totals.totalCents > 0
               ? "Place order · paid by gift card"
               : paymentMethod === "online"

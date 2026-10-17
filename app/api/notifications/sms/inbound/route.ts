@@ -17,7 +17,7 @@
  * request still arrives and the opt-out is still recorded.
  */
 import { ensureDatabase, getSetting } from "@/db/runtime";
-import { verifyTwilioSignature } from "@/app/api/notifications/voice/ack/route";
+import { verifyTwilioSignature } from "@/lib/notifications/twilio-signature";
 import { escapeXml } from "@/lib/notifications/channels";
 import { twilioConfig } from "@/lib/notifications/config";
 import { recordSmsOptIn, recordSmsOptOut } from "@/lib/marketing-consent";

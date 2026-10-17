@@ -16,9 +16,10 @@ import {
   pizzaSauceSection,
   priceCart,
   pricePizza,
-  priceToppingUnits,
+  priceModifierSelections,
+  normalizeToppings,
   SAUCE_OPTIONS,
-  sectionOptionPrices,
+  storeStatus,
   validateDelivery,
   type AppliedPromotion,
   type CartLinePrice,
@@ -56,6 +57,16 @@ import { recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
+import {
+  resolveOrderPolicy,
+  websiteOrderContext,
+  type ContactPolicy,
+  type CreateOrderContext,
+  type OrderPolicy,
+  type PaymentMethod,
+} from "@/lib/order-policy";
+
+export type { CreateOrderContext } from "@/lib/order-policy";
 
 export type OrderRequest = {
   idempotencyKey?: string;
@@ -81,11 +92,11 @@ export type OrderRequest = {
   schedule?: { type?: "asap" | "scheduled"; scheduledFor?: number };
   couponCode?: string;
   /**
-   * What the review screen said the customer would be charged.
+   * What the customer or staff review screen said would be charged.
    *
    * A consent check, not a price: the server still works the total out for
-   * itself and simply refuses to exceed this. Absent from staff entry, where
-   * someone is looking at the screen. See `createOrder`.
+   * itself and simply refuses to exceed this. Both customer checkout and staff
+   * entry send their current quote. See `createOrder`.
    */
   expectedAmountDueCents?: number;
   /**
@@ -174,6 +185,7 @@ type OrderingSetting = {
   cashOnDeliveryEnabled: boolean;
   pickupEstimateMinutes: number;
   deliveryEstimateMinutes: number | null;
+  lastOrderCutoffMinutes?: number;
   paused: boolean;
   pauseMessage: string;
 };
@@ -252,6 +264,23 @@ function pizzaOptionSections(configuration: ProductConfiguration): ModifierSecti
 }
 
 /**
+ * The option sections `validateItems` checks a product's modifiers against,
+ * for anything that has to describe or resolve them without placing an order
+ * (the voice menu resolver, the voice item description).
+ *
+ * Exactly the sections `validateItems` builds — retired ones included, because
+ * `validateModifiers` discards those itself and relies on seeing them to do so.
+ * A caller that presents options to someone filters them with
+ * `isRetiredSection` first.
+ */
+export function orderableSections(productType: string, configuration: Record<string, unknown>): ModifierSectionSeed[] {
+  const productConfiguration = configuration as ProductConfiguration;
+  return productType === "pizza"
+    ? pizzaOptionSections(productConfiguration)
+    : orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst));
+}
+
+/**
  * Contact details, with different rules for a customer and for the counter.
  *
  * Online, all three are required: the email is how the confirmation and the
@@ -261,18 +290,36 @@ function pizzaOptionSections(configuration: ProductConfiguration): ModifierSecti
  * email address, and demanding one produces `x@x.com` typed by a member of staff
  * to get past the form — a worse outcome than an empty field, because it looks
  * like data. An order with no email simply gets no confirmation email.
+ *
+ * Which rule applies is the caller's `contactPolicy` — see lib/order-policy.ts.
  */
-function normalizeCustomer(customer: OrderRequest["customer"], staffEntry = false) {
+function normalizeCustomer(customer: OrderRequest["customer"], contactPolicy: ContactPolicy = "full") {
   const name = customer?.name?.trim() ?? "";
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
   const email = customer?.email?.trim().toLowerCase() ?? "";
   if (name.length < 2 || name.length > 100) {
-    throw new OrderValidationError(staffEntry ? "Give the order a name so staff can call it out." : "Enter your full name.");
+    throw new OrderValidationError(
+      contactPolicy === "name_only"
+        ? "Give the order a name so staff can call it out."
+        : contactPolicy === "name_and_phone"
+          ? "A name is needed for this order."
+          : "Enter your full name.",
+    );
   }
-  if (staffEntry) {
+  if (contactPolicy === "name_only") {
     if (phone && (phone.length < 10 || phone.length > 16)) {
       throw new OrderValidationError("That phone number does not look right.");
     }
+    if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
+      throw new OrderValidationError("That email address does not look right.");
+    }
+    return { name, phone, email };
+  }
+  if (contactPolicy === "name_and_phone") {
+    // A phone call the AI took: nobody at the restaurant has seen this
+    // customer, so the callback number is required; an email is not asked for.
+    if (!phone) throw new OrderValidationError("A callback phone number is needed for this order.");
+    if (phone.length < 10 || phone.length > 16) throw new OrderValidationError("That phone number does not look right.");
     if (email && (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254)) {
       throw new OrderValidationError("That email address does not look right.");
     }
@@ -337,6 +384,155 @@ function normalizeDeliveryAddress(address: OrderRequest["address"]): Record<stri
   };
 }
 
+export type DeliveryEligibilityReason =
+  | "eligible"
+  | "delivery_unavailable"
+  | "invalid_address"
+  | "address_unverified"
+  | "outside_radius"
+  | "restaurant_origin_unconfigured"
+  | "below_minimum";
+
+export type DeliveryEligibilityCheck = {
+  /** Whether this order, address and cart together, can be delivered. */
+  eligible: boolean;
+  /**
+   * Whether the address itself is one we deliver to, whatever is in the cart.
+   *
+   * True for `eligible` and `below_minimum` only. Stated here rather than left
+   * for a caller to infer from `reason`, so that "yes, we deliver there — the
+   * minimum is $20" is the server's answer and not a reading of one. A check
+   * run before there is a cart (subtotal 0) relies on exactly this.
+   */
+  addressDeliverable: boolean;
+  reason: DeliveryEligibilityReason;
+  /** What the customer is told when it is not eligible; null when it is. */
+  message: string | null;
+  /** The address exactly as an order would store it; null when it could not be read. */
+  address: Record<string, string> | null;
+  distanceKm: number | null;
+  /** The delivery fee before any coupon, zero when a free-delivery item is in the cart. */
+  feeCents: number;
+  minimumCents: number;
+  shortfallCents: number;
+};
+
+/**
+ * Whether an address can be delivered to, without creating anything.
+ *
+ * The one place the delivery rules are applied: `createOrder` calls this and
+ * refuses on the answer, so a caller checking an address before there is an
+ * order (a phone agent, say) gets the same decision the order will. Reads
+ * settings and resolves the address; writes nothing and takes no payment.
+ *
+ * Reports rather than throws, like `quoteOrder`. The checks run in the order
+ * `createOrder` has always applied them, so the first failing one is the reason.
+ *
+ * **Trust boundary.** `menuSubtotalCents` and `items` waive or enforce money
+ * rules (the minimum, the fee), so they must come from items the server has
+ * validated and priced itself — `validateItems` and `priceCart` — never from a
+ * request body. Only the address may come from the caller. An external tool
+ * (the phone agent) sends its cart or session id and the server derives these;
+ * it must never be able to send a subtotal or `freeDelivery: true` directly.
+ */
+export async function checkDeliveryEligibility(
+  input: {
+    /** The only caller-supplied field. */
+    address: OrderRequest["address"];
+    /** Server-derived: the pre-tax, pre-discount menu subtotal from `priceCart`. 0 before there is a cart. */
+    menuSubtotalCents: number;
+    /** Server-derived: the cart's validated items. Never request input. */
+    items?: ReadonlyArray<{ freeDelivery: boolean }>;
+  },
+  settings?: { ordering: OrderingSetting; delivery: DeliverySetting; business: BusinessSetting },
+): Promise<DeliveryEligibilityCheck> {
+  const [ordering, delivery, business] = settings
+    ? [settings.ordering, settings.delivery, settings.business]
+    : await Promise.all([
+        getSetting<OrderingSetting>("ordering"),
+        getSetting<DeliverySetting>("delivery"),
+        getSetting<BusinessSetting>("business"),
+      ]);
+  const minimumCents = delivery.minimumCents ?? 0;
+  const shortfallCents = Math.max(0, minimumCents - input.menuSubtotalCents);
+  const refused = (
+    reason: DeliveryEligibilityReason,
+    message: string,
+    address: Record<string, string> | null = null,
+    distanceKm: number | null = null,
+  ): DeliveryEligibilityCheck => ({
+    eligible: false,
+    // Every check before the minimum is about the address, so a cart that is
+    // only too small is the one refusal where the address itself is fine.
+    addressDeliverable: reason === "below_minimum",
+    reason,
+    message,
+    address,
+    distanceKm,
+    feeCents: 0,
+    minimumCents,
+    shortfallCents,
+  });
+
+  if (!ordering.deliveryEnabled) return refused("delivery_unavailable", "Delivery ordering is currently unavailable.");
+
+  let address: Record<string, string>;
+  try {
+    address = normalizeDeliveryAddress(input.address);
+  } catch (error) {
+    if (error instanceof OrderValidationError) return refused("invalid_address", error.message);
+    throw error;
+  }
+
+  // H-06b: geocodes the full street address through Azure Maps, falling back
+  // to the coarse FSA centroid only if Maps cannot answer.
+  const point = await resolveDeliveryPoint({
+    line1: address.line1,
+    unit: address.unit,
+    city: address.city,
+    province: address.province,
+    postalCode: address.postalCode,
+  });
+  // C-01/H-06: geographic eligibility from the immutable store origin. Free-
+  // delivery items never widen the radius — they only zero the fee for an
+  // already-eligible address.
+  const eligibility = validateDelivery(
+    {
+      validated: point !== null,
+      latitude: point?.latitude ?? null,
+      longitude: point?.longitude ?? null,
+    },
+    {
+      originLatitude: business.latitude,
+      originLongitude: business.longitude,
+      radiusKm: delivery.radiusKm,
+      feeCents: delivery.feeCents,
+      minimumCents: delivery.minimumCents,
+    },
+    input.menuSubtotalCents,
+    (input.items ?? []).some((item) => item.freeDelivery),
+  );
+  if (!eligibility.eligible) {
+    const message =
+      eligibility.reason === "below_minimum"
+        ? `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax.`
+        : delivery.outsideAreaMessage ??
+          "This address is outside our delivery area. Please call Pizza 62 to ask about an exception.";
+    return refused(eligibility.reason, message, address, eligibility.distanceKm);
+  }
+  return {
+    eligible: true,
+    addressDeliverable: true,
+    reason: "eligible",
+    message: null,
+    address,
+    distanceKm: eligibility.distanceKm,
+    feeCents: eligibility.feeCents,
+    minimumCents,
+    shortfallCents,
+  };
+}
+
 function modifierOptions(
   section: ModifierSectionSeed,
   toppingNames: Map<string, string>,
@@ -386,12 +582,9 @@ function validateModifiers(
     throw new OrderValidationError("An unsupported item option was submitted.");
   }
   const snapshot: ModifierSnapshot[] = [];
-  const sharedUnits = new Map<string, number>();
-  let extraCents = 0;
   for (const section of liveSections) {
     const raw = provided.get(section.id) ?? [];
     const allowed = modifierOptions(section, toppingNames);
-    const optionPrices = sectionOptionPrices(section);
     if (section.source === "toppings") {
       // Topping groups carry a placement per selection, so a half topping consumes
       // only part of the included allowance and is charged proportionally.
@@ -404,13 +597,6 @@ function validateModifiers(
       if (normalized.length < section.min || normalized.length > section.max || normalized.some((entry) => !allowed.has(entry.value))) {
         throw new OrderValidationError(`Choose valid options for ${section.label}.`);
       }
-      const unitsBps = modifierUnitsBps(normalized, halfToppingUnitsBps);
-      if (section.sharedGroup) {
-        sharedUnits.set(section.sharedGroup, (sharedUnits.get(section.sharedGroup) ?? 0) + unitsBps);
-      } else {
-        extraCents += priceToppingUnits(unitsBps, (section.included ?? 0) * 10_000, section.extraPriceCents ?? 0);
-      }
-      extraCents += normalized.reduce((sum, entry) => sum + (optionPrices[entry.value] ?? 0), 0);
       if (normalized.length) {
         snapshot.push({
           id: section.id,
@@ -430,8 +616,6 @@ function validateModifiers(
     if (unique.length !== values.length || unique.length < section.min || unique.length > section.max || unique.some((value) => !allowed.has(value))) {
       throw new OrderValidationError(`Choose valid options for ${section.label}.`);
     }
-    extraCents += Math.max(0, unique.length - (section.included ?? section.max)) * (section.extraPriceCents ?? 0);
-    extraCents += unique.reduce((sum, value) => sum + (optionPrices[value] ?? 0), 0);
     if (unique.length) {
       snapshot.push({
         id: section.id,
@@ -441,11 +625,7 @@ function validateModifiers(
       });
     }
   }
-  for (const [group, unitsBps] of sharedUnits) {
-    const grouped = sections.filter((section) => section.sharedGroup === group);
-    extraCents += priceToppingUnits(unitsBps, (grouped[0]?.sharedIncluded ?? 0) * 10_000, grouped[0]?.extraPriceCents ?? 0);
-  }
-  return { snapshot, extraCents };
+  return { snapshot, extraCents: priceModifierSelections(liveSections, snapshot, halfToppingUnitsBps).extraCents };
 }
 
 function torontoParts(timestamp: number): { weekday: number; minute: number } {
@@ -497,11 +677,69 @@ function validateSchedule(
   };
 }
 
+/**
+ * The last-order cutoff, enforced here as well as in the browser.
+ *
+ * Judged by the same `storeStatus` the website uses to disable ASAP, so the two
+ * cannot disagree about where the boundary is. Only ASAP orders are affected: a
+ * scheduled order is judged by `validateSchedule` (the website offers slots up
+ * to closing), and the till decides for itself whether the kitchen can take one
+ * more (`bypassLastOrderCutoff`). Called after `validateSchedule` has passed, so
+ * a store that is simply shut keeps its existing "outside hours" refusal.
+ */
+function assertBeforeLastOrderCutoff(
+  scheduleType: "asap" | "scheduled",
+  hours: Array<{ weekday: number; openMinute: number; closeMinute: number }>,
+  ordering: OrderingSetting,
+  bypassLastOrderCutoff = false,
+): void {
+  if (scheduleType !== "asap" || bypassLastOrderCutoff) return;
+  const status = storeStatus(Date.now(), hours, "America/Toronto", {
+    lastOrderCutoffMinutes: Number(ordering.lastOrderCutoffMinutes ?? 0),
+  });
+  if (!status.open) {
+    throw new OrderValidationError(
+      "Last orders have gone in for tonight. Please schedule your order for a later time.",
+      409,
+      "LAST_ORDERS_CLOSED",
+    );
+  }
+}
+
+/**
+ * Why this payment method cannot be used for this order, or null when it can.
+ *
+ * One function for the quote and the order, so the review screen cannot enable
+ * a button the order then refuses. The checks run in the order `createOrder`
+ * has always applied them. With the website's policy this is exactly the old
+ * rule — pay-at-store only on a pickup, and only while the website allows it —
+ * and with the till's, pay-at-store is the counter's own call on either.
+ */
+function paymentMethodRefusal(
+  method: PaymentMethod,
+  fulfilment: Fulfilment,
+  ordering: OrderingSetting,
+  policy: OrderPolicy,
+): string | null {
+  if (!policy.paymentMethods.includes(method)) return "That payment method is not available for this order.";
+  if (method === "pay_at_store") {
+    const allowed = fulfilment === "delivery"
+      ? policy.allowPayOnDelivery
+      : policy.payAtStorePickup === "always" || ordering.payAtStorePickupEnabled;
+    if (!allowed) return "Pay at store is available for pickup orders only.";
+  }
+  return null;
+}
+
+function hasCode(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function validateItems(
   items: OrderRequest["items"],
   fulfilment: Fulfilment,
   operations: OperationSetting,
-  staffEntry = false,
+  allowStaffOnlyItems = false,
 ): Promise<ValidatedItem[]> {
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
@@ -531,7 +769,7 @@ async function validateItems(
       throw new OrderValidationError(`${product.name} is not available for ${fulfilment}.`);
     }
     const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
-    if (productConfiguration.staffOnly && !staffEntry) throw new OrderValidationError("This item is only available at the counter.");
+    if (productConfiguration.staffOnly && !allowStaffOnlyItems) throw new OrderValidationError("This item is only available at the counter.");
     const configuredMaximum = Number(productConfiguration.maxQuantity);
     const maximumQuantity = Number.isSafeInteger(configuredMaximum) && configuredMaximum >= 1 && configuredMaximum <= 100
       ? configuredMaximum
@@ -599,7 +837,7 @@ async function validateItems(
           recipeOmissions.push(toppingNames.get(toppingId) ?? toppingId);
         }
         const present = new Set(
-          toppings.filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
+          normalizeToppings(toppings).filter((entry) => entry.placement === "whole").map((entry) => entry.toppingId),
         );
         const missing = recipe.filter((toppingId) => !present.has(toppingId) && !omitted.has(toppingId));
         if (missing.length) {
@@ -619,6 +857,8 @@ async function validateItems(
         halfToppingUnitsBps: operations.halfToppingUnitsBps,
         toppings,
         extraCheese: Boolean(input.extraCheese),
+        recipeToppingIds: productConfiguration.fixedRecipe && Array.isArray(productConfiguration.recipeToppingIds) ? productConfiguration.recipeToppingIds.map(String) : undefined,
+        recipeExtraCheese: Boolean(productConfiguration.fixedRecipe && productConfiguration.presetExtraCheese),
       });
       if (productConfiguration.requireIncludedToppings) {
         const selectedToppingUnitsBps = modifierUnitsBps(
@@ -636,7 +876,7 @@ async function validateItems(
       }
       const validatedModifiers = validateModifiers(
         input.modifiers,
-        pizzaOptionSections(productConfiguration),
+        orderableSections(product.product_type, productConfiguration),
         toppingNames,
         operations.halfToppingUnitsBps,
       );
@@ -665,7 +905,7 @@ async function validateItems(
     } else {
       const validatedModifiers = validateModifiers(
         input.modifiers,
-        orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
+        orderableSections(product.product_type, productConfiguration),
         toppingNames,
         operations.halfToppingUnitsBps,
       );
@@ -976,8 +1216,91 @@ export type OrderQuote = {
  *
  * Read-only: no order, no payment, no idempotency key, nothing persisted.
  */
-export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boolean } = {}): Promise<OrderQuote> {
+export async function quoteOrder(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<OrderQuote> {
+  return (await priceQuote(body, context)).quote;
+}
+
+/** One quoted line as the server validated it, with the snapshot the order would store. */
+export type QuotedItemDetail = {
+  /** Index into the submitted cart. */
+  index: number;
+  productId: string;
+  productName: string;
+  variationName: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  lineTotalCents: number;
+  /** Exactly what `order_items.snapshot_json` would hold — what the ticket and emails describe. */
+  snapshot: Record<string, unknown>;
+  instructions: string | null;
+};
+
+/**
+ * The quote, plus the validated snapshot of every line that passed.
+ *
+ * For a read-back that must describe the order in the same words as the
+ * kitchen ticket and the confirmation email: those are rendered from these
+ * snapshots by lib/order-presentation.ts, so describing a quote from anything
+ * else would let what the caller hears drift from what the kitchen makes.
+ */
+export async function quoteOrderDetailed(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<{ quote: OrderQuote; items: QuotedItemDetail[]; itemsValid: boolean }> {
+  const { quote, items, itemIndexes, itemsValid } = await priceQuote(body, context);
+  return {
+    quote,
+    // Whether the cart's items validated together. A problem with the order
+    // as a whole (the store is closed) is reported with no line index, as a
+    // problem with the items as a whole is, and only this tells them apart.
+    itemsValid,
+    items: items.map((item, position) => ({
+      index: itemIndexes[position],
+      productId: item.productId,
+      productName: item.productName,
+      variationName: item.variationName,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      lineTotalCents: item.unitPriceCents * item.quantity,
+      snapshot: item.snapshot,
+      instructions: item.instructions,
+    })),
+  };
+}
+
+/**
+ * Whether an address can be delivered to *with this cart*, deciding the
+ * subtotal and free delivery from the cart's lines as the server prices them.
+ *
+ * The voice tool's `check_delivery_address` uses this so that its only input is
+ * an address: the minimum and the fee come from `validateItems`, never from a
+ * number the caller (or the model) supplies. Lines that cannot be delivered do
+ * not count towards the minimum, exactly as they could not on an order. An
+ * empty cart is a subtotal of zero.
+ */
+export async function checkCartDeliveryEligibility(
+  body: Pick<OrderRequest, "items" | "address">,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<DeliveryEligibilityCheck> {
+  const items = body.items?.length
+    ? (await priceQuote({ items: body.items, fulfilment: "delivery", tip: { type: "none" } }, context)).items
+    : [];
+  return checkDeliveryEligibility({
+    address: body.address,
+    menuSubtotalCents: items.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0),
+    items,
+  });
+}
+
+async function priceQuote(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy">,
+): Promise<{ quote: OrderQuote; items: ValidatedItem[]; itemIndexes: number[]; itemsValid: boolean }> {
   await ensureDatabase();
+  const policy = resolveOrderPolicy(context);
   const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
   const [ordering, delivery, taxTips, operations] = await Promise.all([
     getSetting<OrderingSetting>("ordering"),
@@ -996,13 +1319,18 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   // case, and it keeps `validateItems` (the most safety-critical function here)
   // completely unchanged rather than reworked to collect errors.
   let items: ValidatedItem[] = [];
+  let itemIndexes: number[] = [];
+  let itemsValid = true;
   try {
-    items = await validateItems(submitted, fulfilment, operations, context.staffEntry);
+    items = await validateItems(submitted, fulfilment, operations, policy.allowStaffOnlyItems);
+    itemIndexes = submitted.map((_, index) => index);
   } catch (cartError) {
+    itemsValid = false;
     for (const [index, line] of submitted.entries()) {
       try {
-        const [validated] = await validateItems([line], fulfilment, operations, context.staffEntry);
+        const [validated] = await validateItems([line], fulfilment, operations, policy.allowStaffOnlyItems);
         items.push(validated);
+        itemIndexes.push(index);
       } catch (error) {
         issues.push({
           index,
@@ -1185,19 +1513,30 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   // Only checked when a payment method was actually named — the cart is quoted
   // long before the customer has chosen one.
   //
-  // Staff entry is exempt here exactly as it is in `createOrder`. Mirroring the
-  // rule without its exemption is how every phone delivery at the till was
-  // quoted `ok: false`, which greyed out "Send & print" — so a delivery could
-  // not be sent, and its ticket never printed for the driver.
-  if (body.paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+  // The caller's policy applies here exactly as it does in `createOrder`.
+  // Mirroring the rule without the till's exemption is how every phone delivery
+  // at the till was quoted `ok: false`, which greyed out "Send & print" — so a
+  // delivery could not be sent, and its ticket never printed for the driver.
+  const paymentRefusal = body.paymentMethod === "pay_at_store" || body.paymentMethod === "online"
+    ? paymentMethodRefusal(body.paymentMethod, fulfilment, ordering, policy)
+    : null;
+  if (paymentRefusal) {
     issues.push({
       index: null,
       productId: null,
       code: "PAYMENT_METHOD_UNAVAILABLE",
-      message: "Pay at store is available for pickup orders only.",
+      message: paymentRefusal,
     });
   }
-  if (body.paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
+  if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "CODES_NOT_ACCEPTED",
+      message: "Promo codes and gift cards cannot be used on this order.",
+    });
+  }
+  if (body.paymentMethod === "online" && !paymentRefusal && !(await cloverCheckoutConfigured())) {
     issues.push({
       index: null,
       productId: null,
@@ -1241,7 +1580,8 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
 
   try {
     const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
-    validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+    const schedule = validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, policy.bypassLastOrderCutoff);
   } catch (error) {
     // Suppressed when a closure already explained it: two refusals for one cause
     // reads as two separate problems to fix.
@@ -1255,12 +1595,12 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
     }
   }
 
-  return {
+  const quote: OrderQuote = {
     ok: issues.length === 0,
     fulfilment,
     currency: "CAD",
     lines: items.map((item, index) => ({
-      index,
+      index: itemIndexes[index],
       productId: item.productId,
       name: item.productName,
       variationName: item.variationName,
@@ -1294,6 +1634,7 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
     estimateMinutes,
     issues,
   };
+  return { quote, items, itemIndexes, itemsValid };
 }
 
 // `origin` used to be a parameter here: Stripe's success_url was built per
@@ -1302,28 +1643,20 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
 // left for a request origin to influence — the browser stashes the tracking
 // credentials before redirecting instead (see /order/return).
 /**
- * Options only a trusted caller may set.
+ * Creates an order.
  *
- * Deliberately a second argument rather than fields on `OrderRequest`: the
+ * `context` carries what only a trusted caller may decide — the channel and
+ * every privilege beyond the website's (lib/order-policy.ts). It is
+ * deliberately a second argument rather than fields on `OrderRequest`: the
  * public route hands the parsed request body straight to `createOrder`, so
  * anything reachable from `body` is settable by whoever is on the internet.
  * `channel: "walk_in"` from a stranger would make the owner's in-store figures a
- * fiction, and `staffEntry` would let them skip having to give an email address.
+ * fiction, and a staff contact policy would let them skip giving an email
+ * address. The public route passes no context and gets the website's policy.
  */
-export type CreateOrderContext = {
-  /** Where the order was taken. Defaults to the customer web app. */
-  channel?: "online" | "phone" | "walk_in";
-  /**
-   * True when a member of staff is keying this in at the counter or on the
-   * phone. Relaxes the contact requirements — a walk-in customer has not given
-   * an email address and should not be invented one — and records who took it.
-   */
-  staffEntry?: boolean;
-  staffUserId?: string;
-};
-
-export async function createOrder(body: OrderRequest, context: CreateOrderContext = {}) {
+export async function createOrder(body: OrderRequest, context: CreateOrderContext = websiteOrderContext()) {
   await ensureDatabase();
+  const policy = resolveOrderPolicy(context);
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
     throw new OrderValidationError("A valid checkout idempotency key is required.");
@@ -1393,7 +1726,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         "PAYMENT_DECLINED",
       );
     }
-    const customer = normalizeCustomer(body.customer, context.staffEntry);
+    const customer = normalizeCustomer(body.customer, policy.contactPolicy);
     const fulfilment = body.fulfilment;
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
       throw new OrderValidationError("Choose pickup or delivery.");
@@ -1431,10 +1764,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // customer on the line, they decide whether to take the card number now or
     // send the machine out with the driver, and refusing them here is what kept
     // phone deliveries on paper and out of the books entirely. The relaxation is
-    // gated on `staffEntry`, which is a trusted context argument set after
-    // authentication and unreachable from a request body — see CreateOrderContext.
-    if (paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
-      throw new OrderValidationError("Pay at store is available for pickup orders only.");
+    // the till's policy (`allowPayOnDelivery`, `payAtStorePickup: "always"`),
+    // which is a trusted context argument set after authentication and
+    // unreachable from a request body — see lib/order-policy.ts.
+    const paymentRefusal = paymentMethodRefusal(paymentMethod, fulfilment, ordering, policy);
+    if (paymentRefusal) throw new OrderValidationError(paymentRefusal);
+    if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
+      throw new OrderValidationError("Promo codes and gift cards cannot be used on this order.", 400, "CODES_NOT_ACCEPTED");
     }
     if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
       throw new OrderValidationError(
@@ -1445,13 +1781,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     }
     const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
     // A driver with no number to call is a delivery that fails at the door. The
-    // website asks every customer for a phone number, but staff entry does not
+    // website asks every customer for a phone number, but the counter does not
     // (see normalizeCustomer on why demanding one at a counter produces junk), so
     // the requirement is reinstated for the one case that cannot do without it.
     if (fulfilment === "delivery" && !customer.phone) {
       throw new OrderValidationError("A delivery needs a phone number the driver can call.");
     }
-    const items = await validateItems(body.items, fulfilment, operations, context.staffEntry);
+    const items = await validateItems(body.items, fulfilment, operations, policy.allowStaffOnlyItems);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
       productId: item.productId,
@@ -1486,42 +1822,16 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
     });
     if (fulfilment === "delivery" && deliveryAddress) {
-      // C-01/H-06: enforce geographic eligibility from the immutable store origin
-      // before any order/payment is created. Free-delivery items never widen the
-      // radius — they only zero the fee for an already-eligible address.
-      const hasFreeDeliveryItem = items.some((item) => item.freeDelivery);
-      // H-06b: geocodes the full street address through Azure Maps, falling back
-      // to the coarse FSA centroid only if Maps cannot answer.
-      const point = await resolveDeliveryPoint({
-        line1: deliveryAddress.line1,
-        unit: deliveryAddress.unit,
-        city: deliveryAddress.city,
-        province: deliveryAddress.province,
-        postalCode: deliveryAddress.postalCode,
-      });
-      const eligibility = validateDelivery(
-        {
-          validated: point !== null,
-          latitude: point?.latitude ?? null,
-          longitude: point?.longitude ?? null,
-        },
-        {
-          originLatitude: business.latitude,
-          originLongitude: business.longitude,
-          radiusKm: delivery.radiusKm,
-          feeCents: delivery.feeCents,
-          minimumCents: delivery.minimumCents,
-        },
-        price.menuSubtotalCents,
-        hasFreeDeliveryItem,
+      // Enforced before any order or payment is created, by the same check a
+      // caller can run before there is an order. The address was normalized
+      // above and delivery is known to be enabled, so the refusal here is always
+      // about where the address is or the cart's size.
+      const eligibility = await checkDeliveryEligibility(
+        { address: deliveryAddress, menuSubtotalCents: price.menuSubtotalCents, items },
+        { ordering, delivery, business },
       );
       if (!eligibility.eligible) {
-        const message =
-          eligibility.reason === "below_minimum"
-            ? `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax.`
-            : delivery.outsideAreaMessage ??
-              "This address is outside our delivery area. Please call Pizza 62 to ask about an exception.";
-        throw new OrderValidationError(message, 422, "DELIVERY_ADDRESS_INELIGIBLE");
+        throw new OrderValidationError(eligibility.message ?? "", 422, "DELIVERY_ADDRESS_INELIGIBLE");
       }
     }
     const estimateMinutes = fulfilment === "delivery"
@@ -1541,6 +1851,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
     }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, policy.bypassLastOrderCutoff);
 
     /**
      * The gift card, resolved last — immediately before anything is written.
@@ -1572,9 +1883,9 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
      * A checkout left open while a promotion expires, or a gift card drained by
      * whoever else holds the code, both end with a total higher than the one on
      * the review screen. Without this the order would simply be created at the
-     * new price and the card charged for it. Optional, because the till has a
-     * person looking at the screen and does not need it; when the browser sends
-     * it, an increase is refused rather than absorbed.
+     * new price and the card charged for it. Customer checkout and the till
+     * send their reviewed amount; an increase is refused so they can review
+     * a fresh quote before collecting payment.
      */
     const expectedAmountDueCents = Number(body.expectedAmountDueCents);
     if (Number.isSafeInteger(expectedAmountDueCents) && amountDueCents > expectedAmountDueCents) {
@@ -1598,12 +1909,12 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     const trackingTokenHash = await hashOpaqueToken(trackingToken);
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
     // Only a trusted caller can say this is anything but a website order — see
-    // CreateOrderContext on why it is not reachable from the request body.
-    const channel = context.channel ?? "online";
+    // lib/order-policy.ts on why it is not reachable from the request body.
+    const channel = policy.channel;
     // Where the order came from, as opposed to where it was taken. A phone or
     // counter order has nothing to attribute and the till sends nothing; a
     // website order carries whatever campaign brought the customer here.
-    const attribution = context.staffEntry ? null : normalizeAttribution(body.attribution);
+    const attribution = policy.recordAttribution ? normalizeAttribution(body.attribution) : null;
     /**
      * A gift card that covers the whole bill leaves nothing for Clover to do.
      *
@@ -1683,7 +1994,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           // The employee who entered a walk-in is already standing in front of
           // that order. Treating it as unseen creates a false acknowledgement
           // alarm for an order the restaurant itself just accepted.
-          channel === "walk_in" ? now : null,
+          policy.alertRestaurant ? null : now,
           now,
           now,
         ),
@@ -1715,12 +2026,17 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         .prepare(
           `INSERT INTO order_events
            (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
-           VALUES (?, ?, NULL, ?, 'system', NULL, ?, ?)`,
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
           orderId,
           orderStatus,
+          // The server validated it either way; an AI-taken order also names
+          // the voice session that placed it, so it can be traced to its call.
+          // Every other order keeps the 'system' creation event it always had.
+          policy.actorType === "ai_receptionist" ? "ai_receptionist" : "system",
+          policy.actorType === "ai_receptionist" ? context.actorId ?? null : null,
           fullyCoveredByGiftCard
             ? `Order paid in full by gift card ending ${giftCardResult?.quote.suffix ?? "????"}`
             : settledOnCreation
@@ -1761,7 +2077,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           giftCardId,
           orderId,
           amountCents: giftCardAppliedCents,
-          actorType: context.staffEntry ? "staff" : "customer",
+          actorType: policy.actorType === "staff" ? "staff" : "customer",
           actorId: context.staffUserId ?? null,
           note: `Held against order ${orderNumber}`,
           now,
@@ -1784,8 +2100,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // was entered by the restaurant itself and is printed from that same tap, so
     // ringing the kitchen phone to tell staff about their own action is both
     // redundant and disruptive. Phone orders retain the alert: only the trusted
-    // walk_in channel is exempt, and the public route cannot set that channel.
-    if (channel !== "walk_in") {
+    // walk-in policy is exempt, and the public route cannot choose a policy.
+    if (policy.alertRestaurant) {
       operationsBatch.push(
         getD1()
           .prepare(

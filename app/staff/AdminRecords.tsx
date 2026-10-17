@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import type { Dashboard } from "@/app/staff/StaffPortal";
 import { OrderDetailDrawer } from "@/app/staff/OrderDetail";
+import { ORDER_CHANNEL_DISPLAY_ORDER, orderChannelLabel } from "@/lib/order-channels";
 
 type OrderRow = Record<string, unknown>;
 type FeedbackRow = Record<string, unknown>;
@@ -17,13 +18,6 @@ const when = (value: unknown) =>
 
 /** Order history, the feedback inbox and coupons — the day-to-day owner records. */
 type Breakdown = { channel: string; fulfilment: string; count: number; totalCents: number };
-
-/** The label the owner would use, not the database value. */
-const CHANNEL_LABELS: Record<string, string> = {
-  online: "Website",
-  phone: "Phone",
-  walk_in: "Walk-in",
-};
 
 export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => Promise<void> }) {
   const [tab, setTab] = useState<"orders" | "feedback" | "promotions">("orders");
@@ -123,9 +117,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
         </select>
         <select value={channel} onChange={(event) => changeFilter(setChannel)(event.target.value)} aria-label="Filter by where the order came from">
           <option value="all">Everywhere</option>
-          <option value="online">Website</option>
-          <option value="phone">Phone</option>
-          <option value="walk_in">Walk-in</option>
+          {ORDER_CHANNEL_DISPLAY_ORDER.map((key) => <option key={key} value={key}>{orderChannelLabel(key)}</option>)}
         </select>
         <select value={fulfilment} onChange={(event) => changeFilter(setFulfilment)(event.target.value)} aria-label="Filter by pickup or delivery">
           <option value="all">Pickup &amp; delivery</option>
@@ -148,7 +140,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
       {/* The owner's actual question — "how many were in store" — answered for
           the whole filtered range rather than the visible page. */}
       {breakdown.length ? <div className="channel-split">
-        {["online", "phone", "walk_in"].map((key) => {
+        {ORDER_CHANNEL_DISPLAY_ORDER.map((key) => {
           const rows = breakdown.filter((entry) => entry.channel === key);
           if (!rows.length) return null;
           const count = rows.reduce((sum, entry) => sum + entry.count, 0);
@@ -156,7 +148,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
           const pickup = rows.find((entry) => entry.fulfilment === "pickup")?.count ?? 0;
           const delivery = rows.find((entry) => entry.fulfilment === "delivery")?.count ?? 0;
           return <div className="channel-split-item" key={key}>
-            <strong>{CHANNEL_LABELS[key] ?? key}</strong>
+            <strong>{orderChannelLabel(key)}</strong>
             <b>{count}</b>
             <small>{formatMoney(cents)} · {pickup} pickup · {delivery} delivery</small>
           </div>;
@@ -169,7 +161,7 @@ export function AdminRecordsPanel({ dashboard, onSaved }: { dashboard: Dashboard
           {orders.map((order) => <tr key={String(order.id)} className="order-history-row" onClick={() => setOpenOrderId(String(order.id))}>
             <th scope="row">{String(order.order_number)}<small>{String(order.customer_name)}{order.customer_phone ? ` · ${String(order.customer_phone)}` : ""}</small></th>
             <td>{when(order.created_at)}{order.schedule_type === "scheduled" ? ` (for ${when(order.scheduled_for)})` : ""}</td>
-            <td>{CHANNEL_LABELS[String(order.channel)] ?? String(order.channel)}<small>{String(order.fulfilment)}</small></td>
+            <td>{orderChannelLabel(order.channel)}<small>{String(order.fulfilment)}</small></td>
             {/* Which ad, campaign or referrer produced this order. Computed
                 server-side so the table, the CSV export and the order drawer
                 all name a source the same way — see lib/attribution.ts. */}

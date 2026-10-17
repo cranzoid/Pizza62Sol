@@ -233,6 +233,18 @@ async function loadGiftCardForDelivery(giftCardId: string): Promise<GiftCardDeli
 /** Thrown when a row can never succeed — bad kind, missing order, no recipient. */
 class PermanentFailure extends Error {}
 
+/**
+ * Records on a restaurant alert that its email has gone, before the failure of
+ * its call is allowed to retry the row. `markRetry` leaves the payload alone,
+ * so the retry reads this and places only the call.
+ */
+async function rememberEmailSent(outboxId: string, payload: Record<string, unknown>): Promise<void> {
+  await getD1()
+    .prepare("UPDATE notification_outbox SET payload_json = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify({ ...payload, emailSent: true }), Date.now(), outboxId)
+    .run();
+}
+
 /** Thrown when the row should wait for credentials rather than spend an attempt. */
 class ParkForSetup extends Error {}
 
@@ -279,29 +291,51 @@ async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
       const message = await renderRestaurantNewOrder(order);
       const alertNumber = await restaurantAlertNumber();
 
-      // Email and voice are the reliable pair (see §9's SMS caveat); SMS is a
-      // best-effort extra and is never allowed to fail the row on its own.
-      let delivered = false;
-      const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
-      const to = row.recipient ?? business.email;
-      if (to) {
-        await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
-        delivered = true;
+      // A re-call — `requeueUnacknowledgedOrders` re-queued this row because
+      // nobody pressed 1 — exists only to ring the phone again. It used to run
+      // this whole case, so the restaurant got the same email again every two
+      // minutes for as long as the order went unacknowledged.
+      const recall = payload.recall === true;
+      // Set when an earlier attempt sent the email and then failed on the call:
+      // the retry the failure schedules must not send that email a second time.
+      const emailAlreadySent = payload.emailSent === true;
+
+      // Email and a voice call, and deliberately no SMS: the alert number is the
+      // restaurant's landline, which cannot receive texts. Sending one anyway
+      // billed a message per order that never arrived.
+      let delivered = emailAlreadySent;
+      let emailedNow = false;
+      if (!recall && !emailAlreadySent) {
+        const business = await getSetting<{ email?: string }>("business").catch(() => ({ email: undefined }));
+        const to = row.recipient ?? business.email;
+        if (to) {
+          await sendEmail({ to, subject: message.emailSubject, text: message.emailText, html: message.emailHtml });
+          delivered = true;
+          emailedNow = true;
+        }
       }
       if (alertNumber) {
-        await sendSms({ to: alertNumber, body: message.smsBody }).catch(() => undefined);
         const base = await publicBaseUrl();
         // The call is what actually gets someone's attention, so it is the one
         // whose failure is allowed to retry the row.
         if (base && message.voiceSay && !order.acknowledged_at) {
-          await placeAcknowledgementCall({
-            to: alertNumber,
-            say: message.voiceSay,
-            ackCallbackUrl: `${base}/api/notifications/voice/ack?order=${encodeURIComponent(order.id)}`,
-          });
+          try {
+            await placeAcknowledgementCall({
+              to: alertNumber,
+              say: message.voiceSay,
+              ackCallbackUrl: `${base}/api/notifications/voice/ack?order=${encodeURIComponent(order.id)}`,
+            });
+          } catch (error) {
+            if (emailedNow) await rememberEmailSent(row.id, payload);
+            throw error;
+          }
           delivered = true;
         }
       }
+      // A re-call with nothing left to do — someone acknowledged the order
+      // between the sweep and this delivery — is finished, not waiting for
+      // credentials. Parking it would only have it released and re-run.
+      if (recall) return;
       if (!delivered) throw new ParkForSetup("no configured channel can reach the restaurant");
       return;
     }
@@ -817,6 +851,10 @@ export function dispatchSoon(options: { drain?: boolean } = {}): Promise<void> {
  * `orders.acknowledged_at` is the same field the Acknowledge button on the staff
  * dashboard writes, so a member of staff tapping it on the kitchen screen stops
  * the phone ringing, with no separate state to keep in sync.
+ *
+ * The row is marked `recall` so its delivery places the call and nothing else:
+ * the email went with the first alert, and re-sending it on every cycle was a
+ * copy of the same order in the inbox every two minutes.
  */
 export async function requeueUnacknowledgedOrders(now: number = Date.now()): Promise<number> {
   await ensureDatabase();
@@ -834,7 +872,9 @@ export async function requeueUnacknowledgedOrders(now: number = Date.now()): Pro
   const horizon = now - 6 * 60 * 60 * 1000;
   const result = await getD1()
     .prepare(
-      `UPDATE notification_outbox SET status = 'retrying', scheduled_for = ?, updated_at = ?
+      `UPDATE notification_outbox
+         SET status = 'retrying', scheduled_for = ?, updated_at = ?,
+             payload_json = (payload_json::jsonb || '{"recall": true}'::jsonb)::text
        WHERE kind = 'restaurant_new_order'
          AND status = 'sent'
          AND attempt_count < ?

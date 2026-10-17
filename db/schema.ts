@@ -81,10 +81,14 @@ export const PAYMENT_STATUSES = [
 
 /**
  * Where the order came from. `online` is the customer web app; `phone` and
- * `walk_in` are staff-entered at the counter. Every order carries one so the
- * owner can answer "how many were in store" without reconciling two systems.
+ * `walk_in` are staff-entered at the counter; `ai_phone` is a phone call taken
+ * by the automated receptionist, kept apart from `phone` so a staff-taken call
+ * and an AI-taken one are never counted, alerted or ticketed as the same thing.
+ * Every order carries one so the owner can answer "how many were in store"
+ * without reconciling two systems. Only a trusted server context can set it —
+ * see lib/order-policy.ts.
  */
-export const ORDER_CHANNELS = ["online", "phone", "walk_in"] as const;
+export const ORDER_CHANNELS = ["online", "phone", "walk_in", "ai_phone"] as const;
 
 /** The outbox vocabulary the dispatcher, the reaper and the webhook all share. */
 export const OUTBOX_STATUSES = [
@@ -1269,3 +1273,172 @@ export const integrationSecrets = pgTable("integration_secrets", {
   updatedBy: text("updated_by").notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
+
+/**
+ * AI receptionist (Phase 2B): one row per voice session — a phone call, or a
+ * test session minted by server code.
+ *
+ * It is also the session's working order: the cart, the fulfilment, the
+ * customer and the delivery address live here, in Postgres, so the language
+ * model never holds transactional state and a slot swap mid-call loses nothing.
+ * Nothing here is an order; `createOrder` makes the order and `order_id` points
+ * at it.
+ *
+ * **One version for the whole draft.** Every change to anything an order is
+ * built from — a line, the fulfilment, the customer, the address — increments
+ * `cart_version` and clears the review and the confirmation. A confirmation
+ * belongs to exactly one version; `place_order` requires
+ * `reviewed_version = confirmed_version = cart_version`. The checks below make
+ * the half-states impossible to store, not merely unlikely.
+ *
+ * **The session secret is stored only as a hash**, like order tracking tokens.
+ * `call_sid` and `provider_conversation_id` are nullable because a test session
+ * has neither, and unique when present.
+ */
+export const VOICE_CALL_PROVIDERS = ["elevenlabs", "simulator", "test"] as const;
+export const VOICE_CALL_MODES = ["test", "internal", "pilot", "live"] as const;
+export const VOICE_CALLER_ID_STATUSES = ["presented", "forwarded_as_store", "withheld", "unknown"] as const;
+export const VOICE_CALL_STAGES = [
+  "new",
+  "fulfilment",
+  "building",
+  "address",
+  "review",
+  "confirmed",
+  "placing",
+  "placed",
+  "closed",
+] as const;
+
+export const voiceCalls = pgTable(
+  "voice_calls",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    mode: text("mode").notNull(),
+    callSid: text("call_sid"),
+    providerConversationId: text("provider_conversation_id"),
+    sessionSecretHash: text("session_secret_hash").notNull(),
+    calledNumber: text("called_number"),
+    forwardedFrom: text("forwarded_from"),
+    registrationState: text("registration_state"),
+    twilioStatus: text("twilio_status"),
+    twilioStatusSequence: integer("twilio_status_sequence"),
+    callDurationSeconds: integer("call_duration_seconds"),
+    postCallReceivedAt: bigint("post_call_received_at", { mode: "number" }),
+    callerPhone: text("caller_phone"),
+    callerIdStatus: text("caller_id_status").notNull().default("unknown"),
+    stage: text("stage").notNull().default("new"),
+    fulfilment: text("fulfilment"),
+    customerName: text("customer_name"),
+    customerPhone: text("customer_phone"),
+    /** Where the callback number came from: `caller_id` (read back to the caller) or `spoken`. */
+    customerPhoneSource: text("customer_phone_source"),
+    deliveryAddressJson: text("delivery_address_json"),
+    /** The last delivery decision for the stored address, with the version it was made at. */
+    deliveryCheckJson: text("delivery_check_json"),
+    cartJson: text("cart_json").notNull().default("[]"),
+    cartVersion: integer("cart_version").notNull().default(0),
+    nextLineNumber: integer("next_line_number").notNull().default(1),
+    reviewedVersion: integer("reviewed_version"),
+    reviewedAmountCents: integer("reviewed_amount_cents"),
+    reviewedAt: bigint("reviewed_at", { mode: "number" }),
+    confirmedVersion: integer("confirmed_version"),
+    confirmedAt: bigint("confirmed_at", { mode: "number" }),
+    confirmedAmountCents: integer("confirmed_amount_cents"),
+    confirmationUtterance: text("confirmation_utterance"),
+    placementStartedAt: bigint("placement_started_at", { mode: "number" }),
+    orderId: text("order_id").references(() => orders.id, { onDelete: "set null", onUpdate: "cascade" }),
+    placedAt: bigint("placed_at", { mode: "number" }),
+    toolCallCount: integer("tool_call_count").notNull().default(0),
+    validationErrorCount: integer("validation_error_count").notNull().default(0),
+    consecutiveFailureCount: integer("consecutive_failure_count").notNull().default(0),
+    escalationReason: text("escalation_reason"),
+    failureReason: text("failure_reason"),
+    startedAt: bigint("started_at", { mode: "number" }).notNull(),
+    endedAt: bigint("ended_at", { mode: "number" }),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("voice_calls_secret_hash_uq").on(table.sessionSecretHash),
+    uniqueIndex("voice_calls_call_sid_uq").on(table.callSid).where(sql`${table.callSid} IS NOT NULL`),
+    uniqueIndex("voice_calls_conversation_uq")
+      .on(table.providerConversationId)
+      .where(sql`${table.providerConversationId} IS NOT NULL`),
+    // At most one session ever places a given order.
+    uniqueIndex("voice_calls_order_uq").on(table.orderId).where(sql`${table.orderId} IS NOT NULL`),
+    index("voice_calls_created_idx").on(table.createdAt),
+    index("voice_calls_caller_idx").on(table.callerPhone, table.createdAt),
+    check("voice_calls_provider", inList("provider", VOICE_CALL_PROVIDERS)),
+    check("voice_calls_mode", inList("mode", VOICE_CALL_MODES)),
+    check("voice_calls_caller_id_status", inList("caller_id_status", VOICE_CALLER_ID_STATUSES)),
+    check("voice_calls_stage", inList("stage", VOICE_CALL_STAGES)),
+    check("voice_calls_fulfilment", sql`fulfilment IS NULL OR fulfilment IN ('pickup', 'delivery')`),
+    check("voice_calls_phone_source", sql`customer_phone_source IS NULL OR customer_phone_source IN ('caller_id', 'spoken')`),
+    check(
+      "voice_calls_counts_nonneg",
+      nonNegative("cart_version", "tool_call_count", "validation_error_count", "consecutive_failure_count"),
+    ),
+    check("voice_calls_line_number_positive", sql`next_line_number >= 1`),
+    // A review is of a version that has existed, with its amount and time.
+    //
+    // Every column is tested IS NOT NULL before it is compared. A CHECK passes
+    // when its expression is NULL, so a bare `confirmed_version = reviewed_version`
+    // would let a confirmation with no review through.
+    check(
+      "voice_calls_review_consistent",
+      sql`(reviewed_version IS NULL AND reviewed_amount_cents IS NULL AND reviewed_at IS NULL)
+          OR (reviewed_version IS NOT NULL AND reviewed_amount_cents IS NOT NULL AND reviewed_at IS NOT NULL
+              AND reviewed_version <= cart_version AND reviewed_amount_cents >= 0)`,
+    ),
+    // A confirmation is of exactly the reviewed version, at exactly the reviewed amount.
+    check(
+      "voice_calls_confirmation_consistent",
+      sql`(confirmed_version IS NULL AND confirmed_at IS NULL AND confirmed_amount_cents IS NULL)
+          OR (confirmed_version IS NOT NULL AND confirmed_at IS NOT NULL AND confirmed_amount_cents IS NOT NULL
+              AND reviewed_version IS NOT NULL AND reviewed_amount_cents IS NOT NULL
+              AND confirmed_version = reviewed_version AND confirmed_amount_cents = reviewed_amount_cents)`,
+    ),
+    check("voice_calls_placed_has_order", sql`stage <> 'placed' OR order_id IS NOT NULL`),
+    check("voice_calls_expiry_after_start", sql`expires_at > started_at`),
+  ],
+);
+
+/**
+ * What happened during a voice session, append-only.
+ *
+ * One row per tool call (and per session event): what was asked, with card-like
+ * numbers and phone digits redacted before it is written, what was answered,
+ * whether it worked, the issue codes, how long it took, and the cart version
+ * before and after — enough to replay why an order came out the way it did.
+ * Rows are never updated; the migration adds a trigger that refuses an UPDATE.
+ * They go when their session goes (a retention sweep deletes sessions).
+ */
+export const VOICE_CALL_EVENT_TYPES = ["tool", "session"] as const;
+
+export const voiceCallEvents = pgTable(
+  "voice_call_events",
+  {
+    id: text("id").primaryKey(),
+    voiceCallId: text("voice_call_id")
+      .notNull()
+      .references(() => voiceCalls.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    eventType: text("event_type").notNull(),
+    tool: text("tool"),
+    requestJson: text("request_json"),
+    responseJson: text("response_json"),
+    ok: integer("ok").notNull(),
+    issueCodesJson: text("issue_codes_json"),
+    latencyMs: integer("latency_ms"),
+    cartVersionBefore: integer("cart_version_before"),
+    cartVersionAfter: integer("cart_version_after"),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("voice_call_events_call_idx").on(table.voiceCallId, table.createdAt),
+    check("voice_call_events_type", inList("event_type", VOICE_CALL_EVENT_TYPES)),
+    check("voice_call_events_flags", isFlag("ok")),
+    check("voice_call_events_latency_nonneg", sql`latency_ms IS NULL OR latency_ms >= 0`),
+  ],
+);

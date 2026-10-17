@@ -32,6 +32,7 @@ import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/domain";
 import { totalRows } from "@/lib/order-presentation";
 import { orderSourceLabel, touchRows, touchesDiffer, type OrderAttribution } from "@/lib/attribution";
+import { orderChannelLabel, takenByRestaurant } from "@/lib/order-channels";
 
 type OrderItem = {
   id: string;
@@ -124,8 +125,6 @@ const time = (value: unknown) =>
 
 const words = (value: unknown) => String(value ?? "").replaceAll("_", " ");
 
-const CHANNEL_LABELS: Record<string, string> = { online: "Website", phone: "Phone", walk_in: "Walk-in" };
-
 /**
  * Green for an order still moving, grey for one that is finished, red for one
  * that is not going to happen. Status words alone all look alike in a list.
@@ -169,9 +168,10 @@ function Section({ title, aside, children }: { title: string; aside?: string | n
 /**
  * Where this order came from.
  *
- * A staff-entered order is answered by saying so rather than by an empty panel:
- * a phone order has no campaign, and rendering "Direct" for it would put it in
- * the same bucket as a website visitor who typed the address in.
+ * An order the restaurant took itself — at the till, or on its AI phone line —
+ * is answered by saying so rather than by an empty panel: a phone order has no
+ * campaign, and rendering "Direct" for it would put it in the same bucket as a
+ * website visitor who typed the address in.
  *
  * When first and last contact differ, both are shown. The pair is the honest
  * answer — an ad that introduced the customer in February and a direct visit
@@ -179,14 +179,18 @@ function Section({ title, aside, children }: { title: string; aside?: string | n
  * either flatters the campaign or erases it.
  */
 function MarketingSection({ order }: { order: OrderDetail }) {
-  const staffEntered = order.channel === "phone" || order.channel === "walk_in";
+  const takenHere = takenByRestaurant(order.channel);
   const attribution = order.attribution;
   const last = attribution?.last ?? attribution?.first ?? null;
   const showFirst = touchesDiffer(attribution);
-  return <Section title="Where it came from" aside={CHANNEL_LABELS[order.channel] ?? order.channel}>
+  return <Section title="Where it came from" aside={orderChannelLabel(order.channel)}>
     <p className="od-source">{orderSourceLabel(attribution, order.channel)}</p>
-    {staffEntered ? (
-      <p className="od-muted">Taken by the restaurant, so there is no campaign to attribute.</p>
+    {takenHere ? (
+      <p className="od-muted">
+        {order.channel === "ai_phone"
+          ? "Taken by the AI phone line, so there is no campaign to attribute."
+          : "Taken by the restaurant, so there is no campaign to attribute."}
+      </p>
     ) : !last ? (
       <p className="od-muted">
         No campaign parameters were on the link this customer arrived by. That is a direct visit, a bookmark,
@@ -251,7 +255,7 @@ export function OrderDetailDrawer({ orderId, onClose }: { orderId: string | null
     <aside className="order-drawer" role="dialog" aria-modal="true" aria-labelledby="order-drawer-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="drawer-head">
         <div>
-          <small>{order ? `${CHANNEL_LABELS[order.channel] ?? order.channel} · ${order.fulfilment}` : "Order detail"}</small>
+          <small>{order ? `${orderChannelLabel(order.channel)} · ${order.fulfilment}` : "Order detail"}</small>
           <h2 id="order-drawer-title">{order ? order.order_number.replace("P62-", "#") : "…"}</h2>
         </div>
         <button className="modal-close" onClick={onClose} aria-label="Close">×</button>

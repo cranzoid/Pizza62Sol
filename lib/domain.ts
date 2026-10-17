@@ -18,6 +18,9 @@ export type PizzaPricingInput = {
   halfToppingUnitsBps: number;
   toppings: ToppingSelection[];
   extraCheese: boolean;
+  /** Reserve the full recipe even when ingredients are deliberately omitted. */
+  recipeToppingIds?: string[];
+  recipeExtraCheese?: boolean;
 };
 
 export type PizzaPricingResult = {
@@ -264,16 +267,22 @@ export function normalizeToppings(
 
 export function toppingUnitsBps(
   selections: ToppingSelection[],
-  halfToppingUnitsBps = 10_000,
+  halfToppingUnitsBps = 5_000,
 ): number {
   if (!Number.isSafeInteger(halfToppingUnitsBps) || halfToppingUnitsBps < 0) {
     throw new Error("Half-topping weight must use non-negative basis points");
   }
   return normalizeToppings(selections).reduce(
     (sum, selection) =>
-      sum + (selection.placement === "whole" ? 10_000 : halfToppingUnitsBps),
+      sum + (selection.placement === "whole" ? 10_000 : halfToppingUnitsBps) * toppingWeight(selection.toppingId),
     0,
   );
+}
+
+/** Stable menu identity: sauce names and chicken burgers never enter this rule. */
+export const CHICKEN_TOPPING_ID = "real-chicken";
+export function toppingWeight(toppingId: string): number {
+  return toppingId === CHICKEN_TOPPING_ID ? 2 : 1;
 }
 
 export const CHEESE_OPTIONS = ["No Cheese", "Light Cheese", "Regular Cheese", "Extra Cheese"] as const;
@@ -546,7 +555,7 @@ export function normalizeModifierValues(
   }));
 }
 
-export function modifierUnitsBps(values: ModifierValue[], halfToppingUnitsBps = 10_000): number {
+export function modifierUnitsBps(values: ModifierValue[], halfToppingUnitsBps = 5_000): number {
   return toppingUnitsBps(
     values.map((entry) => ({ toppingId: entry.value, placement: entry.placement })),
     halfToppingUnitsBps,
@@ -566,13 +575,18 @@ export function priceToppingUnits(
 export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
   assertIntegerCents(input.basePriceCents, "Base price");
   assertIntegerCents(input.extraToppingPriceCents, "Extra topping price");
-  const normalizedToppings = normalizeToppings(input.toppings);
+  const recipe = [...new Set(input.recipeToppingIds ?? [])];
+  const normalizedToppings = normalizeToppings([
+    ...input.toppings,
+    ...recipe.map((toppingId) => ({ toppingId, placement: "whole" as const })),
+  ]);
   const selectedUnitsBps =
     toppingUnitsBps(normalizedToppings, input.halfToppingUnitsBps) +
-    (input.extraCheese ? 10_000 : 0);
+    (input.extraCheese || input.recipeExtraCheese ? 10_000 : 0);
+  const recipeWeightAdjustment = recipe.reduce((sum, id) => sum + (toppingWeight(id) - 1) * 10_000, 0);
   const includedUnitsBps = Math.min(
     selectedUnitsBps,
-    Math.max(0, input.includedToppingUnitsBps),
+    Math.max(0, input.includedToppingUnitsBps) + recipeWeightAdjustment,
   );
   const paidUnitsBps = Math.max(0, selectedUnitsBps - includedUnitsBps);
   const extraToppingTotalCents = Math.round(
@@ -586,6 +600,48 @@ export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
     extraToppingTotalCents,
     totalCents: input.basePriceCents + extraToppingTotalCents,
   };
+}
+
+/** One calculator for browser builds and validated server modifier snapshots. */
+export function priceModifierSelections(
+  sections: ModifierSection[],
+  selections: Array<{ id: string; values: Array<string | { value?: string; placement?: string }> }>,
+  halfToppingUnitsBps = 5_000,
+) {
+  const selected = new Map(selections.map((selection) => [selection.id, selection.values]));
+  const shared = new Map<string, { unitsBps: number; includedUnitsBps: number; rate: number }>();
+  const priced = sections.filter((section) => !isRetiredSection(section)).map((section) => {
+    const raw = selected.get(section.id) ?? [];
+    const values = section.source === "toppings" ? normalizeModifierValues(raw)
+      : [...new Set(raw.map((entry) => typeof entry === "string" ? entry : entry.value ?? ""))].map((value) => ({ value, placement: "whole" as const }));
+    const unitsBps = section.source === "toppings" ? modifierUnitsBps(values, halfToppingUnitsBps) : values.length * 10_000;
+    const includedUnitsBps = (section.included ?? (section.source === "toppings" ? 0 : section.max)) * 10_000;
+    const optionCents = values.reduce((sum, entry) => sum + (sectionOptionPrices(section)[entry.value] ?? 0), 0);
+    let extraCents = optionCents;
+    if (section.source === "toppings" && section.sharedGroup) {
+      const pool = shared.get(section.sharedGroup) ?? { unitsBps: 0, includedUnitsBps: (section.sharedIncluded ?? 0) * 10_000, rate: section.extraPriceCents ?? 0 };
+      pool.unitsBps += unitsBps;
+      shared.set(section.sharedGroup, pool);
+    } else {
+      extraCents += priceToppingUnits(unitsBps, includedUnitsBps, section.extraPriceCents ?? 0);
+    }
+    return { id: section.id, unitsBps, includedUnitsBps, extraCents, sharedGroup: section.sharedGroup };
+  });
+  const pools = Object.fromEntries([...shared].map(([id, pool]) => [id, { ...pool, extraCents: priceToppingUnits(pool.unitsBps, pool.includedUnitsBps, pool.rate) }]));
+  return {
+    sections: priced,
+    pools,
+    extraCents: priced.reduce((sum, section) => sum + section.extraCents, 0) + Object.values(pools).reduce((sum, pool) => sum + pool.extraCents, 0),
+  };
+}
+
+/** Strict cents parsing: malformed tender must never turn into a different amount. */
+export function parseCashTender(raw: string): number | null {
+  const value = raw.trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
+  const [dollars, fraction = ""] = value.split(".");
+  const cents = Number(dollars) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents >= 0 ? cents : null;
 }
 
 export function priceSharedToppingPool(

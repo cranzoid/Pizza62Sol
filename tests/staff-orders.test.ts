@@ -274,6 +274,7 @@ withDb("builds a customized pizza at the counter, priced like the website's", as
     toppings: [
       { toppingId: "pepperoni", placement: "whole" },
       { toppingId: "mushrooms", placement: "whole" },
+      { toppingId: "onions", placement: "right" },
       { toppingId: "jalapenos", placement: "left" },
     ],
     extraCheese: true,

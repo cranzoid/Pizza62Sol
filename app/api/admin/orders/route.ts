@@ -22,6 +22,7 @@ import { ensureDatabase, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { logFailure } from "@/lib/log";
 import { createOrder, OrderValidationError, quoteOrder, type OrderRequest } from "@/lib/order-service";
+import { staffOrderContext } from "@/lib/order-policy";
 import { loadOrderCore, loadOrderDetail, redactOrderContact } from "@/lib/order-detail";
 import { saveBirthday } from "@/lib/customer-contacts";
 
@@ -93,10 +94,10 @@ export async function POST(request: Request) {
     // same number the order will be created for — so it comes from the same
     // pricing path rather than being added up on the till screen.
     if (body.quoteOnly) {
-      return Response.json(await quoteOrder(body, { staffEntry: true }), { status: 200 });
+      return Response.json(await quoteOrder(body, staffOrderContext(channel)), { status: 200 });
     }
 
-    const result = await createOrder(body, { channel, staffEntry: true, staffUserId: user.id });
+    const result = await createOrder(body, staffOrderContext(channel, user.id));
 
     // The birthday is a nicety riding on the order, not part of it: the order
     // is committed, so a failure here is logged and reported, never raised.

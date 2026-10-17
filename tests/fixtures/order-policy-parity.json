@@ -1,0 +1,2045 @@
+{
+  "pickup, full contact, pay at store, scheduled [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, full contact, pay at store, scheduled [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, full contact, pay at store, scheduled [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, name only [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid phone number."
+  },
+  "pickup, name only [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Blue cap",
+        "phone": "",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, name only [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Blue cap",
+        "phone": "",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, name and phone, no email [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid email address."
+  },
+  "pickup, name and phone, no email [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada",
+        "phone": "9055550142",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, name and phone, no email [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada",
+        "phone": "9055550142",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, no name [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter your full name."
+  },
+  "pickup, no name [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Give the order a name so staff can call it out."
+  },
+  "pickup, no name [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Give the order a name so staff can call it out."
+  },
+  "pickup, malformed phone [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid phone number."
+  },
+  "pickup, malformed phone [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "That phone number does not look right."
+  },
+  "pickup, malformed phone [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "That phone number does not look right."
+  },
+  "pickup, malformed email [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid phone number."
+  },
+  "pickup, malformed email [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "That email address does not look right."
+  },
+  "pickup, malformed email [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "That email address does not look right."
+  },
+  "delivery in area, full contact, pay at store [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Pay at store is available for pickup orders only."
+  },
+  "delivery in area, full contact, pay at store [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "delivery",
+      "scheduleType": "scheduled",
+      "address": {
+        "line1": "55 Parkdale Ave N",
+        "unit": "2",
+        "city": "Hamilton",
+        "province": "ON",
+        "postalCode": "L8H 5W7"
+      },
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 2697,
+        "discount": 0,
+        "tax": 396,
+        "deliveryFee": 350,
+        "tip": 0,
+        "total": 3443
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "delivery in area, full contact, pay at store [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "delivery",
+      "scheduleType": "scheduled",
+      "address": {
+        "line1": "55 Parkdale Ave N",
+        "unit": "2",
+        "city": "Hamilton",
+        "province": "ON",
+        "postalCode": "L8H 5W7"
+      },
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 2697,
+        "discount": 0,
+        "tax": 396,
+        "deliveryFee": 350,
+        "tip": 0,
+        "total": 3443
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "delivery, name only [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid phone number."
+  },
+  "delivery, name only [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "A delivery needs a phone number the driver can call."
+  },
+  "delivery, name only [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "A delivery needs a phone number the driver can call."
+  },
+  "delivery outside Hamilton [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Pay at store is available for pickup orders only."
+  },
+  "delivery outside Hamilton [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Online delivery is currently limited to Hamilton, Ontario."
+  },
+  "delivery outside Hamilton [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Online delivery is currently limited to Hamilton, Ontario."
+  },
+  "delivery below the minimum [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Pay at store is available for pickup orders only."
+  },
+  "delivery below the minimum [staff_phone]": {
+    "accepted": false,
+    "status": 422,
+    "code": "DELIVERY_ADDRESS_INELIGIBLE",
+    "message": "Delivery orders must be at least $20.00 before tax."
+  },
+  "delivery below the minimum [staff_walk_in]": {
+    "accepted": false,
+    "status": 422,
+    "code": "DELIVERY_ADDRESS_INELIGIBLE",
+    "message": "Delivery orders must be at least $20.00 before tax."
+  },
+  "pickup, online payment without Clover [website]": {
+    "accepted": false,
+    "status": 503,
+    "code": "PAYMENT_SETUP_REQUIRED",
+    "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+  },
+  "pickup, online payment without Clover [staff_phone]": {
+    "accepted": false,
+    "status": 503,
+    "code": "PAYMENT_SETUP_REQUIRED",
+    "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+  },
+  "pickup, online payment without Clover [staff_walk_in]": {
+    "accepted": false,
+    "status": 503,
+    "code": "PAYMENT_SETUP_REQUIRED",
+    "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+  },
+  "pickup, staff-only product [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "This item is only available at the counter."
+  },
+  "pickup, staff-only product [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 649,
+        "discount": 0,
+        "tax": 84,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 733
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup, staff-only product [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 649,
+        "discount": 0,
+        "tax": 84,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 733
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup ASAP while open [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup ASAP while open [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup ASAP while open [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with no schedule while open [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with no schedule while open [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with no schedule while open [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup ASAP ten minutes before close [website]": {
+    "accepted": false,
+    "status": 409,
+    "code": "LAST_ORDERS_CLOSED",
+    "message": "Last orders have gone in for tonight. Please schedule your order for a later time."
+  },
+  "pickup ASAP ten minutes before close [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup ASAP ten minutes before close [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "asap",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup scheduled for tomorrow, placed after the cutoff [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup scheduled for tomorrow, placed after the cutoff [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup scheduled for tomorrow, placed after the cutoff [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with campaign attribution [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": true,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with campaign attribution [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with campaign attribution [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup paid at store while pay-at-store pickup is switched off [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Pay at store is available for pickup orders only."
+  },
+  "pickup paid at store while pay-at-store pickup is switched off [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup paid at store while pay-at-store pickup is switched off [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "pickup with an unknown promo code [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "PROMO_CODE_INVALID",
+    "message": "That promo code isn't valid right now."
+  },
+  "pickup with an unknown promo code [staff_phone]": {
+    "accepted": false,
+    "status": 400,
+    "code": "PROMO_CODE_INVALID",
+    "message": "That promo code isn't valid right now."
+  },
+  "pickup with an unknown promo code [staff_walk_in]": {
+    "accepted": false,
+    "status": 400,
+    "code": "PROMO_CODE_INVALID",
+    "message": "That promo code isn't valid right now."
+  },
+  "the same submission twice [website]": {
+    "accepted": true,
+    "duplicate": false,
+    "replay": {
+      "duplicate": true,
+      "sameOrder": true
+    },
+    "order": {
+      "channel": "online",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "the same submission twice [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "replay": {
+      "duplicate": true,
+      "sameOrder": true
+    },
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request",
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "the same submission twice [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "replay": {
+      "duplicate": true,
+      "sameOrder": true
+    },
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Ada Lovelace",
+        "phone": "9055550142",
+        "email": "ada@example.test"
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "customer_order_confirmation",
+        "feedback_request"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "request body tries to claim a trusted context [website]": {
+    "accepted": false,
+    "status": 400,
+    "code": "ORDER_VALIDATION_FAILED",
+    "message": "Enter a valid phone number."
+  },
+  "request body tries to claim a trusted context [staff_phone]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "phone",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Blue cap",
+        "phone": "",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": false,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [
+        "restaurant_new_order"
+      ],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "request body tries to claim a trusted context [staff_walk_in]": {
+    "accepted": true,
+    "duplicate": false,
+    "order": {
+      "channel": "walk_in",
+      "status": "received",
+      "paymentStatus": "pending_at_store",
+      "paymentMethod": "pay_at_store",
+      "customer": {
+        "name": "Blue cap",
+        "phone": "",
+        "email": ""
+      },
+      "fulfilment": "pickup",
+      "scheduleType": "scheduled",
+      "address": null,
+      "acknowledged": true,
+      "attributionKept": false,
+      "money": {
+        "subtotal": 1798,
+        "discount": 0,
+        "tax": 234,
+        "deliveryFee": 0,
+        "tip": 0,
+        "total": 2032
+      },
+      "outboxKinds": [],
+      "events": [
+        {
+          "actorType": "system",
+          "actorId": null,
+          "note": "Order accepted after server validation"
+        }
+      ]
+    }
+  },
+  "quote: pickup pay at store [website]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: pickup pay at store [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: pickup pay at store [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: delivery pay at store [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "PAYMENT_METHOD_UNAVAILABLE",
+        "message": "Pay at store is available for pickup orders only."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 2697,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 2697,
+      "taxableSubtotalCents": 2697,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 396,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 3443,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 3443
+    }
+  },
+  "quote: delivery pay at store [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 2697,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 2697,
+      "taxableSubtotalCents": 2697,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 396,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 3443,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 3443
+    }
+  },
+  "quote: delivery pay at store [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 2697,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 2697,
+      "taxableSubtotalCents": 2697,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 396,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 3443,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 3443
+    }
+  },
+  "quote: delivery below the minimum [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "DELIVERY_BELOW_MINIMUM",
+        "message": "Delivery orders must be at least $20.00 before tax. Add $11.01 more to your order."
+      },
+      {
+        "index": null,
+        "code": "PAYMENT_METHOD_UNAVAILABLE",
+        "message": "Pay at store is available for pickup orders only."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 899,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 899,
+      "taxableSubtotalCents": 899,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 162,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 1411,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 1411
+    }
+  },
+  "quote: delivery below the minimum [staff_phone]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "DELIVERY_BELOW_MINIMUM",
+        "message": "Delivery orders must be at least $20.00 before tax. Add $11.01 more to your order."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 899,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 899,
+      "taxableSubtotalCents": 899,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 162,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 1411,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 1411
+    }
+  },
+  "quote: delivery below the minimum [staff_walk_in]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "DELIVERY_BELOW_MINIMUM",
+        "message": "Delivery orders must be at least $20.00 before tax. Add $11.01 more to your order."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 899,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 899,
+      "taxableSubtotalCents": 899,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 162,
+      "deliveryFeeCents": 350,
+      "tipCents": 0,
+      "totalCents": 1411,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 1411
+    }
+  },
+  "quote: staff-only product [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": 0,
+        "code": "ORDER_VALIDATION_FAILED",
+        "message": "This item is only available at the counter."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 0,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 0,
+      "taxableSubtotalCents": 0,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 0,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 0,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 0
+    }
+  },
+  "quote: staff-only product [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 649,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 649,
+      "taxableSubtotalCents": 649,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 84,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 733,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 733
+    }
+  },
+  "quote: staff-only product [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 649,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 649,
+      "taxableSubtotalCents": 649,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 84,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 733,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 733
+    }
+  },
+  "quote: ASAP while open [website]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: ASAP while open [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: ASAP while open [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: ASAP ten minutes before close [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "LAST_ORDERS_CLOSED",
+        "message": "Last orders have gone in for tonight. Please schedule your order for a later time."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: ASAP ten minutes before close [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: ASAP ten minutes before close [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no schedule ten minutes before close [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "LAST_ORDERS_CLOSED",
+        "message": "Last orders have gone in for tonight. Please schedule your order for a later time."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no schedule ten minutes before close [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no schedule ten minutes before close [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: pay at store while pay-at-store pickup is switched off [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "PAYMENT_METHOD_UNAVAILABLE",
+        "message": "Pay at store is available for pickup orders only."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: pay at store while pay-at-store pickup is switched off [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: pay at store while pay-at-store pickup is switched off [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: online payment without Clover [website]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "PAYMENT_SETUP_REQUIRED",
+        "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: online payment without Clover [staff_phone]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "PAYMENT_SETUP_REQUIRED",
+        "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: online payment without Clover [staff_walk_in]": {
+    "ok": false,
+    "issues": [
+      {
+        "index": null,
+        "code": "PAYMENT_SETUP_REQUIRED",
+        "message": "Online payment is ready for the restaurant's Clover credentials. No payment was taken."
+      }
+    ],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no payment method named [website]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no payment method named [staff_phone]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  },
+  "quote: no payment method named [staff_walk_in]": {
+    "ok": true,
+    "issues": [],
+    "totals": {
+      "menuSubtotalCents": 1798,
+      "discountCents": 0,
+      "discountedMenuSubtotalCents": 1798,
+      "taxableSubtotalCents": 1798,
+      "nonTaxableSubtotalCents": 0,
+      "taxCents": 234,
+      "deliveryFeeCents": 0,
+      "tipCents": 0,
+      "totalCents": 2032,
+      "giftCardAppliedCents": 0,
+      "amountDueCents": 2032
+    }
+  }
+}

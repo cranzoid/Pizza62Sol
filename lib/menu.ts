@@ -32,7 +32,7 @@ export type MenuProductSeed = {
 export const MENU_SEED_VERSION = "2026-10-06-sauces-extras-breadsticks";
 
 export const MENU_CATEGORIES = [
-  ["build-your-own", "Pizza by Size", "pizza-by-size", 10],
+  ["build-your-own", "Delivery pizzas", "pizza-by-size", 10],
   ["specialty-pizzas", "Specialty Pizzas", "specialty-pizzas", 20],
   ["deals", "Deals", "deals", 30],
   ["combos", "Combos", "combos", 40],
@@ -67,7 +67,7 @@ export const TOPPING_SEEDS = [
   ["jalapenos", "Jalapeños", false],
   ["onions", "Onions", false],
   ["green-olives", "Green Olives", false],
-  ["anchovies", "Anchovies", false],
+  ["anchovies", "Anchovies", true],
   ["pineapple", "Pineapple", false],
   ["garlic", "Garlic", false],
   ["real-bacon", "Real Bacon", true],

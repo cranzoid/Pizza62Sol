@@ -185,10 +185,10 @@ export function touchLabel(touch: AttributionTouch | null | undefined): string {
 /**
  * One line for a table cell or a spreadsheet column.
  *
- * `channel` is the order's own channel (`online`, `phone`, `walk_in`), because
- * a phone order has no campaign to report and labelling it "Direct" would put
- * it in the same bucket as a website visitor who typed the address in — one of
- * those is a marketing result and the other is a telephone.
+ * `channel` is the order's own channel (`online`, `phone`, `walk_in`,
+ * `ai_phone`), because a phone order has no campaign to report and labelling it
+ * "Direct" would put it in the same bucket as a website visitor who typed the
+ * address in — one of those is a marketing result and the other is a telephone.
  */
 export function orderSourceLabel(
   attribution: OrderAttribution | null | undefined,
@@ -196,6 +196,7 @@ export function orderSourceLabel(
 ): string {
   if (channel === "phone") return "Phone order";
   if (channel === "walk_in") return "Walk-in";
+  if (channel === "ai_phone") return "AI phone order";
   return touchLabel(attribution?.last ?? attribution?.first);
 }
 

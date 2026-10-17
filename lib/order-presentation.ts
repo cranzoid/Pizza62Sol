@@ -24,6 +24,8 @@
  * that reads `order_items` lives in `lib/notifications/order-details.ts`.
  */
 import { formatMoney } from "@/lib/domain";
+import type { ModifierSection } from "@/lib/domain";
+import { drinkSummary } from "@/lib/drink-slots";
 
 export type SnapshotPlacement = "whole" | "left" | "right";
 
@@ -33,6 +35,7 @@ export type ItemSnapshot = {
   recipeOmissions?: unknown;
   toppings?: unknown;
   modifiers?: unknown;
+  productConfiguration?: { sections?: ModifierSection[] };
 };
 
 type SnapshotTopping = { toppingId?: string; placement?: string };
@@ -103,8 +106,11 @@ export function toppingDetails(
  * "Pizza 1 toppings" section is already a labelled group, and splitting it again
  * by side would bury which pizza it belongs to.
  */
-export function modifierDetails(modifiers: SnapshotModifier[]): Array<{ label: string; value: string }> {
-  return modifiers
+export function modifierDetails(modifiers: SnapshotModifier[], sections: ModifierSection[] = []): Array<{ label: string; value: string }> {
+  const drinks = drinkSummary(modifiers.map((modifier) => ({ id: modifier.id ?? "", values: (modifier.values ?? []).map((value) => ({ value: value.value ?? "", label: value.label ?? value.value ?? "" })) })), sections).filter((entry) => entry.text);
+  const drinkIds = new Set(drinks.flatMap((entry) => [...entry.ids]));
+  return [...modifiers
+    .filter((modifier) => !drinkIds.has(modifier.id ?? ""))
     .filter((modifier) => (modifier.values ?? []).length)
     .map((modifier) => ({
       label: modifier.group ? `${modifier.group} · ${modifier.label ?? ""}` : String(modifier.label ?? "Options"),
@@ -115,7 +121,7 @@ export function modifierDetails(modifiers: SnapshotModifier[]): Array<{ label: s
           return placement === "whole" ? label : `${label} (${placement === "left" ? "left half" : "right half"})`;
         })
         .join(", "),
-    }));
+    })), ...drinks.map((entry) => ({ label: "Included drinks", value: entry.text }))];
 }
 
 /**
@@ -149,7 +155,7 @@ export function snapshotDetails(
   const toppings = (Array.isArray(snapshot.toppings) ? (snapshot.toppings as SnapshotTopping[]) : [])
     .filter((topping) => !omitted.has(toppingNames.get(String(topping.toppingId ?? "")) ?? String(topping.toppingId ?? "")));
   const modifiers = Array.isArray(snapshot.modifiers) ? (snapshot.modifiers as SnapshotModifier[]) : [];
-  return [...toppingDetails(toppings, toppingNames), ...modifierDetails(modifiers)];
+  return [...toppingDetails(toppings, toppingNames), ...modifierDetails(modifiers, snapshot.productConfiguration?.sections)];
 }
 
 /**

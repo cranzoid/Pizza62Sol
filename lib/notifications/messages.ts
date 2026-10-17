@@ -41,6 +41,7 @@ import {
 } from "@/lib/giveaway";
 import { loadGiveaway, recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { publicBaseUrl } from "@/lib/notifications/config";
+import { orderChannelTicketLabel } from "@/lib/order-channels";
 import type { FeedbackReward } from "@/lib/rewards";
 import {
   loadOrderItemDetails,
@@ -611,16 +612,39 @@ export async function renderCustomerStatusUpdate(
 
 // --- restaurant: a new order arrived ----------------------------------------
 
+/**
+ * The first sentence of the restaurant's alert call: where the order came from.
+ *
+ * It used to say "New order from the Pizza 62 website" for every order,
+ * including phone orders keyed in at the till — so the kitchen was told a
+ * staff-taken call was a website order. An order the AI receptionist took is
+ * announced as such, because the person who picks up has to know nobody at the
+ * restaurant has spoken to that customer.
+ */
+function restaurantAlertOpening(channel: string): string {
+  switch (channel) {
+    case "phone":
+      return "New phone order.";
+    case "walk_in":
+      return "New walk-in order.";
+    case "ai_phone":
+      return "New A.I. phone order, taken by the automated phone line.";
+    default:
+      return "New order from the Pizza 62 website.";
+  }
+}
+
 export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<RenderedMessage> {
   const [base, details] = await Promise.all([publicBaseUrl(), loadOrderItemDetails(order.id)]);
   const address = deliveryAddress(order);
   const paid = order.payment_status === "paid";
   const itemLines = summariseItems(details);
+  const aiPhone = order.channel === "ai_phone";
 
   const sections: Section[] = [
     {
       type: "callout",
-      label: `${order.fulfilment.toUpperCase()} · ${order.channel === "online" ? "WEBSITE" : order.channel.replace("_", " ").toUpperCase()}`,
+      label: `${order.fulfilment.toUpperCase()} · ${orderChannelTicketLabel(order.channel)}`,
       value: `${order.order_number} · ${money(order.total_cents)}`,
       note: paid ? "Paid online — do not take payment again." : "COLLECT PAYMENT AT THE STORE.",
       tone: paid ? "neutral" : "warn",
@@ -650,10 +674,10 @@ export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<Re
   }
 
   const { emailHtml, emailText } = build({
-    eyebrow: `New ${order.fulfilment} order`,
+    eyebrow: aiPhone ? `AI phone order · ${order.fulfilment}` : `New ${order.fulfilment} order`,
     heading: `${order.order_number} — ${money(order.total_cents)}`,
     tone: "alert",
-    preheader: `${itemLines.length} item(s) · ${whenLine(order)} · ${paid ? "paid" : "collect"}`,
+    preheader: `${aiPhone ? "AI PHONE ORDER · " : ""}${itemLines.length} item(s) · ${whenLine(order)} · ${paid ? "paid" : "collect"}`,
     baseUrl: base,
     sections,
   });
@@ -664,7 +688,7 @@ export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<Re
   // detail is on the kitchen screen and the ticket; the call exists to make
   // someone look at them.
   const voiceSay = [
-    "New order from the Pizza 62 website.",
+    restaurantAlertOpening(order.channel),
     `${order.fulfilment === "delivery" ? "Delivery" : "Pickup"} order, number ${order.order_number.replace("P62-", "")}.`,
     `${itemLines.length} ${itemLines.length === 1 ? "item" : "items"}, total ${money(order.total_cents)}.`,
     paid ? "Already paid online." : "To be paid at the store.",
@@ -673,11 +697,16 @@ export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<Re
       : "As soon as possible.",
   ].join(" ");
 
+  // An AI-taken order leads with the fact in every written form too, and the
+  // text carries the callback number: the kitchen may need to ring the
+  // customer about an order no member of staff has heard.
   return {
-    emailSubject: `NEW ${order.fulfilment} order ${order.order_number} — ${money(order.total_cents)}`,
+    emailSubject: `${aiPhone ? "AI PHONE ORDER — " : ""}NEW ${order.fulfilment} order ${order.order_number} — ${money(order.total_cents)}`,
     emailText,
     emailHtml,
-    smsBody: `Pizza 62 NEW ${order.fulfilment} ${order.order_number}: ${itemLines.length} item(s), ${money(order.total_cents)}${paid ? " PAID" : " COLLECT"}. ${whenLine(order)}.`,
+    smsBody: aiPhone
+      ? `AI PHONE ORDER ${order.order_number} · ${order.fulfilment.toUpperCase()} · ${order.customer_name}${order.customer_phone ? ` ${order.customer_phone}` : ""} · ${itemLines.length} item(s) · ${money(order.total_cents)}${paid ? " PAID" : " COLLECT"} · ${whenLine(order)}. Check the kitchen board.`
+      : `Pizza 62 NEW ${order.fulfilment} ${order.order_number}: ${itemLines.length} item(s), ${money(order.total_cents)}${paid ? " PAID" : " COLLECT"}. ${whenLine(order)}.`,
     voiceSay,
   };
 }

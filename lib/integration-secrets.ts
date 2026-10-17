@@ -69,6 +69,19 @@ export const INTEGRATION_SECRET_KEYS = [
   // credential, but it belongs to the same "set once, rotate occasionally"
   // lifecycle and there is no reason for a second storage mechanism.
   "CRON_SECRET",
+  // The AI phone receptionist (lib/voice/config.ts). The mode is the kill
+  // switch and is "off" until someone sets it; the tool secret is the bearer
+  // token the voice provider presents. Neither has a value until the voice
+  // integration is deliberately connected.
+  "ELEVENLABS_API_KEY",
+  "ELEVENLABS_AGENT_ID",
+  "ELEVENLABS_WEBHOOK_SECRET",
+  "VOICE_AI_NUMBER",
+  "VOICE_AI_ALLOWLIST",
+  "VOICE_AI_MODE",
+  "VOICE_TOOL_SECRET",
+  "VOICE_PILOT_FULFILMENTS",
+  "VOICE_MAX_ORDER_CENTS",
 ] as const;
 
 export type IntegrationSecretKey = (typeof INTEGRATION_SECRET_KEYS)[number];
@@ -85,6 +98,9 @@ const KEY_SET = new Set<string>(INTEGRATION_SECRET_KEYS);
  * because seeing them is how you check them. Anything not listed is masked.
  */
 const READABLE_IN_FULL = new Set<string>([
+  "ELEVENLABS_AGENT_ID",
+  "VOICE_AI_NUMBER",
+  "VOICE_AI_ALLOWLIST",
   "CLOVER_ENVIRONMENT",
   "CLOVER_MERCHANT_ID",
   "CLOVER_PUBLIC_TOKEN",
@@ -98,6 +114,9 @@ const READABLE_IN_FULL = new Set<string>([
   "VOICE_RETRY_LIMIT",
   "VOICE_RETRY_MINUTES",
   "PUBLIC_BASE_URL",
+  "VOICE_AI_MODE",
+  "VOICE_PILOT_FULFILMENTS",
+  "VOICE_MAX_ORDER_CENTS",
 ]);
 
 /**
