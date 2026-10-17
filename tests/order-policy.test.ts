@@ -155,7 +155,8 @@ test("each preset states every privilege, and none can be edited at runtime", ()
     bypassLastOrderCutoff: false,
     recordAttribution: true,
     alertRestaurant: true,
-    allowCodes: true,
+    allowCouponCodes: true,
+    allowGiftCards: true,
   });
   const staff = {
     actorType: "staff",
@@ -166,7 +167,8 @@ test("each preset states every privilege, and none can be edited at runtime", ()
     allowPayOnDelivery: true,
     bypassLastOrderCutoff: true,
     recordAttribution: false,
-    allowCodes: true,
+    allowCouponCodes: true,
+    allowGiftCards: true,
   };
   assert.deepEqual({ ...STAFF_PHONE_ORDER_POLICY }, { ...staff, channel: "phone", alertRestaurant: true });
   assert.deepEqual({ ...STAFF_WALK_IN_ORDER_POLICY }, { ...staff, channel: "walk_in", alertRestaurant: false });
@@ -284,7 +286,7 @@ withDb("channel, alert and attribution are independent of every privilege", asyn
 
 withDb("codes can be withheld without changing anything else", async () => {
   await at(OPEN, async () => {
-    const policy = websiteWith({ allowCodes: false });
+    const policy = websiteWith({ allowCouponCodes: false, allowGiftCards: false });
     const coupon = await outcome(createOrder(pickup({ couponCode: "THANKS62" }), { policy }));
     assert.equal(coupon.code, "CODES_NOT_ACCEPTED");
     const giftCard = await outcome(createOrder(pickup({ giftCardCode: "P62-AAAA-BBBB-CCCC" }), { policy }));
@@ -295,6 +297,20 @@ withDb("codes can be withheld without changing anything else", async () => {
     assert.equal(quote.ok, false);
     const website = await quoteOrder(pickup({ couponCode: "THANKS62" }));
     assert.ok(!website.issues.some((issue) => issue.code === "CODES_NOT_ACCEPTED"));
+  });
+});
+
+withDb("promo codes and gift cards are separate permissions", async () => {
+  await at(OPEN, async () => {
+    const couponsOnly = websiteWith({ allowGiftCards: false });
+    const coupon = await quoteOrder(pickup({ couponCode: "THANKS62" }), { policy: couponsOnly });
+    assert.ok(!coupon.issues.some((issue) => issue.code === "CODES_NOT_ACCEPTED"));
+    const giftCard = await outcome(createOrder(pickup({ giftCardCode: "P62-AAAA-BBBB-CCCC" }), { policy: couponsOnly }));
+    assert.equal(giftCard.code, "CODES_NOT_ACCEPTED");
+    assert.equal(giftCard.message, "Gift cards cannot be used on this order.");
+    const giftCardsOnly = websiteWith({ allowCouponCodes: false });
+    const refusedCoupon = await outcome(createOrder(pickup({ couponCode: "THANKS62" }), { policy: giftCardsOnly }));
+    assert.equal(refusedCoupon.message, "Promo codes cannot be used on this order.");
   });
 });
 

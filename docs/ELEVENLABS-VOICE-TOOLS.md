@@ -1,5 +1,7 @@
 # ElevenLabs Voice Tools — Contract for the Pizza 62 AI Receptionist
 
+**Website parity (17 October 2026, later):** six tools were added and three changed so a caller can do by voice what the website's ordering flow does: business facts (`get_business_info`), orders for later (`get_order_slots`, `set_schedule`), promo codes (`apply_coupon`, `remove_coupon`), tips (`set_tip`), and the website's cheese step (`cheese` on `add_item`/`update_item`). Gift cards and card payment remain deliberately unavailable by voice. The full audit, the reasons and the rollout checklist are in [VOICE-WEB-PARITY.md](VOICE-WEB-PARITY.md). This code is local and not yet deployed; the ElevenLabs workspace still has the earlier 16 tools.
+
 **Status (17 October 2026):** the tool API and Phase 4 staging telephony routes are implemented. The build has passed staging deployment and smoke checks; production promotion is pending the normal GitHub Actions flow. Provider configuration remains untouched. `VOICE_AI_MODE` remains `off` by default, so tool calls return `503` and signed inbound calls receive a spoken fallback until internal testing is explicitly configured. This document describes the API as implemented in `lib/voice/tools.ts` and `app/api/voice/tools/[tool]/route.ts`. Every example below is a real response captured from those functions against the test database. The examples use a Wednesday at 6:00 PM, when the store is open.
 
 Read it with `docs/AI-RECEPTIONIST-ARCHITECTURE.md`. That file covers the call routing, the transfer design and the rollout phases. This one covers what the agent's tools are and how to configure them.
@@ -20,12 +22,14 @@ The ElevenLabs tool configuration must **never** give the model a parameter for 
 | total (`total`, `totalCents`, `amountDueCents`, `expectedAmountDueCents`) | Set by `place_order` from the confirmed review |
 | delivery fee (`fee`, `deliveryFee`, `deliveryFeeCents`) | Comes from the delivery settings and the cart |
 | `freeDelivery` | Comes from the products in the validated cart |
-| discounts (`discount`, `discountCents`, `couponCode`, `giftCardCode`, `promotion`, `promotionId`) | Automatic promotions apply on the server. Voice orders accept no codes |
-| tip (`tip`) | Always none for voice orders |
+| discounts (`discount`, `discountCents`, `couponCode`, `giftCardCode`, `promotion`, `promotionId`) | Automatic promotions apply on the server. A promo code is given only as `apply_coupon`'s `code` string; the server decides whether it is valid and what it takes off |
+| gift cards (`giftCardCode`, `giftCard`, `balanceCents`, `appliedCents`) | Never taken by voice: a gift card code is spendable money that must not enter a transcript (VOICE-WEB-PARITY.md §4) |
+| tip (`tip`, `tipCents`, `tipAmountCents`, `amountCents`) | Given only through `set_tip`: none, a preset percentage, or a dollar amount the caller names. The server prices it |
+| times (`schedule`, `scheduledFor`, `estimatedFor`) | Given only through `set_schedule` as a day and a clock time. The server matches them to the website's own slots |
 | channel (`channel`) | Always `ai_phone`, from the trusted server context |
 | staff privileges (`policy`, `staffEntry`, `staffUserId`, `context`, `actorId`) | The AI context is fixed server-side and is never a staff context |
 | idempotency keys (`idempotencyKey`) | Always `voice:<session id>:<cart version>`, built by `place_order` |
-| payment (`paymentMethod`, `paymentToken`, `card`, `cardNumber`) | Voice orders are pay at the store. No card data is ever taken |
+| payment (`paymentMethod`, `paymentToken`, `card`, `cardNumber`, `cvv`, `expiry`) | Voice orders are pay at the store (or the driver). No card data is ever taken |
 
 Unknown argument names are also refused (`UNKNOWN_FIELD`). The server never drops them silently.
 
@@ -42,7 +46,7 @@ Every tool is an ElevenLabs **webhook (server) tool**:
 | Content type | `application/json` |
 | Body | The tool's parameters only (see each tool). Every value is model-supplied. **None is session-derived**: session state lives on the server |
 | Header `Authorization` | `Bearer <VOICE_TOOL_SECRET>`. Store the value as an ElevenLabs workspace secret. It is the same for every call |
-| Header `X-Voice-Session` | The **per-call session secret**. It is minted by our backend for each call and handed to ElevenLabs as a secret dynamic variable (`secret__voice_session`), so the header value is `{{secret__voice_session}}` |
+| Header `X-Voice-Session` | The **per-call session secret**. It is minted by our backend for each call and handed to ElevenLabs as a secret dynamic variable (`secret__voice_session`). Configure the header as a dynamic-variable reference, `{ "variable_name": "secret__voice_session" }`, **not** the template string `{{secret__voice_session}}`, which is sent unexpanded and opens nothing (`401`) |
 
 ### How the two credentials work together
 
@@ -91,10 +95,12 @@ Every response, success or refusal, has this shape:
 
 ## 3. What the agent should do overall
 
-1. **`get_store_status`** at the start. If `acceptingOrdersNow` is false, take no order: read `say`, give the hours and suggest the website or calling back.
+1. **`get_store_status`** at the start. If `acceptingOrdersNow` is false but `acceptingScheduledOrders` is true, the order can still be taken **for later**, as on the website: read `say`, which names the earliest time. Take no order only when both are false. For the address, phone number, website or hours, call **`get_business_info`**; never answer them from memory.
 2. **`start_order`** with `fulfilment` when the caller says pickup or delivery. **Delivery is not available by phone** until the owner enables it (`VOICE_PILOT_FULFILMENTS=pickup,delivery`). Until then, offer pickup.
+2a. If the caller wants it later ("tomorrow at 11:30", "5:45 tonight"), call **`set_schedule`** with the day and time as they said them; `get_order_slots` answers "what times can I get?". The server decides whether a time is possible.
 3. For each item: **`search_menu`** → (if needed) **`get_menu_item`** → **`add_item`** with the ids it returned. Ask the caller whenever the result is `ambiguous`, an option section is `required`, or `add_item` reports an issue.
 4. **`set_customer`**: a name and a callback number. Never treat caller ID as identity. Read the number back.
+4a. Only if the caller brings them up: a promo code with **`apply_coupon`**, a tip with **`set_tip`**. Never suggest a tip amount, never say what a code is worth before the server answers, and never take a gift card or card number.
 5. For delivery: **`check_delivery_address`** (stores the address when it is one we serve).
 6. **`review_order`**, then **read its `say` (the read-back) to the caller exactly as written**.
 7. If the caller says yes to the whole read-back: **`confirm_order`** with the `cartVersion` from the review. If they change anything, make the change and call **`review_order` again**. The old confirmation is void.
@@ -109,7 +115,7 @@ Hand the caller to a person (when transfer exists) for complaints, refunds, a ma
 ```
 new ──start_order──► fulfilment ─set_fulfilment─► building ◄──► address (delivery without an address)
                                                      │  ▲
-                                         review_order│  │any change (add/update/remove/fulfilment/customer/address)
+                                         review_order│  │any change (add/update/remove/fulfilment/customer/address/time/code/tip)
                                                      ▼  │      → cart_version + 1, review and confirmation cleared
                                                   review ──confirm_order(cartVersion)──► confirmed
                                                                                           │
@@ -145,7 +151,7 @@ The **"Description for the LLM"** text under each tool is written to be pasted i
 
 ### 5.1 `get_store_status`
 
-**Description for the LLM:** Check whether Pizza 62 is taking orders right now, when last orders are, and whether pickup and delivery are available by phone. Call at the start of every call, and again if the caller asks about hours.
+**Description for the LLM:** Check whether Pizza 62 is taking orders right now, whether it can take an order for later (even while closed), when last orders are, and whether pickup and delivery are available by phone. Call at the start of every call. If acceptingOrdersNow is false but acceptingScheduledOrders is true, offer to take the order for a later time.
 
 **Parameters:** none.
 
@@ -169,7 +175,9 @@ The **"Description for the LLM"** text under each tool is written to be pasted i
 }
 ```
 
-**After it:** if `acceptingOrdersNow` is false, read `say` and take no order. The last-order cutoff (20 minutes before close), closures and pauses come from the same settings the website uses.
+Added for website parity: `acceptingScheduledOrders`, `pickup.earliestScheduled` and `delivery.earliestScheduled` (`{ at, date, time, when }`, for example `"tomorrow at 11:00 AM"`), and `scheduling` (`intervalMinutes: 15`, `latest`: the last time the website's checkout offers, `{ at, date, time, when }`). `nextOpenAt` is now spoken form (`"tomorrow at 11:00 AM"`). When closed, `say` ends with *"I can take a pickup order for later; the earliest time is tomorrow at 11:00 AM."*
+
+**After it:** if `acceptingOrdersNow` is false, read `say`. If `acceptingScheduledOrders` is true, the caller may order for later, exactly as the website lets them; otherwise take no order. The last-order cutoff (20 minutes before close) stops ASAP orders only, as on the website. Closures and pauses come from the same settings the website uses; a pause stops scheduled orders too.
 
 ### 5.2 `search_menu`
 
@@ -321,7 +329,7 @@ Both work inside the call's existing session; neither creates a session. `VOICE_
 
 ### 5.6 `add_item`
 
-**Description for the LLM:** Add one item to the order using ids from `search_menu` or `get_menu_item`. Include the size (`variationId`) when the item has sizes, the toppings with their placement, recipe toppings to leave off (`omitToppings`), and the choices for each option section (`modifiers`). Never send prices. The server prices the order and returns the new total.
+**Description for the LLM:** Add one item to the order using ids from `search_menu` or `get_menu_item`. Include the size (`variationId`) when the item has sizes, the toppings with their placement, recipe toppings to leave off (`omitToppings`), the cheese choice (`cheese`: none, light, regular or extra) for pizzas, and the choices for each option section (`modifiers`). Never send prices. The server prices the order and returns the new total.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
@@ -330,7 +338,8 @@ Both work inside the call's existing session; neither creates a session. `VOICE_
 | `quantity` | integer 1–100 | no (1) | Capped by the item's `maxQuantity` |
 | `toppings` | array of `{ toppingId, placement }` | no | `placement` is `whole`, `left` or `right`. For a specialty pizza, **additions only**: its recipe is added by the server |
 | `omitToppings` | array of topping ids | no | Recipe toppings to leave off a specialty pizza. The price does not change |
-| `extraCheese` | boolean | no | Pizzas only |
+| `extraCheese` | boolean | no | Pizzas only. The older form of `cheese: "extra"` |
+| `cheese` | `"none"` \| `"light"` \| `"regular"` \| `"extra"` | no | The website's cheese step, only where `get_menu_item` returns `pizza.cheese`. `extra` is the priced `extraCheese` flag; `none` and `light` are written at the front of the item's instructions (`No Cheese · cut into squares`), exactly as the website's customizer writes them. `CHEESE_NOT_OFFERED` for an item without the step; `cheese` and `extraCheese` that disagree are refused |
 | `modifiers` | array of `{ id, values }` | no | `id` is a section id from `get_menu_item`. `values` are option values. In topping sections (deal pizzas), use `{ "value": "<toppingId>", "placement": "left" }` |
 | `notes` | string, up to 200 characters | no | Kitchen notes. Never items, never payment details: a note containing a card-like number is refused |
 | `expectedCartVersion` | integer | no | Refused with `CART_CHANGED` if the order changed since |
@@ -361,7 +370,9 @@ Both work inside the call's existing session; neither creates a session. `VOICE_
 }
 ```
 
-(`values` also accepts plain strings. The object form above is what to configure, because it covers both option sections and topping sections.)
+(`values` also accepts plain strings. The object form above is what to configure, because it covers both option sections and topping sections. The generated wire schema in `elevenlabs-voice-tools.generated.json` is authoritative and adds `cheese`.)
+
+`search_menu` now also detects the cheese step (`detected.cheese`: `none` for "no cheese" / "hold the cheese", `light` for "light" / "easy on the cheese", `extra` for "extra" / "double cheese"; "feta cheese" stays a topping), and maps "light sauce" to *Easy on the Sauce*, "light bake" to *Lightly Done*, and "thin" / "thick" to the crusts, wherever the product offers those options.
 
 **Success** returns `lineId` (for example `"L1"`) and the whole cart: `cartVersion`, `stage`, `fulfilment`, `customer`, `deliveryAddress`, `lines[]` (each with `lineId`, `quantity`, `name`, `size`, `flags`, `details` and `lineTotalCents`, in the kitchen ticket's wording), `totals` (`subtotalCents`, `discountCents`, `deliveryFeeCents`, `taxCents`, `totalCents`, `amountDueCents`, `spokenTotal`), and the order-level `issues` that do not block the line (for example `DELIVERY_BELOW_MINIMUM`, or `LAST_ORDERS_CLOSED` if the cutoff passes mid-call). `say` is *"Added. Your total so far is $13.55."*
 
@@ -505,6 +516,8 @@ The read-back is generated from the exact cart and quote. Each line is described
 }
 ```
 
+The read-back also states, when they apply: the scheduled time (*"Here is your pickup order, for tomorrow at 5:45 PM. … It will be ready for pickup tomorrow at 5:45 PM."*), each discount with the promotion's name (*"discount $3.99 (Feedback thank-you)"*), a promo code that is not taking anything off and why, the tip, free delivery, and the delivery instructions. `data` adds `coupon`, `tip`, `deliveryInstructions`, `totals.tipCents` and `estimate.scheduledFor` / `estimate.when`. Review now also refuses `SCHEDULE_REQUIRED` (ASAP is not possible now; a time is needed), `TIME_UNAVAILABLE` (the chosen slot has gone) and `PROMO_CODE_INVALID` (a stored code stopped being valid; `createOrder` would refuse it).
+
 **After it:** read `say`. On a clear yes to the whole read-back, call `confirm_order` with `data.cartVersion`. On any correction, change the order and call `review_order` again.
 
 ### 5.14 `confirm_order`
@@ -547,7 +560,84 @@ What it does, in order:
 
 Failures: `NOT_REVIEWED`, `NOT_CONFIRMED`, `CART_CHANGED`, `CONFIRMATION_EXPIRED`, `TOTAL_CHANGED` (with `previousAmountCents` / `newAmountCents`), `ORDER_TOO_LARGE`, `PLACEMENT_IN_PROGRESS` (retry shortly), `PLACEMENT_UNCERTAIN` (retry; it will not duplicate), and `createOrder`'s own codes (`STORE_CLOSED`, `LAST_ORDERS_CLOSED`, `DELIVERY_ADDRESS_INELIGIBLE`, `ORDERING_PAUSED` and so on). Each of these sends the order back for a new review.
 
+For a scheduled order `say` names the day: *"It will be ready for pickup tomorrow at 5:45 PM."* `data` adds `scheduled` and `when`.
+
 **After it:** read `say`: the order number, the ready time and *pay at the store*. Say goodbye. The order reaches the kitchen through the existing restaurant alert, which arrives as an email and a phone call announced as "New A.I. phone order", plus the kitchen board and ticket labelled `AI PHONE`.
+
+### 5.16 `get_business_info`
+
+**Description for the LLM:** Get Pizza 62's address, phone number, website, opening hours for the week and the next seven days, how pickup and delivery work by phone, payment options and ordering rules, from the restaurant's live settings. Call it whenever the caller asks where we are, how to reach us, when we open or close, or how ordering works. Never answer these from memory.
+
+**Parameters:** none.
+
+**Returns:** `name`, `address` (as stored), `addressSpoken` (*"55 Parkdale Avenue North, Hamilton, Ontario L8H 5W7"*), `phone`, `website` (`pizza62.ca`, from `PUBLIC_BASE_URL`; never an internal host), `weeklyHours[]` (`day`, `open`, `opensAt`, `closesAt`), `upcomingDays[]` (`date`, `label` such as `today` / `tomorrow` / `Friday, October 16`, `weekday`, `opensAt`, `closesAt`, `lastOrdersAt`, `closed`, `closureMessage`), `pickup` and `delivery` (`offered`, `byPhone`, `estimateMinutes`, payment wording; delivery also `area`, `radiusKm`, `feeCents`, `minimumCents`), and `ordering` (`paused`, `pauseMessage`, `lastOrderCutoffMinutes`, `scheduleIntervalMinutes`, `promoCodesByPhone: true`, `giftCardsByPhone: false`, `cardPaymentByPhone: false`, `tipsByPhone`).
+
+`say`: *"Pizza 62 is at 55 Parkdale Avenue North, Hamilton, Ontario L8H 5W7. Our phone number is 905-547-5777 and our website is pizza62.ca. Today we're open from 11:00 AM to 10:00 PM."* Every value comes from the `business`, `hours`, `ordering`, `delivery` and `taxAndTips` settings and the active closures, so a change in Admin is the next caller's answer.
+
+### 5.17 `get_order_slots`
+
+**Description for the LLM:** Find out when an order can be for, without changing the order: whether as-soon-as-possible is available now, the earliest time, and the times on a day the caller names. Use it when the caller asks what times are available or when the earliest is. Times come from the same slots the website's checkout offers.
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `fulfilment` | `"pickup"` \| `"delivery"` | no | Defaults to the order's, else pickup. Delivery has a longer lead time |
+| `day` | string, up to 40 characters | no | `today`, `tomorrow`, a weekday, or `YYYY-MM-DD` |
+
+**Returns:** `asapAvailable`, `asapEstimateMinutes`, `earliest` (`{ at, date, time, when }`), `day` (`{ date, label, times: ["11:00 AM", "11:15 AM", …] }` when a day was named), `days[]` (`date`, `label`, `first`, `last`, `count` for each day that has slots in the website's window), `intervalMinutes`, `latest` (the last time the website's checkout offers).
+
+The slots are `nextOrderSlots` — the website checkout's own function: inside opening hours, at least the current lead time ahead (pickup 15, delivery 30 minutes), on the 15-minute grid — the first 48 of them, which is exactly what the website's dropdown shows (the same call with the same arguments) — minus any slot a closure covers (`closureFor`, as the order service judges it). Nothing later is offered or accepted by voice (VOICE-WEB-PARITY.md §4.6).
+
+### 5.18 `set_schedule`
+
+**Description for the LLM:** Set when the order is for: as soon as possible, or a later day and time the caller names, such as tomorrow at 11:30 or 5:45 tonight. Pass the day and time as the caller said them; never work out a date or timestamp yourself. If the time is not available the server says why and offers the nearest times.
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `when` | `"asap"` \| `"scheduled"` | yes | |
+| `day` | string | when scheduled | `today` / `tonight`, `tomorrow`, a weekday (the next one, today included), or `YYYY-MM-DD`. Anything else is refused with a question |
+| `time` | string | when scheduled | 24-hour `HH:MM` (`17:45`); `5:45 PM` and `noon` are also read. A bare `5:45` is a quarter to six in the morning, and is refused as outside hours |
+| `expectedCartVersion` | integer | no | |
+
+The server matches the day and time against `get_order_slots`'s slots in America/Toronto and stores that slot's own timestamp (`voice_calls.order_options_json`), across daylight saving. A change moves the version, so any read-back and yes are void. Refusals are `ok: false` with `data.reason` and `data.suggestions[]`, and do not count towards escalation:
+
+| `reason` | `say` (example) |
+|---|---|
+| `off_grid` | "We schedule orders in 15-minute steps. Would tomorrow at 11:30 AM or tomorrow at 11:45 AM work?" |
+| `outside_hours` | "Tomorrow we take pickup orders from 11:00 AM to 11:00 PM." |
+| `too_soon` / `past` | "That's sooner than we can have a pickup order ready. The earliest pickup time is today at 6:15 PM." |
+| `closure` | The closure's own customer message, then the nearest times either side |
+| `closed_that_day` | "We're closed Monday. The next pickup time is …" |
+| `beyond_horizon` | "We can't schedule that far ahead yet. The latest pickup time we can book right now is …" |
+| `invalid_day` / `invalid_time` (`INVALID_INPUT`) | "Which day would you like it: today, tomorrow, or a day of the week?" |
+
+`when: "asap"` is refused with `ASAP_UNAVAILABLE` (and the earliest slot) when the store is closed, past the last-order cutoff, or closed by a closure. `FULFILMENT_REQUIRED` before pickup or delivery is known, because the lead time depends on it; `ORDERING_PAUSED` while ordering is paused. `createOrder` validates the slot again at placement.
+
+### 5.19 `apply_coupon` / `remove_coupon`
+
+**Description for the LLM (`apply_coupon`):** Apply a promo code the caller has. Send only the code, as the caller says or spells it. The server decides whether it is valid and what it takes off; read its answer. Never say what a code is worth before the server answers, and never use this for a gift card.
+
+**Description for the LLM (`remove_coupon`):** Take the promo code off the order, for example when the caller changes their mind or the server says the code is not valid.
+
+`apply_coupon { code, expectedCartVersion? }` prices the cart with the code through `quoteOrder`, the website promo box's own path. The quote's `coupon.status` is one of:
+
+- `applied` — stored; `say` *"THANKS62 is applied. Your total is now $22.59."*
+- `not_applied` — a live code this cart does not qualify for. Stored, priced at full price, and explained in the server's words: *"THANKS62 can only be used on Garlic Bread, Garlic Bread with Cheese, … Add one to your order to use it."* It starts to apply if the cart changes to qualify, as on the website.
+- `invalid` — refused with `PROMO_CODE_INVALID` (*"That promo code isn't valid right now."*) and **not stored**, because `createOrder` refuses an order carrying it. Expired, not-yet-started, exhausted and malformed codes all land here. Three in a row hand the caller to staff.
+
+`CART_EMPTY` before there is anything to price, as the website's promo box sits in a checkout. `remove_coupon { expectedCartVersion? }` clears it. Both move the version.
+
+### 5.20 `set_tip`
+
+**Description for the LLM:** Add, change or remove a tip, only when the caller offers one. Use type none for no tip, percentage with one of the restaurant's preset percentages (10, 15 or 18), or custom with the dollar amount the caller names. Never suggest an amount and never calculate it; the server prices the tip and returns the new total.
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `type` | `"none"` \| `"percentage"` \| `"custom"` | yes | |
+| `percent` | integer | for percentage | Must be one of `taxAndTips.tipPresetBps` (10, 15, 18): the website offers these and no others. Otherwise `TIP_NOT_OFFERED`: *"I can add a tip of 10, 15, 18 percent, or a dollar amount."* |
+| `amount` | string or number | for custom | Dollars, as said: `"5"`, `"5.50"`, `"$5"`. Never cents |
+| `expectedCartVersion` | integer | no | |
+
+The server computes a percentage on the food total after discounts (the website's rule) and enforces the website's custom-tip ceiling (`TIP_INVALID`). `TIPS_UNAVAILABLE` when tipping is switched off; `CART_EMPTY` before there is a cart. `say`: *"Added a $3.00 tip. Your total is now $25.59."* The tip is in the read-back and the total paid at the store.
 
 ---
 
@@ -577,6 +667,13 @@ Failures: `NOT_REVIEWED`, `NOT_CONFIRMED`, `CART_CHANGED`, `CONFIRMATION_EXPIRED
 | `PLACEMENT_IN_PROGRESS`, `PLACEMENT_UNCERTAIN` | `place_order` | Retry `place_order` with the same `cartVersion` |
 | `ORDER_ALREADY_PLACED` | any change | This call's order is done. Changes go to staff |
 | `SESSION_LIMIT`, `SESSION_EXPIRED` | any | Sets `escalate` |
+| `CHEESE_NOT_OFFERED` | `add_item`, `update_item` | `cheese` on an item without the cheese step |
+| `TIME_UNAVAILABLE` | `set_schedule`, review | The time is not one of the slots; `data.suggestions` has the nearest |
+| `ASAP_UNAVAILABLE` | `set_schedule` | Not taking orders for right now; schedule instead |
+| `SCHEDULE_REQUIRED` | review | ASAP is not possible now; the order needs a time |
+| `PROMO_CODE_INVALID` | `apply_coupon`, review | Not a code we honour now; never stored |
+| `TIP_NOT_OFFERED`, `TIP_INVALID`, `TIPS_UNAVAILABLE` | `set_tip` | Not a preset; above the ceiling; tipping is off |
+| `CART_EMPTY` | `apply_coupon`, `set_tip`, review | Nothing to price yet |
 | `TOOL_FAILED` | any (HTTP 500) | A fault on our side |
 
 ---
@@ -635,6 +732,7 @@ It prints every tool response, with the cart version and stage. It stops at the 
 
 - `transfer_to_store` and `request_callback`. Register-call does not provide ElevenLabs-managed transfer. Until a separate transfer implementation exists, configure the staging agent to apologize and end the call when it must escalate.
 - `lookup_caller`, "the usual", reordering, saved addresses, order status, changing or cancelling a placed order, card payments and SMS payment links.
+- Gift card redemption by voice, and a secure payment link for online payment. Both are deliberate, documented exceptions: see VOICE-WEB-PARITY.md §4 and §7.
 - An admin screen for voice call history. The connection settings and mode are available in Admin → Integrations.
 
 ## 11. Phase 4 staging bridge
@@ -710,7 +808,7 @@ Post-call data is saved atomically with the conversation binding as one existing
 
 1. Review and deploy this change to a chosen staging HTTPS host **manually**, including migration `0013`; verify the ingress presents the exact public URL to signature verification. Keep mode off throughout setup.
 2. Set the server configuration above; confirm the staging agent ID and staff allowlist. Generate the shared bearer securely and save the same value in ElevenLabs workspace secrets. Do not reuse the Twilio auth token as a tool or webhook secret.
-3. In the **existing ElevenLabs staging agent**, set input and output audio to **μ-law 8000 Hz** (`ulaw_8000`). Configure the existing webhook tools using §2–§5, with `Authorization: Bearer <workspace secret>` and dynamic header `X-Voice-Session: {{secret__voice_session}}`. Define the four runtime variables; keep secret__voice_session only in webhook headers. Remove any requirement for unrelated dynamic variables that this bridge does not send.
+3. In the **existing ElevenLabs staging agent**, set input and output audio to **μ-law 8000 Hz** (`ulaw_8000`). Configure the existing webhook tools using §2–§5, with `Authorization: Bearer <workspace secret>` and the `X-Voice-Session` header as the dynamic-variable reference `{ "variable_name": "secret__voice_session" }` (not the template string). Define the four runtime variables; keep secret__voice_session only in webhook headers. Remove any requirement for unrelated dynamic variables that this bridge does not send.
 4. Keep the prompt pickup-only, pay at store, no card collection/history/“the usual”/delivery. Require the existing review → explicit confirmation → placement sequence. Disable unavailable transfer tools; escalation must apologize and end the staging call.
 5. In ElevenLabs agent/workspace post-call settings, create/select an HMAC-authenticated webhook to `https://<canonical-staging-host>/api/voice/events`, enable transcription events, and save its signing secret server-side as `ELEVENLABS_WEBHOOK_SECRET`. Enable retries if available. Leave audio delivery disabled. Match the agent's post-call override to this webhook if one exists. No phone-number import is needed. See [post-call webhooks](https://elevenlabs.io/docs/eleven-agents/workflows/post-call-webhooks).
 6. In **Twilio Console → Phone Numbers → Manage → Active numbers → +1 825-462-6262 → Voice configuration**, first record the current settings. Under “A call comes in”, choose Webhook, set `https://<canonical-staging-host>/api/voice/inbound`, method **POST**. Set the call status changes callback to `https://<canonical-staging-host>/api/voice/status`, **POST**. Do not change messaging settings or existing restaurant alert callbacks.

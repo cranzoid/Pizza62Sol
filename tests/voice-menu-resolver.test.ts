@@ -51,7 +51,7 @@ const INSTANTS: Record<When, number> = {
 };
 
 type Expectation =
-  | { status: "match"; productId: string; variationId?: string | null; quantity?: number; toppings?: Array<[string, string]>; omit?: string[]; option?: string; extraCheese?: boolean }
+  | { status: "match"; productId: string; variationId?: string | null; quantity?: number; toppings?: Array<[string, string]>; omit?: string[]; option?: string; extraCheese?: boolean; cheese?: "none" | "light" | "extra" | null }
   | { status: "ambiguous"; includes?: string[] }
   | { status: "no_match" }
   | { status: "unavailable"; productId: string; reason: string }
@@ -180,6 +180,20 @@ const GOLDEN: Golden[] = [
   byo.a("large pizza with meatballs", { fulfilment: "delivery", includes: ["large-pizza", "specialty-meatball"] }),
   byo.m("large pizza thin crust", "large-pizza", { fulfilment: "delivery", option: "Thin Crust" }),
   byo.m("large pepperoni well done", "large-pizza", { fulfilment: "delivery", option: "Well Done" }),
+  // The cheese step and the bake & sauce choices as callers say them (website parity).
+  byo.m("large pizza no cheese", "large-pizza", { fulfilment: "delivery", cheese: "none", extraCheese: false }),
+  byo.m("large pepperoni light cheese", "large-pizza", { fulfilment: "delivery", cheese: "light", toppings: [["pepperoni", "whole"]] }),
+  byo.m("large pizza easy on the cheese", "large-pizza", { fulfilment: "delivery", cheese: "light" }),
+  byo.m("large pizza double cheese", "large-pizza", { fulfilment: "delivery", cheese: "extra", extraCheese: true }),
+  byo.m("large pizza hold the cheese", "large-pizza", { fulfilment: "delivery", cheese: "none" }),
+  byo.m("large pizza with feta cheese", "large-pizza", { fulfilment: "delivery", cheese: null, toppings: [["feta-cheese", "whole"]] }),
+  byo.m("large pepperoni light sauce", "large-pizza", { fulfilment: "delivery", option: "Easy on the Sauce" }),
+  byo.m("large pepperoni light on the sauce", "large-pizza", { fulfilment: "delivery", option: "Easy on the Sauce" }),
+  byo.m("large pepperoni extra sauce", "large-pizza", { fulfilment: "delivery", option: "Extra Sauce" }),
+  byo.m("large pepperoni thick", "large-pizza", { fulfilment: "delivery", option: "Thick Crust" }),
+  byo.m("large pizza mushrooms only on the right half", "large-pizza", { fulfilment: "delivery", toppings: [["mushrooms", "right"]] }),
+  specialty.m("large hawaiian no cheese", "specialty-hawaiian", { variationId: "specialty-hawaiian-large", fulfilment: "pickup", cheese: "none" }),
+  specialty.m("large hawaiian lightly baked", "specialty-hawaiian", { variationId: "specialty-hawaiian-large", fulfilment: "pickup", option: "Lightly Done" }),
   byo.m("large build your own pizza", "large-pizza", { fulfilment: "delivery" }),
   byo.n("small pizza"),
   byo.n("personal pizza", { fulfilment: "pickup" }),
@@ -413,6 +427,7 @@ function check(golden: Golden): { outcome: Outcome; problems: string[] } {
         problems.push(`option: expected ${expect.option}, got ${JSON.stringify(candidate.detected.options.map((option) => option.value))}`);
       }
       if (expect.extraCheese !== undefined && candidate.detected.extraCheese !== expect.extraCheese) problems.push("extra cheese not detected");
+      if (expect.cheese !== undefined && candidate.detected.cheese !== expect.cheese) problems.push(`cheese: expected ${expect.cheese}, got ${candidate.detected.cheese}`);
     }
   } else if (result.status === "match") {
     // A confident answer where the expectation was a question is the failure the

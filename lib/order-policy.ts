@@ -85,8 +85,14 @@ export type OrderPolicy = Readonly<{
    * instead of ringing the kitchen about the employee's own action.
    */
   alertRestaurant: boolean;
-  /** Promo codes and gift cards may be applied. */
-  allowCodes: boolean;
+  /** Promo codes may be applied. The code is checked and priced by the server like any other. */
+  allowCouponCodes: boolean;
+  /**
+   * Gift cards may be redeemed. Separate from promo codes because a gift card
+   * code is a bearer credential — it *is* the money — so where it may be typed
+   * or spoken is a different question from where a promo code may.
+   */
+  allowGiftCards: boolean;
 }>;
 
 export type CreateOrderContext = {
@@ -115,7 +121,8 @@ export const WEBSITE_ORDER_POLICY: OrderPolicy = Object.freeze({
   bypassLastOrderCutoff: false,
   recordAttribution: true,
   alertRestaurant: true,
-  allowCodes: true,
+  allowCouponCodes: true,
+  allowGiftCards: true,
 });
 
 const STAFF_PRIVILEGES = {
@@ -127,7 +134,8 @@ const STAFF_PRIVILEGES = {
   allowPayOnDelivery: true,
   bypassLastOrderCutoff: true,
   recordAttribution: false,
-  allowCodes: true,
+  allowCouponCodes: true,
+  allowGiftCards: true,
 } as const;
 
 /** A phone order keyed in at the till. The kitchen is still alerted: whoever took the call may not be the one cooking. */
@@ -147,11 +155,17 @@ export const STAFF_WALK_IN_ORDER_POLICY: OrderPolicy = Object.freeze({
 /**
  * An order taken over the phone by the AI receptionist.
  *
- * Not a staff context: no counter-only products, no cutoff exemption, no codes,
- * no card payments (nothing about a card is ever taken by voice). Pay-at-store
- * on a pickup follows the same website setting a stranger's order does.
+ * Not a staff context: no counter-only products, no cutoff exemption, no card
+ * payments (nothing about a card is ever taken by voice). Pay-at-store on a
+ * pickup follows the same website setting a stranger's order does.
  * Pay-at-the-door on a delivery is off; `aiPhoneOrderContext` can turn it on
  * only when the voice configuration explicitly allows delivery.
+ *
+ * Promo codes are accepted, as on the website: the caller says the code and
+ * the server decides what, if anything, it is worth. Gift cards are not. A
+ * gift card code is spendable money that the database deliberately never
+ * stores, and saying one aloud would put it into the call's transcript and
+ * recording — see docs/VOICE-WEB-PARITY.md.
  */
 export const AI_PHONE_ORDER_POLICY: OrderPolicy = Object.freeze({
   channel: "ai_phone",
@@ -164,7 +178,8 @@ export const AI_PHONE_ORDER_POLICY: OrderPolicy = Object.freeze({
   bypassLastOrderCutoff: false,
   recordAttribution: false,
   alertRestaurant: true,
-  allowCodes: false,
+  allowCouponCodes: true,
+  allowGiftCards: false,
 });
 
 /** The AI preset with pay-at-the-door allowed — only for a voice config that explicitly enables delivery. */
@@ -226,6 +241,7 @@ export function resolveOrderPolicy(context: Partial<CreateOrderContext> | undefi
     typeof policy.bypassLastOrderCutoff === "boolean" &&
     typeof policy.recordAttribution === "boolean" &&
     typeof policy.alertRestaurant === "boolean" &&
-    typeof policy.allowCodes === "boolean";
+    typeof policy.allowCouponCodes === "boolean" &&
+    typeof policy.allowGiftCards === "boolean";
   return wellFormed ? (policy as OrderPolicy) : WEBSITE_ORDER_POLICY;
 }

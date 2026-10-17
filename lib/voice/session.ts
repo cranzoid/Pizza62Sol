@@ -14,7 +14,7 @@
  * to update and is told why. Nothing reads, decides and then writes.
  *
  * **One version for the whole draft.** Any change to anything the order is
- * built from — lines, fulfilment, customer, address — increments
+ * built from — lines, fulfilment, customer, address, time, promo code, tip — increments
  * `cart_version` and clears the review and the confirmation, so a "yes" can
  * only ever place the exact draft the caller heard read back.
  *
@@ -55,9 +55,58 @@ export type VoiceCartLine = {
   /** Recipe toppings the caller asked to leave off. */
   omitToppings: string[];
   extraCheese: boolean;
+  /**
+   * Light or no cheese, written ahead of the notes the way the website's cheese
+   * step writes it. Absent on lines stored before it existed, which is regular.
+   */
+  cheese?: "none" | "light" | null;
   modifiers: Array<{ id: string; values: Array<string | { value: string; placement: ToppingPlacement }> }>;
   notes: string | null;
 };
+
+/**
+ * The caller's checkout choices that are not lines: when, a promo code, a tip.
+ *
+ * Choices in the shape `OrderRequest` takes them, never amounts. A scheduled
+ * time is a slot timestamp the server chose from `nextOrderSlots`
+ * (lib/voice/schedule.ts); a code is what the caller said, normalized; a tip
+ * is a preset percentage or a dollar amount the caller named. `quoteOrder`
+ * prices all three, exactly as it prices them for the website.
+ */
+export type VoiceOrderOptions = {
+  schedule: { type: "asap" } | { type: "scheduled"; scheduledFor: number };
+  couponCode: string | null;
+  tip: { type: "none" } | { type: "percentage"; valueBps: number } | { type: "custom"; amountCents: number };
+};
+
+export const DEFAULT_ORDER_OPTIONS: VoiceOrderOptions = Object.freeze({
+  schedule: Object.freeze({ type: "asap" }) as VoiceOrderOptions["schedule"],
+  couponCode: null,
+  tip: Object.freeze({ type: "none" }) as VoiceOrderOptions["tip"],
+});
+
+/**
+ * Reads stored options defensively. A row written before this column existed
+ * holds `{}`, which is exactly the old behaviour: ASAP, no code, no tip. A
+ * malformed value falls back the same way rather than to anything the caller
+ * did not choose.
+ */
+export function parseOrderOptions(value: unknown): VoiceOrderOptions {
+  const raw = parseJson<Record<string, unknown>>(value, {});
+  const schedule = raw.schedule as Record<string, unknown> | undefined;
+  const tip = raw.tip as Record<string, unknown> | undefined;
+  return {
+    schedule: schedule?.type === "scheduled" && Number.isSafeInteger(schedule.scheduledFor)
+      ? { type: "scheduled", scheduledFor: Number(schedule.scheduledFor) }
+      : { type: "asap" },
+    couponCode: typeof raw.couponCode === "string" && raw.couponCode ? raw.couponCode : null,
+    tip: tip?.type === "percentage" && Number.isSafeInteger(tip.valueBps)
+      ? { type: "percentage", valueBps: Number(tip.valueBps) }
+      : tip?.type === "custom" && Number.isSafeInteger(tip.amountCents)
+        ? { type: "custom", amountCents: Number(tip.amountCents) }
+        : { type: "none" },
+  };
+}
 
 /** The delivery decision for the stored address, kept so the agent's next answer is the same one. */
 export type StoredDeliveryCheck = {
@@ -89,6 +138,7 @@ export type VoiceSession = {
   deliveryAddress: Record<string, string> | null;
   deliveryCheck: StoredDeliveryCheck | null;
   cart: VoiceCartLine[];
+  orderOptions: VoiceOrderOptions;
   cartVersion: number;
   nextLineNumber: number;
   reviewedVersion: number | null;
@@ -143,6 +193,7 @@ function toSession(row: Row): VoiceSession {
     deliveryAddress: parseJson<Record<string, string> | null>(row.delivery_address_json, null),
     deliveryCheck: parseJson<StoredDeliveryCheck | null>(row.delivery_check_json, null),
     cart: parseJson<VoiceCartLine[]>(row.cart_json, []),
+    orderOptions: parseOrderOptions(row.order_options_json),
     cartVersion: Number(row.cart_version),
     nextLineNumber: Number(row.next_line_number),
     reviewedVersion: num(row.reviewed_version),
@@ -278,6 +329,7 @@ export type DraftChange = {
   customer?: { name: string; phone: string; phoneSource: "caller_id" | "spoken" } | null;
   deliveryAddress?: Record<string, string> | null;
   deliveryCheck?: StoredDeliveryCheck | null;
+  options?: VoiceOrderOptions;
 };
 
 export type TransitionResult =
@@ -321,7 +373,7 @@ export async function applyDraftChange(
     .prepare(
       `UPDATE voice_calls SET
          cart_json = ?, next_line_number = ?, fulfilment = ?, customer_name = ?, customer_phone = ?,
-         customer_phone_source = ?, delivery_address_json = ?, delivery_check_json = ?,
+         customer_phone_source = ?, delivery_address_json = ?, delivery_check_json = ?, order_options_json = ?,
          cart_version = cart_version + 1,
          reviewed_version = NULL, reviewed_amount_cents = NULL, reviewed_at = NULL,
          confirmed_version = NULL, confirmed_at = NULL, confirmed_amount_cents = NULL, confirmation_utterance = NULL,
@@ -338,6 +390,7 @@ export async function applyDraftChange(
       customer?.phoneSource ?? null,
       merged.deliveryAddress ? JSON.stringify(merged.deliveryAddress) : null,
       deliveryCheck ? JSON.stringify(deliveryCheck) : null,
+      JSON.stringify(change.options ?? session.orderOptions),
       draftStage(merged),
       now,
       session.id,
@@ -352,18 +405,25 @@ export async function applyDraftChange(
 /**
  * Starts (or restarts) the working order. Allowed from `new` and from any
  * editable stage; it empties the cart and the address and keeps the caller's
- * name and number. Never after an order has been placed.
+ * name and number. The promo code and tip go with the cart they were priced
+ * on; the order time is kept only when `keepSchedule` says so (starting over
+ * is not changing your mind about when). Never after an order has been placed.
  */
 export async function startDraft(
   session: VoiceSession,
-  options: { fulfilment?: Fulfilment | null; now?: number } = {},
+  options: { fulfilment?: Fulfilment | null; keepSchedule?: boolean; now?: number } = {},
 ): Promise<TransitionResult> {
   const now = options.now ?? Date.now();
   const fulfilment = options.fulfilment ?? null;
+  const kept: VoiceOrderOptions = {
+    ...DEFAULT_ORDER_OPTIONS,
+    schedule: options.keepSchedule ? session.orderOptions.schedule : DEFAULT_ORDER_OPTIONS.schedule,
+  };
   const row = await getD1()
     .prepare(
       `UPDATE voice_calls SET
          cart_json = '[]', fulfilment = ?, delivery_address_json = NULL, delivery_check_json = NULL,
+         order_options_json = ?,
          cart_version = cart_version + 1,
          reviewed_version = NULL, reviewed_amount_cents = NULL, reviewed_at = NULL,
          confirmed_version = NULL, confirmed_at = NULL, confirmed_amount_cents = NULL, confirmation_utterance = NULL,
@@ -371,7 +431,7 @@ export async function startDraft(
        WHERE id = ? AND stage IN ('new', ${EDITABLE_STAGES.map(() => "?").join(", ")}) AND expires_at > ?
        RETURNING *`,
     )
-    .bind(fulfilment, draftStage({ fulfilment, deliveryAddress: null }), now, session.id, ...EDITABLE_STAGES, now)
+    .bind(fulfilment, JSON.stringify(kept), draftStage({ fulfilment, deliveryAddress: null }), now, session.id, ...EDITABLE_STAGES, now)
     .first<Row>();
   return row ? { ok: true, session: toSession(row) } : refused(session.id, now);
 }
@@ -513,6 +573,12 @@ export type ToolEvent = {
   request: unknown;
   response: unknown;
   ok: boolean;
+  /**
+   * Whether this call moves the consecutive-failure count that hands a caller
+   * to staff. Defaults to `!ok`; an ordinary "that time isn't available" is not
+   * a failure of the conversation.
+   */
+  countsAsFailure?: boolean;
   issueCodes: string[];
   latencyMs: number;
   cartVersionBefore: number | null;
@@ -561,13 +627,13 @@ export async function recordToolEvent(
         `UPDATE voice_calls SET
            tool_call_count = tool_call_count + 1,
            validation_error_count = validation_error_count + ?,
-           consecutive_failure_count = CASE WHEN ? = 1 THEN 0 ELSE consecutive_failure_count + 1 END,
+           consecutive_failure_count = CASE WHEN ? = 1 THEN 0 WHEN ? = 1 THEN consecutive_failure_count + 1 ELSE consecutive_failure_count END,
            escalation_reason = COALESCE(escalation_reason, ?),
            updated_at = ?
          WHERE id = ?
          RETURNING tool_call_count, consecutive_failure_count`,
       )
-      .bind(event.validationFailure ? 1 : 0, event.ok ? 1 : 0, event.escalationReason ?? null, now, sessionId),
+      .bind(event.validationFailure ? 1 : 0, event.ok ? 1 : 0, (event.countsAsFailure ?? !event.ok) ? 1 : 0, event.escalationReason ?? null, now, sessionId),
   ]);
   const row = (counters?.results?.[0] ?? {}) as Row;
   return { toolCallCount: Number(row.tool_call_count ?? 0), consecutiveFailureCount: Number(row.consecutive_failure_count ?? 0) };

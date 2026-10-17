@@ -14,6 +14,7 @@
  *     --fulfilment pickup --name "Jordan" --phone 9055550177 \
  *     --item "large pepperoni" \
  *     --line '{"productId":"24-wings","modifiers":[{"id":"wing-style","values":["Breaded"]},{"id":"wing-flavours","values":["Hot"]}]}' \
+ *     [--schedule "tomorrow 17:45"] [--coupon THANKS62] [--tip 15%|5.00|none] \
  *     [--place] [--at 2026-10-14T18:00:00-04:00]
  *
  * It is a script, reachable only from a shell with database access — there is
@@ -33,6 +34,10 @@ export type SimulationScript = {
   lines?: Array<Record<string, unknown>>;
   customer: { name: string; phone: string };
   address?: { line1: string; unit?: string; postalCode: string; instructions?: string };
+  /** A day and time for set_schedule, as a caller would say them; omitted is ASAP. */
+  schedule?: { day: string; time: string };
+  coupon?: string;
+  tip?: { type: "none" } | { type: "percentage"; percent: number } | { type: "custom"; amount: string };
   place?: boolean;
 };
 
@@ -78,12 +83,15 @@ export async function runSimulation(script: SimulationScript, log: (step: Simula
       ...(candidate.suggestedQuantity ? { quantity: candidate.suggestedQuantity } : {}),
       ...(candidate.detected.toppings.length ? { toppings: candidate.detected.toppings.map((topping) => ({ toppingId: topping.toppingId, placement: topping.placement })) } : {}),
       ...(candidate.detected.omitToppings.length ? { omitToppings: candidate.detected.omitToppings.map((topping) => topping.toppingId) } : {}),
-      ...(candidate.detected.extraCheese ? { extraCheese: true } : {}),
+      ...(candidate.detected.cheese ? { cheese: candidate.detected.cheese } : candidate.detected.extraCheese ? { extraCheese: true } : {}),
       ...(modifiers.length ? { modifiers } : {}),
     });
     if (!added.ok) return fail();
   }
   for (const line of script.lines ?? []) if (!(await step("add_item", line)).ok) return fail();
+  if (script.schedule && !(await step("set_schedule", { when: "scheduled", ...script.schedule })).ok) return fail();
+  if (script.coupon && !(await step("apply_coupon", { code: script.coupon })).ok) return fail();
+  if (script.tip && !(await step("set_tip", script.tip)).ok) return fail();
   if (!(await step("set_customer", script.customer)).ok) return fail();
   const review = await step("review_order");
   if (!review.ok) return fail();
@@ -112,7 +120,15 @@ function parseArgs(argv: string[]) {
     else if (flag === "--name") script.customer.name = value();
     else if (flag === "--phone") script.customer.phone = value();
     else if (flag === "--address") script.address = JSON.parse(value());
-    else if (flag === "--place") script.place = true;
+    else if (flag === "--schedule") {
+      const match = /^(\S+)\s+(.+)$/.exec(value().trim());
+      if (!match) throw new Error('--schedule needs "<day> <time>", e.g. "tomorrow 17:45"');
+      script.schedule = { day: match[1], time: match[2] };
+    } else if (flag === "--coupon") script.coupon = value();
+    else if (flag === "--tip") {
+      const tip = value().trim().toLowerCase();
+      script.tip = tip === "none" ? { type: "none" } : tip.endsWith("%") ? { type: "percentage", percent: Number(tip.slice(0, -1)) } : { type: "custom", amount: tip };
+    } else if (flag === "--place") script.place = true;
     else if (flag === "--at") at = value();
     else throw new Error(`unknown flag ${flag}`);
   }

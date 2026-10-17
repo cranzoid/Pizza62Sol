@@ -190,11 +190,23 @@ withDb("the AI gets none of the counter's privileges", async () => {
     (await refusal(createOrder(pickup({ paymentMethod: "online" }), ai())))?.message,
     "That payment method is not available for this order.",
   );
-  assert.equal((await refusal(createOrder(pickup({ couponCode: "THANKS62" }), ai())))?.code, "CODES_NOT_ACCEPTED");
-  assert.equal((await refusal(createOrder(pickup({ giftCardCode: "P62-AAAA-BBBB-CCCC" }), ai())))?.code, "CODES_NOT_ACCEPTED");
+  // A gift card code is money; it is never taken by voice. A promo code is
+  // checked and priced exactly as the website checks it (see the next test).
+  assert.deepEqual(await refusal(createOrder(pickup({ giftCardCode: "P62-AAAA-BBBB-CCCC" }), ai())), {
+    code: "CODES_NOT_ACCEPTED",
+    message: "Gift cards cannot be used on this order.",
+  });
   const quote = await quoteOrder(pickup({ items: [{ productId: "chicken-burger", quantity: 1 }], paymentMethod: "online" }), ai());
   assert.equal(quote.ok, false);
   assert.deepEqual(quote.issues.map((issue) => issue.code).sort(), ["ORDER_VALIDATION_FAILED", "PAYMENT_METHOD_UNAVAILABLE"]);
+});
+
+withDb("the AI takes promo codes through the website's own coupon rules", async () => {
+  const quote = await quoteOrder(pickup({ couponCode: "nope62" }), ai());
+  assert.equal(quote.coupon?.status, "invalid");
+  assert.equal((await refusal(createOrder(pickup({ couponCode: "NOPE62" }), ai())))?.code, "PROMO_CODE_INVALID");
+  const website = await quoteOrder(pickup({ couponCode: "nope62" }));
+  assert.deepEqual(quote.coupon, website.coupon, "the same code gets the same answer on both channels");
 });
 
 withDb("pay at the door is off for the AI unless explicitly enabled, and pickup follows the website setting", async () => {
