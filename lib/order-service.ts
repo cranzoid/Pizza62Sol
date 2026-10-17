@@ -339,6 +339,155 @@ function normalizeDeliveryAddress(address: OrderRequest["address"]): Record<stri
   };
 }
 
+export type DeliveryEligibilityReason =
+  | "eligible"
+  | "delivery_unavailable"
+  | "invalid_address"
+  | "address_unverified"
+  | "outside_radius"
+  | "restaurant_origin_unconfigured"
+  | "below_minimum";
+
+export type DeliveryEligibilityCheck = {
+  /** Whether this order, address and cart together, can be delivered. */
+  eligible: boolean;
+  /**
+   * Whether the address itself is one we deliver to, whatever is in the cart.
+   *
+   * True for `eligible` and `below_minimum` only. Stated here rather than left
+   * for a caller to infer from `reason`, so that "yes, we deliver there — the
+   * minimum is $20" is the server's answer and not a reading of one. A check
+   * run before there is a cart (subtotal 0) relies on exactly this.
+   */
+  addressDeliverable: boolean;
+  reason: DeliveryEligibilityReason;
+  /** What the customer is told when it is not eligible; null when it is. */
+  message: string | null;
+  /** The address exactly as an order would store it; null when it could not be read. */
+  address: Record<string, string> | null;
+  distanceKm: number | null;
+  /** The delivery fee before any coupon, zero when a free-delivery item is in the cart. */
+  feeCents: number;
+  minimumCents: number;
+  shortfallCents: number;
+};
+
+/**
+ * Whether an address can be delivered to, without creating anything.
+ *
+ * The one place the delivery rules are applied: `createOrder` calls this and
+ * refuses on the answer, so a caller checking an address before there is an
+ * order (a phone agent, say) gets the same decision the order will. Reads
+ * settings and resolves the address; writes nothing and takes no payment.
+ *
+ * Reports rather than throws, like `quoteOrder`. The checks run in the order
+ * `createOrder` has always applied them, so the first failing one is the reason.
+ *
+ * **Trust boundary.** `menuSubtotalCents` and `items` waive or enforce money
+ * rules (the minimum, the fee), so they must come from items the server has
+ * validated and priced itself — `validateItems` and `priceCart` — never from a
+ * request body. Only the address may come from the caller. An external tool
+ * (the phone agent) sends its cart or session id and the server derives these;
+ * it must never be able to send a subtotal or `freeDelivery: true` directly.
+ */
+export async function checkDeliveryEligibility(
+  input: {
+    /** The only caller-supplied field. */
+    address: OrderRequest["address"];
+    /** Server-derived: the pre-tax, pre-discount menu subtotal from `priceCart`. 0 before there is a cart. */
+    menuSubtotalCents: number;
+    /** Server-derived: the cart's validated items. Never request input. */
+    items?: ReadonlyArray<{ freeDelivery: boolean }>;
+  },
+  settings?: { ordering: OrderingSetting; delivery: DeliverySetting; business: BusinessSetting },
+): Promise<DeliveryEligibilityCheck> {
+  const [ordering, delivery, business] = settings
+    ? [settings.ordering, settings.delivery, settings.business]
+    : await Promise.all([
+        getSetting<OrderingSetting>("ordering"),
+        getSetting<DeliverySetting>("delivery"),
+        getSetting<BusinessSetting>("business"),
+      ]);
+  const minimumCents = delivery.minimumCents ?? 0;
+  const shortfallCents = Math.max(0, minimumCents - input.menuSubtotalCents);
+  const refused = (
+    reason: DeliveryEligibilityReason,
+    message: string,
+    address: Record<string, string> | null = null,
+    distanceKm: number | null = null,
+  ): DeliveryEligibilityCheck => ({
+    eligible: false,
+    // Every check before the minimum is about the address, so a cart that is
+    // only too small is the one refusal where the address itself is fine.
+    addressDeliverable: reason === "below_minimum",
+    reason,
+    message,
+    address,
+    distanceKm,
+    feeCents: 0,
+    minimumCents,
+    shortfallCents,
+  });
+
+  if (!ordering.deliveryEnabled) return refused("delivery_unavailable", "Delivery ordering is currently unavailable.");
+
+  let address: Record<string, string>;
+  try {
+    address = normalizeDeliveryAddress(input.address);
+  } catch (error) {
+    if (error instanceof OrderValidationError) return refused("invalid_address", error.message);
+    throw error;
+  }
+
+  // H-06b: geocodes the full street address through Azure Maps, falling back
+  // to the coarse FSA centroid only if Maps cannot answer.
+  const point = await resolveDeliveryPoint({
+    line1: address.line1,
+    unit: address.unit,
+    city: address.city,
+    province: address.province,
+    postalCode: address.postalCode,
+  });
+  // C-01/H-06: geographic eligibility from the immutable store origin. Free-
+  // delivery items never widen the radius — they only zero the fee for an
+  // already-eligible address.
+  const eligibility = validateDelivery(
+    {
+      validated: point !== null,
+      latitude: point?.latitude ?? null,
+      longitude: point?.longitude ?? null,
+    },
+    {
+      originLatitude: business.latitude,
+      originLongitude: business.longitude,
+      radiusKm: delivery.radiusKm,
+      feeCents: delivery.feeCents,
+      minimumCents: delivery.minimumCents,
+    },
+    input.menuSubtotalCents,
+    (input.items ?? []).some((item) => item.freeDelivery),
+  );
+  if (!eligibility.eligible) {
+    const message =
+      eligibility.reason === "below_minimum"
+        ? `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax.`
+        : delivery.outsideAreaMessage ??
+          "This address is outside our delivery area. Please call Pizza 62 to ask about an exception.";
+    return refused(eligibility.reason, message, address, eligibility.distanceKm);
+  }
+  return {
+    eligible: true,
+    addressDeliverable: true,
+    reason: "eligible",
+    message: null,
+    address,
+    distanceKm: eligibility.distanceKm,
+    feeCents: eligibility.feeCents,
+    minimumCents,
+    shortfallCents,
+  };
+}
+
 function modifierOptions(
   section: ModifierSectionSeed,
   toppingNames: Map<string, string>,
@@ -1507,42 +1656,16 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
     });
     if (fulfilment === "delivery" && deliveryAddress) {
-      // C-01/H-06: enforce geographic eligibility from the immutable store origin
-      // before any order/payment is created. Free-delivery items never widen the
-      // radius — they only zero the fee for an already-eligible address.
-      const hasFreeDeliveryItem = items.some((item) => item.freeDelivery);
-      // H-06b: geocodes the full street address through Azure Maps, falling back
-      // to the coarse FSA centroid only if Maps cannot answer.
-      const point = await resolveDeliveryPoint({
-        line1: deliveryAddress.line1,
-        unit: deliveryAddress.unit,
-        city: deliveryAddress.city,
-        province: deliveryAddress.province,
-        postalCode: deliveryAddress.postalCode,
-      });
-      const eligibility = validateDelivery(
-        {
-          validated: point !== null,
-          latitude: point?.latitude ?? null,
-          longitude: point?.longitude ?? null,
-        },
-        {
-          originLatitude: business.latitude,
-          originLongitude: business.longitude,
-          radiusKm: delivery.radiusKm,
-          feeCents: delivery.feeCents,
-          minimumCents: delivery.minimumCents,
-        },
-        price.menuSubtotalCents,
-        hasFreeDeliveryItem,
+      // Enforced before any order or payment is created, by the same check a
+      // caller can run before there is an order. The address was normalized
+      // above and delivery is known to be enabled, so the refusal here is always
+      // about where the address is or the cart's size.
+      const eligibility = await checkDeliveryEligibility(
+        { address: deliveryAddress, menuSubtotalCents: price.menuSubtotalCents, items },
+        { ordering, delivery, business },
       );
       if (!eligibility.eligible) {
-        const message =
-          eligibility.reason === "below_minimum"
-            ? `Delivery orders must be at least ${formatDeliveryMinimum(delivery.minimumCents)} before tax.`
-            : delivery.outsideAreaMessage ??
-              "This address is outside our delivery area. Please call Pizza 62 to ask about an exception.";
-        throw new OrderValidationError(message, 422, "DELIVERY_ADDRESS_INELIGIBLE");
+        throw new OrderValidationError(eligibility.message ?? "", 422, "DELIVERY_ADDRESS_INELIGIBLE");
       }
     }
     const estimateMinutes = fulfilment === "delivery"
