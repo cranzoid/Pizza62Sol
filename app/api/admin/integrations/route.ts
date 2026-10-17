@@ -52,6 +52,8 @@ const ENUMERATED: Record<string, readonly string[]> = {
   EMAIL_PROVIDER: ["resend", "sendgrid"],
   CUSTOMER_SMS_ENABLED: ["true", "false"],
   MARKETING_SMS_ENABLED: ["true", "false"],
+  VOICE_AI_MODE: ["off", "internal", "pilot", "live"],
+  VOICE_PILOT_FULFILMENTS: ["pickup", "pickup,delivery"],
 };
 
 /** E.164, which is what Twilio requires and what a North American number is not by default. */
@@ -92,6 +94,12 @@ function validate(key: IntegrationSecretKey, value: string): string {
   }
   if ((key === "VOICE_RETRY_LIMIT" || key === "VOICE_RETRY_MINUTES") && !/^\d{1,2}$/.test(trimmed)) {
     throw new Error(`${key} must be a small whole number.`);
+  }
+  if (key === "VOICE_MAX_ORDER_CENTS" && !(/^\d{4,6}$/.test(trimmed) && Number(trimmed) >= 1_000 && Number(trimmed) <= 100_000)) {
+    throw new Error("VOICE_MAX_ORDER_CENTS must be a whole number of cents between 1000 and 100000.");
+  }
+  if (key === "VOICE_TOOL_SECRET" && !/^[A-Za-z0-9_-]{32,200}$/.test(trimmed)) {
+    throw new Error("VOICE_TOOL_SECRET must be at least 32 random letters, digits, - or _.");
   }
   return allowed ? trimmed.toLowerCase() : trimmed;
 }
