@@ -592,7 +592,7 @@ All of these use the integration-secret store (`lib/integration-secrets.ts`): da
 | `VOICE_PILOT_FULFILMENTS` | `pickup` | `pickup` or `pickup,delivery`. Setting delivery is also the owner's explicit acceptance of pay-at-the-door for AI orders (architecture §22 Q6) |
 | `VOICE_MAX_ORDER_CENTS` | `15000` | The largest amount due the AI may place (1000–100000). Larger orders escalate to staff |
 
-Phase 4 adds `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`, `ELEVENLABS_WEBHOOK_SECRET`, `VOICE_AI_NUMBER` and `VOICE_AI_ALLOWLIST` to this same encrypted configuration system. API keys, webhook secrets and tool secrets remain masked; agent ID, AI number and allowlist are readable to the authenticated owner. The Admin → Integrations screen does not show the voice keys yet. The owner-facing kill switch is planned with the AI Phone admin page (architecture §14).
+Phase 4 adds `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`, `ELEVENLABS_WEBHOOK_SECRET`, `VOICE_AI_NUMBER` and `VOICE_AI_ALLOWLIST` to this same encrypted configuration system. API keys, webhook secrets and tool secrets remain masked; agent ID, AI number and allowlist are readable to the authenticated owner. The owner can enter all seven connection settings in **Admin → Integrations → AI receptionist — ElevenLabs**. Each field uses the existing authenticated `secret.set` API and encrypted store. The mode defaults to off and saving credentials does not enable it.
 
 Fixed in code (`lib/voice/config.ts`): session lifetime 30 minutes, confirmation lifetime 5 minutes, 150 tool calls per session, escalation after 3 consecutive failures, notes up to 200 characters.
 
@@ -635,7 +635,7 @@ It prints every tool response, with the cart version and stage. It stops at the 
 
 - `transfer_to_store` and `request_callback`. Register-call does not provide ElevenLabs-managed transfer. Until a separate transfer implementation exists, configure the staging agent to apologize and end the call when it must escalate.
 - `lookup_caller`, "the usual", reordering, saved addresses, order status, changing or cancelling a placed order, card payments and SMS payment links.
-- An admin screen for voice calls, and the kill switch in Admin → Integrations.
+- An admin screen for voice call history. The connection settings and mode are available in Admin → Integrations.
 
 ## 11. Phase 4 staging bridge
 
@@ -665,7 +665,7 @@ VOICE_TOOL_SECRET=<random URL-safe token, at least 32 characters>
 TWILIO_AUTH_TOKEN=<auth token for the account receiving these calls>
 ```
 
-Keep the existing defaults `VOICE_PILOT_FULFILMENTS=pickup` and `VOICE_MAX_ORDER_CENTS=15000`. Missing provider/tool/webhook credentials cause fallback before session creation. No setting is enabled by this change. Database-first encrypted configuration can be populated through the existing authenticated integrations API or environment/Key Vault; a dedicated voice settings UI remains deferred.
+Keep the existing defaults `VOICE_PILOT_FULFILMENTS=pickup` and `VOICE_MAX_ORDER_CENTS=15000`. Missing provider/tool/webhook credentials cause fallback before session creation. No setting is enabled by this change. Database-first encrypted configuration can be populated through the existing authenticated integrations API or environment/Key Vault; the seven connection fields are available in Admin → Integrations → AI receptionist — ElevenLabs.
 
 ### Exact register-call request
 
@@ -721,7 +721,7 @@ This code is ready for the manual staging setup and first direct-call validation
 
 ### Scope differences from the architecture proposal
 
-Phase 4 here is intentionally narrower than the untracked architecture proposal: no appended `<Redirect>`, after-agent route, transfer endpoints/REST redirects, native transfer, Bell forwarding, production rollout, Terraform deployment or alert rules. Caller-ID classification records the signed direct-call/forwarding fields; carrier forwarding behavior is still untested. There are no store-status dynamic variables, since the existing tool owns that decision. Transcript/debug metadata lives in the existing event JSON rather than a new transcript schema. No ordering business rules were changed.
+Phase 4 here is intentionally narrower than the original architecture proposal: no appended `<Redirect>`, after-agent route, transfer endpoints/REST redirects, native transfer, Bell forwarding, production rollout, Terraform deployment or alert rules. Caller-ID classification records the signed direct-call/forwarding fields; carrier forwarding behavior is still untested. There are no store-status dynamic variables, since the existing tool owns that decision. Transcript/debug metadata lives in the existing event JSON rather than a new transcript schema. No ordering business rules were changed.
 
 The [register-call integration guide](https://elevenlabs.io/docs/eleven-agents/phone-numbers/twilio-integration/register-call) confirms returned TwiML, manual μ-law audio setup, no ElevenLabs-managed call transfer and no phone-number dashboard import for this integration.
 
@@ -732,3 +732,17 @@ The [register-call integration guide](https://elevenlabs.io/docs/eleven-agents/p
 - Complete `npm test`: 935 tests, 934 passed, one pre-existing failure, none skipped. The same untouched-HEAD baseline failure is `tests/ordering-release.test.ts:102`, “recipe omissions, normalized halves and chicken keep displayed, quoted, committed and printed prices equal”: actual `2229`, expected `2114`. That unrelated test and ordering pricing code were not changed.
 - `npx tsc --noEmit`, `npm run lint`, and `npm run build`: passed.
 - Additive migration applied and recorded only on the local `pizza62_test` database. No deployment, provider configuration, production-mode enablement, number import, real call, push or Bell forwarding was performed.
+
+
+### Production configuration destination
+
+The canonical production origin is **https://pizza62.ca**. Sign in at **https://pizza62.ca/admin**, open **Integrations**, and use the **AI receptionist — ElevenLabs** card. Enter the real values for the seven fields listed in the environment example; save each field individually. Keep **AI receptionist mode = off**. Values use the same `POST /api/admin/integrations` `secret.set` path as Clover/Twilio/email: AES-256-GCM ciphertext in `integration_secrets`, encrypted with the existing `SETTINGS_ENCRYPTION_KEY` Key Vault reference. Password fields remain masked. Do not enter values in Git or a committed env file.
+
+The existing encryption-key reference is in App Service **app-pizza62-prod-638134**, resource group **rg-pizza62-prod**, backed by Key Vault **kv-pizza62-prod-638134**, secret **settings-encryption-key**. Do not replace that key. The new voice credentials do not need new Key Vault entries when entered through Integrations. If using the environment fallback instead, it must be wired as an App Service setting/Key Vault reference; merely creating an unreferenced Key Vault secret does not configure the app. The encrypted database value takes precedence over the environment. Both slots share this database.
+
+Future provider callback URLs (do not configure during this release):
+
+- Twilio incoming voice: `https://pizza62.ca/api/voice/inbound` (POST).
+- Twilio call status: `https://pizza62.ca/api/voice/status` (POST).
+- ElevenLabs post-call: `https://pizza62.ca/api/voice/events` (POST).
+- ElevenLabs tools: `https://pizza62.ca/api/voice/tools/<tool_name>` (POST).

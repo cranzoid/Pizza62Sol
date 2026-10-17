@@ -168,6 +168,19 @@ const TWILIO_FIELDS: FieldSpec[] = [
   },
 ];
 
+const AI_VOICE_FIELDS: FieldSpec[] = [
+  { key: "ELEVENLABS_API_KEY", label: "ElevenLabs API key", type: "password" },
+  { key: "ELEVENLABS_AGENT_ID", label: "ElevenLabs staging agent ID" },
+  { key: "ELEVENLABS_WEBHOOK_SECRET", label: "ElevenLabs post-call signing secret", type: "password" },
+  { key: "VOICE_TOOL_SECRET", label: "Voice tool secret", type: "password", hint: "Use the same random token in the agent's tool authentication. At least 32 URL-safe characters." },
+  { key: "VOICE_AI_MODE", label: "AI receptionist mode", type: "select", options: [
+    { value: "off", label: "Off — keep disabled during setup" },
+    { value: "internal", label: "Internal — allowlisted test callers only" },
+  ], hint: "Defaults to off. Leave off until provider configuration and staff testing are approved." },
+  { key: "VOICE_AI_ALLOWLIST", label: "Staff test phone numbers", hint: "Comma-separated complete numbers with country codes. Internal mode accepts only these callers." },
+  { key: "VOICE_AI_NUMBER", label: "AI Twilio phone number", hint: "Include the country code. If unset, uses the existing Twilio number." },
+];
+
 export function AdminIntegrationsPanel() {
   const [data, setData] = useState<Payload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -369,6 +382,17 @@ export function AdminIntegrationsPanel() {
           running: busy === "test.sms",
           onRun: () => void runTest("test.sms", "Test text"),
         }}
+      />
+
+      <IntegrationCard
+        title="AI receptionist — ElevenLabs"
+        summary="Enter the agent credentials here. Saving credentials does not turn on the receptionist; keep its mode off until setup is complete."
+        fields={AI_VOICE_FIELDS}
+        data={data}
+        drafts={drafts}
+        busy={busy}
+        setDrafts={setDrafts}
+        onSave={save}
       />
 
       {message ? (
