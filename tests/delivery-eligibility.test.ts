@@ -26,6 +26,7 @@ const { getSetting } = await import("@/db/runtime");
 const { nextOrderSlots } = await import("@/lib/domain");
 const { resolveFsaCentroid } = await import("@/lib/delivery-area");
 const { checkDeliveryEligibility, createOrder, quoteOrder, OrderValidationError } = await import("@/lib/order-service");
+const { staffOrderContext } = await import("@/lib/order-policy");
 
 const reachable = await getPool()
   .query("SELECT 1")
@@ -109,7 +110,7 @@ const freeItem: Line = { productId: FREE_DELIVERY_ID, quantity: 1 };
  */
 async function both(address: Address, lines: Line[]) {
   const cart = { fulfilment: "delivery" as const, items: lines, paymentMethod: "pay_at_store" as const, tip: { type: "none" as const } };
-  const quote = await quoteOrder({ ...cart, schedule: { type: "scheduled", scheduledFor: SLOT } }, { staffEntry: true });
+  const quote = await quoteOrder({ ...cart, schedule: { type: "scheduled", scheduledFor: SLOT } }, staffOrderContext("phone"));
   const check = await checkDeliveryEligibility({
     address,
     menuSubtotalCents: quote.totals.menuSubtotalCents,
@@ -127,7 +128,7 @@ async function both(address: Address, lines: Line[]) {
         idempotencyKey: nextKey(),
         customer: { name: "Ada Lovelace", phone: "905-555-0142", email: "ada@example.test" },
       },
-      { staffEntry: true, channel: "phone" },
+      staffOrderContext("phone"),
     );
   } catch (error) {
     if (!(error instanceof OrderValidationError)) throw error;
@@ -302,7 +303,7 @@ withDb("reports delivery switched off before looking at the address", async () =
             idempotencyKey: nextKey(),
             customer: { name: "Ada Lovelace", phone: "905-555-0142", email: "ada@example.test" },
           },
-          { staffEntry: true, channel: "phone" },
+          staffOrderContext("phone"),
         ),
       (error: unknown) => error instanceof OrderValidationError && error.status === 409,
     );

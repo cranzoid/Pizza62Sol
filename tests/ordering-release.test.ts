@@ -10,6 +10,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { getSetting } = await import("@/db/runtime");
 const { quoteOrder, createOrder } = await import("@/lib/order-service");
+const { staffOrderContext } = await import("@/lib/order-policy");
 const { loadPublicCatalog } = await import("@/lib/public-catalog");
 const reachable = await getPool().query("SELECT 1").then(() => true).catch(() => false);
 after(closePool);
@@ -77,13 +78,13 @@ withDb("all five delivery sizes quote equally for staff/customers, charge extras
     const variation = seed.variations![0];
     const item = { productId: id, variationId: variation.id, quantity: 1, toppings: ["real-chicken", "pepperoni", "onions", "corn"].map((toppingId) => ({ toppingId, placement: "whole" as const })) };
     const body = { ...common, fulfilment: "delivery" as const, items: [item], schedule: await schedule() };
-    const [staff, customer] = await Promise.all([quoteOrder(body, { staffEntry: true }), quoteOrder(body)]);
+    const [staff, customer] = await Promise.all([quoteOrder(body, staffOrderContext("walk_in")), quoteOrder(body)]);
     assert.equal(staff.lines[0].unitPriceCents, seed.basePriceCents + variation.extraToppingPriceCents);
     assert.deepEqual(staff.totals, customer.totals);
     const pickup = await quoteOrder({ ...body, fulfilment: "pickup" });
     assert.equal(pickup.ok, false);
     assert.ok(pickup.issues.some((issue) => issue.index === 0));
-    const committed = await createOrder({ ...body, items: [item, { productId: "poutine", quantity: 1 }], address: { line1: "55 Parkdale Ave N", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" }, idempotencyKey: crypto.randomUUID() }, { staffEntry: true, channel: "phone" });
+    const committed = await createOrder({ ...body, items: [item, { productId: "poutine", quantity: 1 }], address: { line1: "55 Parkdale Ave N", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" }, idempotencyKey: crypto.randomUUID() }, staffOrderContext("phone"));
     const fullQuote = await quoteOrder({ ...body, items: [item, { productId: "poutine", quantity: 1 }] });
     assert.equal(committed.price?.totalCents, fullQuote.totals.totalCents);
   }
@@ -97,12 +98,12 @@ withDb("recipe omissions, normalized halves and chicken keep displayed, quoted, 
   const item = { productId: seed.id, variationId: variation.id, quantity: 2, toppings, omitToppings: ["real-chicken"], extraCheese: false, specialInstructions: "Light cheese" };
   const displayed = pricePizza({ basePriceCents: variation.basePriceCents, extraToppingPriceCents: variation.extraToppingPriceCents, includedToppingUnitsBps: variation.includedToppingUnitsBps!, halfToppingUnitsBps: 5000, toppings, extraCheese: false, recipeToppingIds: recipe, recipeExtraCheese: true });
   const body = { ...common, items: [item], schedule: await schedule() };
-  const [staff, customer] = await Promise.all([quoteOrder(body, { staffEntry: true }), quoteOrder(body)]);
+  const [staff, customer] = await Promise.all([quoteOrder(body, staffOrderContext("walk_in")), quoteOrder(body)]);
   assert.equal(staff.lines[0].unitPriceCents, displayed.totalCents);
   assert.deepEqual(staff.totals, customer.totals);
   const key = crypto.randomUUID();
-  const order = await createOrder({ ...body, idempotencyKey: key }, { staffEntry: true, channel: "walk_in" });
-  const duplicate = await createOrder({ ...body, idempotencyKey: key }, { staffEntry: true, channel: "walk_in" });
+  const order = await createOrder({ ...body, idempotencyKey: key }, staffOrderContext("walk_in"));
+  const duplicate = await createOrder({ ...body, idempotencyKey: key }, staffOrderContext("walk_in"));
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.orderId, order.orderId);
   assert.equal(order.price?.totalCents, customer.totals.totalCents);
@@ -123,7 +124,7 @@ withDb("four identical and mixed legacy drink slots quote and commit with comple
     const quote = await quoteOrder(body);
     assert.equal(quote.ok, true);
     assert.equal(quote.lines[0].unitPriceCents, product.basePriceCents);
-    const order = await createOrder({ ...body, idempotencyKey: crypto.randomUUID() }, { staffEntry: true, channel: "walk_in" });
+    const order = await createOrder({ ...body, idempotencyKey: crypto.randomUUID() }, staffOrderContext("walk_in"));
     const stored = (await getPool().query("SELECT snapshot_json FROM order_items WHERE order_id=$1", [order.orderId])).rows[0];
     const snapshot = JSON.parse(stored.snapshot_json);
     assert.equal(snapshot.modifiers.length, 4);

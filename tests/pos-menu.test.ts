@@ -6,6 +6,7 @@ process.env.PGSSLMODE ??= "disable";
 process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { quoteOrder, createOrder } = await import("@/lib/order-service");
+const { staffOrderContext } = await import("@/lib/order-policy");
 const { getSetting } = await import("@/db/runtime");
 const { loadPublicCatalog } = await import("@/lib/public-catalog");
 const reachable = await getPool().query("SELECT 1").then(() => true).catch(() => false);
@@ -35,7 +36,7 @@ test("public catalog and ordering exclude staff imports; staff can quote them", 
   const scheduledFor = nextOrderSlots({ now: Date.now(), hours, timeZone: "America/Toronto", leadMinutes: 30, limit: 1 })[0];
   const body = { fulfilment: "pickup" as const, items: [{ productId: "chicken-burger", quantity: 1 }], schedule: { type: "scheduled" as const, scheduledFor } };
   assert.equal((await quoteOrder(body)).ok, false);
-  assert.equal((await quoteOrder(body, { staffEntry: true })).ok, true);
+  assert.equal((await quoteOrder(body, staffOrderContext("walk_in"))).ok, true);
   await assert.rejects(createOrder({ ...body, customer: { name: "Test User", phone: "9055550199", email: "test@example.test" }, paymentMethod: "pay_at_store", idempotencyKey: crypto.randomUUID()+crypto.randomUUID() }), /only available at the counter/);
 });
 test("the 40-wing limit covers different styles and sauces in one cart", { skip: !reachable }, async () => {

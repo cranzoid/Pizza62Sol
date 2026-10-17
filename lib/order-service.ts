@@ -57,6 +57,16 @@ import { recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
 import { DRINK_OPTIONS, PIZZA_BASE_OPTIONS, TWO_LITRE_DRINK_OPTIONS, WING_FLAVOURS, type ModifierSectionSeed } from "@/lib/menu";
+import {
+  resolveOrderPolicy,
+  websiteOrderContext,
+  type ContactPolicy,
+  type CreateOrderContext,
+  type OrderPolicy,
+  type PaymentMethod,
+} from "@/lib/order-policy";
+
+export type { CreateOrderContext } from "@/lib/order-policy";
 
 export type OrderRequest = {
   idempotencyKey?: string;
@@ -263,15 +273,17 @@ function pizzaOptionSections(configuration: ProductConfiguration): ModifierSecti
  * email address, and demanding one produces `x@x.com` typed by a member of staff
  * to get past the form — a worse outcome than an empty field, because it looks
  * like data. An order with no email simply gets no confirmation email.
+ *
+ * Which rule applies is the caller's `contactPolicy` — see lib/order-policy.ts.
  */
-function normalizeCustomer(customer: OrderRequest["customer"], staffEntry = false) {
+function normalizeCustomer(customer: OrderRequest["customer"], contactPolicy: ContactPolicy = "full") {
   const name = customer?.name?.trim() ?? "";
   const phone = customer?.phone?.replace(/[^0-9+]/g, "") ?? "";
   const email = customer?.email?.trim().toLowerCase() ?? "";
   if (name.length < 2 || name.length > 100) {
-    throw new OrderValidationError(staffEntry ? "Give the order a name so staff can call it out." : "Enter your full name.");
+    throw new OrderValidationError(contactPolicy === "name_only" ? "Give the order a name so staff can call it out." : "Enter your full name.");
   }
-  if (staffEntry) {
+  if (contactPolicy === "name_only") {
     if (phone && (phone.length < 10 || phone.length > 16)) {
       throw new OrderValidationError("That phone number does not look right.");
     }
@@ -636,19 +648,19 @@ function validateSchedule(
  * The last-order cutoff, enforced here as well as in the browser.
  *
  * Judged by the same `storeStatus` the website uses to disable ASAP, so the two
- * cannot disagree about where the boundary is. Only ASAP orders from the public
- * side are affected: a scheduled order is judged by `validateSchedule` (the
- * website offers slots up to closing), and the till decides for itself whether
- * the kitchen can take one more. Called after `validateSchedule` has passed, so
+ * cannot disagree about where the boundary is. Only ASAP orders are affected: a
+ * scheduled order is judged by `validateSchedule` (the website offers slots up
+ * to closing), and the till decides for itself whether the kitchen can take one
+ * more (`bypassLastOrderCutoff`). Called after `validateSchedule` has passed, so
  * a store that is simply shut keeps its existing "outside hours" refusal.
  */
 function assertBeforeLastOrderCutoff(
   scheduleType: "asap" | "scheduled",
   hours: Array<{ weekday: number; openMinute: number; closeMinute: number }>,
   ordering: OrderingSetting,
-  staffEntry = false,
+  bypassLastOrderCutoff = false,
 ): void {
-  if (scheduleType !== "asap" || staffEntry) return;
+  if (scheduleType !== "asap" || bypassLastOrderCutoff) return;
   const status = storeStatus(Date.now(), hours, "America/Toronto", {
     lastOrderCutoffMinutes: Number(ordering.lastOrderCutoffMinutes ?? 0),
   });
@@ -661,11 +673,40 @@ function assertBeforeLastOrderCutoff(
   }
 }
 
+/**
+ * Why this payment method cannot be used for this order, or null when it can.
+ *
+ * One function for the quote and the order, so the review screen cannot enable
+ * a button the order then refuses. The checks run in the order `createOrder`
+ * has always applied them. With the website's policy this is exactly the old
+ * rule — pay-at-store only on a pickup, and only while the website allows it —
+ * and with the till's, pay-at-store is the counter's own call on either.
+ */
+function paymentMethodRefusal(
+  method: PaymentMethod,
+  fulfilment: Fulfilment,
+  ordering: OrderingSetting,
+  policy: OrderPolicy,
+): string | null {
+  if (!policy.paymentMethods.includes(method)) return "That payment method is not available for this order.";
+  if (method === "pay_at_store") {
+    const allowed = fulfilment === "delivery"
+      ? policy.allowPayOnDelivery
+      : policy.payAtStorePickup === "always" || ordering.payAtStorePickupEnabled;
+    if (!allowed) return "Pay at store is available for pickup orders only.";
+  }
+  return null;
+}
+
+function hasCode(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function validateItems(
   items: OrderRequest["items"],
   fulfilment: Fulfilment,
   operations: OperationSetting,
-  staffEntry = false,
+  allowStaffOnlyItems = false,
 ): Promise<ValidatedItem[]> {
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
@@ -695,7 +736,7 @@ async function validateItems(
       throw new OrderValidationError(`${product.name} is not available for ${fulfilment}.`);
     }
     const productConfiguration = safeJson<ProductConfiguration>(product.configuration_json, {});
-    if (productConfiguration.staffOnly && !staffEntry) throw new OrderValidationError("This item is only available at the counter.");
+    if (productConfiguration.staffOnly && !allowStaffOnlyItems) throw new OrderValidationError("This item is only available at the counter.");
     const configuredMaximum = Number(productConfiguration.maxQuantity);
     const maximumQuantity = Number.isSafeInteger(configuredMaximum) && configuredMaximum >= 1 && configuredMaximum <= 100
       ? configuredMaximum
@@ -1142,8 +1183,12 @@ export type OrderQuote = {
  *
  * Read-only: no order, no payment, no idempotency key, nothing persisted.
  */
-export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boolean } = {}): Promise<OrderQuote> {
+export async function quoteOrder(
+  body: OrderRequest,
+  context: Pick<CreateOrderContext, "policy"> = websiteOrderContext(),
+): Promise<OrderQuote> {
   await ensureDatabase();
+  const policy = resolveOrderPolicy(context);
   const fulfilment: Fulfilment = body.fulfilment === "delivery" ? "delivery" : "pickup";
   const [ordering, delivery, taxTips, operations] = await Promise.all([
     getSetting<OrderingSetting>("ordering"),
@@ -1164,12 +1209,12 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   let items: ValidatedItem[] = [];
   let itemIndexes: number[] = [];
   try {
-    items = await validateItems(submitted, fulfilment, operations, context.staffEntry);
+    items = await validateItems(submitted, fulfilment, operations, policy.allowStaffOnlyItems);
     itemIndexes = submitted.map((_, index) => index);
   } catch (cartError) {
     for (const [index, line] of submitted.entries()) {
       try {
-        const [validated] = await validateItems([line], fulfilment, operations, context.staffEntry);
+        const [validated] = await validateItems([line], fulfilment, operations, policy.allowStaffOnlyItems);
         items.push(validated);
         itemIndexes.push(index);
       } catch (error) {
@@ -1354,19 +1399,30 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   // Only checked when a payment method was actually named — the cart is quoted
   // long before the customer has chosen one.
   //
-  // Staff entry is exempt here exactly as it is in `createOrder`. Mirroring the
-  // rule without its exemption is how every phone delivery at the till was
-  // quoted `ok: false`, which greyed out "Send & print" — so a delivery could
-  // not be sent, and its ticket never printed for the driver.
-  if (body.paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
+  // The caller's policy applies here exactly as it does in `createOrder`.
+  // Mirroring the rule without the till's exemption is how every phone delivery
+  // at the till was quoted `ok: false`, which greyed out "Send & print" — so a
+  // delivery could not be sent, and its ticket never printed for the driver.
+  const paymentRefusal = body.paymentMethod === "pay_at_store" || body.paymentMethod === "online"
+    ? paymentMethodRefusal(body.paymentMethod, fulfilment, ordering, policy)
+    : null;
+  if (paymentRefusal) {
     issues.push({
       index: null,
       productId: null,
       code: "PAYMENT_METHOD_UNAVAILABLE",
-      message: "Pay at store is available for pickup orders only.",
+      message: paymentRefusal,
     });
   }
-  if (body.paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
+  if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
+    issues.push({
+      index: null,
+      productId: null,
+      code: "CODES_NOT_ACCEPTED",
+      message: "Promo codes and gift cards cannot be used on this order.",
+    });
+  }
+  if (body.paymentMethod === "online" && !paymentRefusal && !(await cloverCheckoutConfigured())) {
     issues.push({
       index: null,
       productId: null,
@@ -1411,7 +1467,7 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
   try {
     const hours = await getSetting<Array<{ weekday: number; openMinute: number; closeMinute: number }>>("hours");
     const schedule = validateSchedule(body.schedule ?? { type: "asap" }, estimateMinutes, hours);
-    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, context.staffEntry);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, policy.bypassLastOrderCutoff);
   } catch (error) {
     // Suppressed when a closure already explained it: two refusals for one cause
     // reads as two separate problems to fix.
@@ -1472,28 +1528,20 @@ export async function quoteOrder(body: OrderRequest, context: { staffEntry?: boo
 // left for a request origin to influence — the browser stashes the tracking
 // credentials before redirecting instead (see /order/return).
 /**
- * Options only a trusted caller may set.
+ * Creates an order.
  *
- * Deliberately a second argument rather than fields on `OrderRequest`: the
+ * `context` carries what only a trusted caller may decide — the channel and
+ * every privilege beyond the website's (lib/order-policy.ts). It is
+ * deliberately a second argument rather than fields on `OrderRequest`: the
  * public route hands the parsed request body straight to `createOrder`, so
  * anything reachable from `body` is settable by whoever is on the internet.
  * `channel: "walk_in"` from a stranger would make the owner's in-store figures a
- * fiction, and `staffEntry` would let them skip having to give an email address.
+ * fiction, and a staff contact policy would let them skip giving an email
+ * address. The public route passes no context and gets the website's policy.
  */
-export type CreateOrderContext = {
-  /** Where the order was taken. Defaults to the customer web app. */
-  channel?: "online" | "phone" | "walk_in";
-  /**
-   * True when a member of staff is keying this in at the counter or on the
-   * phone. Relaxes the contact requirements — a walk-in customer has not given
-   * an email address and should not be invented one — and records who took it.
-   */
-  staffEntry?: boolean;
-  staffUserId?: string;
-};
-
-export async function createOrder(body: OrderRequest, context: CreateOrderContext = {}) {
+export async function createOrder(body: OrderRequest, context: CreateOrderContext = websiteOrderContext()) {
   await ensureDatabase();
+  const policy = resolveOrderPolicy(context);
   const idempotencyKey = body.idempotencyKey?.trim() ?? "";
   if (idempotencyKey.length < 20 || idempotencyKey.length > 200) {
     throw new OrderValidationError("A valid checkout idempotency key is required.");
@@ -1563,7 +1611,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         "PAYMENT_DECLINED",
       );
     }
-    const customer = normalizeCustomer(body.customer, context.staffEntry);
+    const customer = normalizeCustomer(body.customer, policy.contactPolicy);
     const fulfilment = body.fulfilment;
     if (fulfilment !== "pickup" && fulfilment !== "delivery") {
       throw new OrderValidationError("Choose pickup or delivery.");
@@ -1601,10 +1649,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // customer on the line, they decide whether to take the card number now or
     // send the machine out with the driver, and refusing them here is what kept
     // phone deliveries on paper and out of the books entirely. The relaxation is
-    // gated on `staffEntry`, which is a trusted context argument set after
-    // authentication and unreachable from a request body — see CreateOrderContext.
-    if (paymentMethod === "pay_at_store" && !context.staffEntry && (fulfilment !== "pickup" || !ordering.payAtStorePickupEnabled)) {
-      throw new OrderValidationError("Pay at store is available for pickup orders only.");
+    // the till's policy (`allowPayOnDelivery`, `payAtStorePickup: "always"`),
+    // which is a trusted context argument set after authentication and
+    // unreachable from a request body — see lib/order-policy.ts.
+    const paymentRefusal = paymentMethodRefusal(paymentMethod, fulfilment, ordering, policy);
+    if (paymentRefusal) throw new OrderValidationError(paymentRefusal);
+    if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {
+      throw new OrderValidationError("Promo codes and gift cards cannot be used on this order.", 400, "CODES_NOT_ACCEPTED");
     }
     if (paymentMethod === "online" && !(await cloverCheckoutConfigured())) {
       throw new OrderValidationError(
@@ -1615,13 +1666,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     }
     const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
     // A driver with no number to call is a delivery that fails at the door. The
-    // website asks every customer for a phone number, but staff entry does not
+    // website asks every customer for a phone number, but the counter does not
     // (see normalizeCustomer on why demanding one at a counter produces junk), so
     // the requirement is reinstated for the one case that cannot do without it.
     if (fulfilment === "delivery" && !customer.phone) {
       throw new OrderValidationError("A delivery needs a phone number the driver can call.");
     }
-    const items = await validateItems(body.items, fulfilment, operations, context.staffEntry);
+    const items = await validateItems(body.items, fulfilment, operations, policy.allowStaffOnlyItems);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
       productId: item.productId,
@@ -1685,7 +1736,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
       throw new OrderValidationError(closureMessage(closure), 409, "STORE_CLOSED");
     }
     const schedule = validateSchedule(body.schedule, estimateMinutes, hours);
-    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, context.staffEntry);
+    assertBeforeLastOrderCutoff(schedule.type, hours, ordering, policy.bypassLastOrderCutoff);
 
     /**
      * The gift card, resolved last — immediately before anything is written.
@@ -1743,12 +1794,12 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     const trackingTokenHash = await hashOpaqueToken(trackingToken);
     const feedbackTokenHash = await hashOpaqueToken(feedbackToken);
     // Only a trusted caller can say this is anything but a website order — see
-    // CreateOrderContext on why it is not reachable from the request body.
-    const channel = context.channel ?? "online";
+    // lib/order-policy.ts on why it is not reachable from the request body.
+    const channel = policy.channel;
     // Where the order came from, as opposed to where it was taken. A phone or
     // counter order has nothing to attribute and the till sends nothing; a
     // website order carries whatever campaign brought the customer here.
-    const attribution = context.staffEntry ? null : normalizeAttribution(body.attribution);
+    const attribution = policy.recordAttribution ? normalizeAttribution(body.attribution) : null;
     /**
      * A gift card that covers the whole bill leaves nothing for Clover to do.
      *
@@ -1828,7 +1879,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           // The employee who entered a walk-in is already standing in front of
           // that order. Treating it as unseen creates a false acknowledgement
           // alarm for an order the restaurant itself just accepted.
-          channel === "walk_in" ? now : null,
+          policy.alertRestaurant ? null : now,
           now,
           now,
         ),
@@ -1906,7 +1957,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
           giftCardId,
           orderId,
           amountCents: giftCardAppliedCents,
-          actorType: context.staffEntry ? "staff" : "customer",
+          actorType: policy.actorType === "staff" ? "staff" : "customer",
           actorId: context.staffUserId ?? null,
           note: `Held against order ${orderNumber}`,
           now,
@@ -1929,8 +1980,8 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     // was entered by the restaurant itself and is printed from that same tap, so
     // ringing the kitchen phone to tell staff about their own action is both
     // redundant and disruptive. Phone orders retain the alert: only the trusted
-    // walk_in channel is exempt, and the public route cannot set that channel.
-    if (channel !== "walk_in") {
+    // walk-in policy is exempt, and the public route cannot choose a policy.
+    if (policy.alertRestaurant) {
       operationsBatch.push(
         getD1()
           .prepare(
