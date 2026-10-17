@@ -1,6 +1,6 @@
 # ElevenLabs Voice Tools — Contract for the Pizza 62 AI Receptionist
 
-**Status (17 October 2026):** the tool API and Phase 4 staging telephony routes are implemented. No deployment or provider configuration has been performed. `VOICE_AI_MODE` remains `off` by default, so tool calls return `503` and signed inbound calls receive a spoken fallback until internal testing is explicitly configured. This document describes the API as implemented in `lib/voice/tools.ts` and `app/api/voice/tools/[tool]/route.ts`. Every example below is a real response captured from those functions against the test database. The examples use a Wednesday at 6:00 PM, when the store is open.
+**Status (17 October 2026):** the tool API and Phase 4 staging telephony routes are implemented. The build has passed staging deployment and smoke checks; production promotion is pending the normal GitHub Actions flow. Provider configuration remains untouched. `VOICE_AI_MODE` remains `off` by default, so tool calls return `503` and signed inbound calls receive a spoken fallback until internal testing is explicitly configured. This document describes the API as implemented in `lib/voice/tools.ts` and `app/api/voice/tools/[tool]/route.ts`. Every example below is a real response captured from those functions against the test database. The examples use a Wednesday at 6:00 PM, when the store is open.
 
 Read it with `docs/AI-RECEPTIONIST-ARCHITECTURE.md`. That file covers the call routing, the transfer design and the rollout phases. This one covers what the agent's tools are and how to configure them.
 
@@ -717,7 +717,7 @@ Post-call data is saved atomically with the conversation binding as one existing
 7. Set the Twilio voice fallback URL to an independently hosted static TwiML Bin containing the same apology and `<Hangup/>`, without a transfer destination. This covers app/network outages. Do not point it back at the failing app.
 8. Deliberately set **internal** mode only when ready for staff testing, call **+1 825-462-6262 directly from an allowlisted phone**, and check tool execution, one voice row, order/alert behavior, Twilio completion and the redacted transcript event. An allowlisted caller can place a real pickup/pay-at-store order through the existing engine: coordinate the test with staff. Test an unlisted caller and forced register-call failure too. Return mode to off after the test window.
 
-This code is ready for the manual staging setup and first direct-call validation after it. A live test is **not ready to start merely from these local commits**: deployment, secrets, audio/tool/webhook settings and Twilio URLs must be completed and checked first. No deployment or provider configuration was performed by the implementation agent.
+This code is ready for the manual staging setup and first direct-call validation after it. A live test is **not ready to start merely from these local commits**: deployment, secrets, audio/tool/webhook settings and Twilio URLs must be completed and checked first. The staging build has been deployed with mode off; provider configuration and the first real call remain pending.
 
 ### Scope differences from the architecture proposal
 
@@ -731,7 +731,7 @@ The [register-call integration guide](https://elevenlabs.io/docs/eleven-agents/p
 - Focused Phase 4 plus all existing voice/channel/alert tests: 344 passed, none skipped.
 - Complete `npm test`: 935 tests, 934 passed, one pre-existing failure, none skipped. The same untouched-HEAD baseline failure is `tests/ordering-release.test.ts:102`, “recipe omissions, normalized halves and chicken keep displayed, quoted, committed and printed prices equal”: actual `2229`, expected `2114`. That unrelated test and ordering pricing code were not changed.
 - `npx tsc --noEmit`, `npm run lint`, and `npm run build`: passed.
-- Additive migration applied and recorded only on the local `pizza62_test` database. No deployment, provider configuration, production-mode enablement, number import, real call, push or Bell forwarding was performed.
+- Initial local verification applied the migration only on `pizza62_test`. Subsequent staging deployment and migration verification are recorded below.
 
 
 ### Production configuration destination
@@ -746,3 +746,14 @@ Future provider callback URLs (do not configure during this release):
 - Twilio call status: `https://pizza62.ca/api/voice/status` (POST).
 - ElevenLabs post-call: `https://pizza62.ca/api/voice/events` (POST).
 - ElevenLabs tools: `https://pizza62.ca/api/voice/tools/<tool_name>` (POST).
+
+
+### Staging verification before normal PR/Actions promotion (17 October 2026)
+
+Release `802a522c8772ac54a3f37ce048ecceb20af4045e` was published to the existing staging slot by the manual ZIP path (OneDeploy ID `0a69124e-3847-464b-8578-3b8dc7a41e43`). No slot swap was performed. The release now follows the normal release branch → PR → main → GitHub Actions deployment path for production promotion.
+
+The existing startup migration runner recorded prerequisite migrations `0011_ai_phone_channel.sql`, `0012_voice_sessions.sql` and `0013_voice_telephony.sql` in the shared database. Migration 0013 only adds seven nullable voice-call columns. Migration 0011 widens the existing order-channel constraint without changing existing rows; 0012 adds the voice tables and indexes.
+
+All 23 staging checks passed: exact revision, migration ledger and nullable columns; encrypted settings and effective mode off; health/home/admin/menu (80 public products); authenticated staff dashboard; customer cart and staff quote parity; authentication/order validation; signed disabled inbound fallback; signed status callback; invalid Twilio signature rejection; tool kill switch; unconfigured post-call endpoint; and no synthetic voice session. The read-only customer/staff pickup quotes both totaled 2032 cents. Order count stayed 237 before and after the smoke checks; no real order/payment/provider call was created. The temporary staff session was removed. Real provider secrets remain unset and voice mode was explicitly saved as off through the existing encrypted integrations API.
+
+Pre-deployment verification repeated: TypeScript, lint and production build passed; all 344 voice/channel/alert tests passed; full suite 934/935 passed with no skips and only the unchanged `2229 !== 2114` pricing assertion. No tests or CI gates were weakened.
