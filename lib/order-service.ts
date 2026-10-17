@@ -264,6 +264,23 @@ function pizzaOptionSections(configuration: ProductConfiguration): ModifierSecti
 }
 
 /**
+ * The option sections `validateItems` checks a product's modifiers against,
+ * for anything that has to describe or resolve them without placing an order
+ * (the voice menu resolver, the voice item description).
+ *
+ * Exactly the sections `validateItems` builds — retired ones included, because
+ * `validateModifiers` discards those itself and relies on seeing them to do so.
+ * A caller that presents options to someone filters them with
+ * `isRetiredSection` first.
+ */
+export function orderableSections(productType: string, configuration: Record<string, unknown>): ModifierSectionSeed[] {
+  const productConfiguration = configuration as ProductConfiguration;
+  return productType === "pizza"
+    ? pizzaOptionSections(productConfiguration)
+    : orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst));
+}
+
+/**
  * Contact details, with different rules for a customer and for the counter.
  *
  * Online, all three are required: the email is how the confirmation and the
@@ -859,7 +876,7 @@ async function validateItems(
       }
       const validatedModifiers = validateModifiers(
         input.modifiers,
-        pizzaOptionSections(productConfiguration),
+        orderableSections(product.product_type, productConfiguration),
         toppingNames,
         operations.halfToppingUnitsBps,
       );
@@ -888,7 +905,7 @@ async function validateItems(
     } else {
       const validatedModifiers = validateModifiers(
         input.modifiers,
-        orderModifierSections(productConfiguration.sections ?? [], Boolean(productConfiguration.toppingsFirst)),
+        orderableSections(product.product_type, productConfiguration),
         toppingNames,
         operations.halfToppingUnitsBps,
       );
