@@ -38,6 +38,7 @@ import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing
 import { todaysSpecials, weekdayName } from "@/lib/daily-specials";
 import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
 import { centsToQualify, formatEntryNumber, type PublicGiveaway } from "@/lib/giveaway";
+import { WEBSITE_PAY_AT_STORE_LIMIT_CENTS } from "@/lib/order-policy";
 
 export type { PublicCatalog as Catalog } from "@/lib/catalog-types";
 /** A line in the bag is one built item, with a quantity the shopper controls. */
@@ -1288,7 +1289,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   const [giftCardInput, setGiftCardInput] = useState(""); const [giftCardCode, setGiftCardCode] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [scheduleType, setScheduleType] = useState<"asap" | "scheduled">(store.open ? "asap" : "scheduled"); const [scheduledFor, setScheduledFor] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
+  const [chosenPaymentMethod, setPaymentMethod] = useState<"pay_at_store" | "online">(fulfilment === "delivery" ? "online" : "pay_at_store");
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
   // Inline card entry, when Clover is configured for it and the SDK actually
   // loads. `cardFormBlocked` is the fallback signal: blockers stop payment
@@ -1350,6 +1351,11 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   const totals = quote?.totals ?? EMPTY_TOTALS;
   const quoteMoney = (cents: number) => quote ? formatMoney(cents) : "—";
   const blockingIssues = quote?.issues ?? [];
+  // Orders over the limit must be paid online (lib/order-policy.ts). The server
+  // refuses them either way; this moves the customer to card before they try,
+  // and back to their own choice if the cart drops under the limit again.
+  const payAtStoreOverLimit = totals.amountDueCents > WEBSITE_PAY_AT_STORE_LIMIT_CENTS;
+  const paymentMethod = payAtStoreOverLimit ? "online" : chosenPaymentMethod;
   const contactComplete = name.trim().length > 1 && phone.trim().length >= 10 && /\S+@\S+\.\S+/.test(email);
   const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
 
@@ -1472,7 +1478,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         </label> : null}
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
-      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className="payment-choice"><input type="radio" checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>Cash, debit, or credit card</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
+      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className={`payment-choice ${payAtStoreOverLimit ? "disabled" : ""}`}><input type="radio" disabled={payAtStoreOverLimit} checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>{payAtStoreOverLimit ? `Orders over ${formatMoney(WEBSITE_PAY_AT_STORE_LIMIT_CENTS)} are paid online` : "Cash, debit, or credit card"}</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
       {paymentMethod === "online" && totals.amountDueCents > 0 && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
         ? <CloverCardForm
             publicToken={cloverIframe.publicToken}

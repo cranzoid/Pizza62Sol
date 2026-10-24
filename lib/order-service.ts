@@ -731,6 +731,20 @@ function paymentMethodRefusal(
   return null;
 }
 
+/**
+ * Why this order is too large to pay at the store, or null when it is not.
+ *
+ * Separate from `paymentMethodRefusal` because it needs the priced total,
+ * which neither caller has when that runs. Like it, one function for the quote
+ * and the order. Nothing owed (a gift card covering the bill) is never refused:
+ * there is nothing left to promise.
+ */
+function payAtStoreLimitRefusal(method: PaymentMethod, amountDueCents: number, policy: OrderPolicy): string | null {
+  if (method !== "pay_at_store" || policy.payAtStoreLimitCents === null) return null;
+  if (amountDueCents <= policy.payAtStoreLimitCents) return null;
+  return `Orders over ${formatDeliveryMinimum(policy.payAtStoreLimitCents)} must be paid online. Please choose Pay online by card.`;
+}
+
 function hasCode(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -1518,7 +1532,8 @@ async function priceQuote(
   // at the till was quoted `ok: false`, which greyed out "Send & print" — so a
   // delivery could not be sent, and its ticket never printed for the driver.
   const paymentRefusal = body.paymentMethod === "pay_at_store" || body.paymentMethod === "online"
-    ? paymentMethodRefusal(body.paymentMethod, fulfilment, ordering, policy)
+    ? paymentMethodRefusal(body.paymentMethod, fulfilment, ordering, policy) ??
+      payAtStoreLimitRefusal(body.paymentMethod, Math.max(0, price.totalCents - giftCardAppliedCents), policy)
     : null;
   if (paymentRefusal) {
     issues.push({
@@ -1895,6 +1910,10 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         "TOTAL_CHANGED",
       );
     }
+    // Checked here, once the bill is priced, and before an order number is
+    // taken. See `payAtStoreLimitCents` in lib/order-policy.ts.
+    const payAtStoreLimit = payAtStoreLimitRefusal(paymentMethod, amountDueCents, policy);
+    if (payAtStoreLimit) throw new OrderValidationError(payAtStoreLimit, 400, "PAY_ONLINE_REQUIRED");
 
     const sequence = await getD1()
       .prepare(
@@ -2339,7 +2358,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
         ]);
         throw new OrderValidationError(
           declined
-            ? "That card was declined. No payment was taken — try another card, or pay at the store."
+            ? `That card was declined. No payment was taken — try another card${
+                // Only offered where the order could actually be placed that way.
+                paymentMethodRefusal("pay_at_store", fulfilment, ordering, policy) ??
+                payAtStoreLimitRefusal("pay_at_store", amountDueCents, policy)
+                  ? ""
+                  : ", or pay at the store"
+              }.`
             : "We could not confirm the payment. Please retry this checkout so we can check the same payment attempt.",
           declined ? 402 : 502,
           declined ? "PAYMENT_DECLINED" : "PAYMENT_PROVIDER_ERROR",
