@@ -152,6 +152,7 @@ test("each preset states every privilege, and none can be edited at runtime", ()
     paymentMethods: ["pay_at_store", "online"],
     payAtStorePickup: "setting",
     allowPayOnDelivery: false,
+    payAtStoreLimitCents: 4000,
     bypassLastOrderCutoff: false,
     recordAttribution: true,
     alertRestaurant: true,
@@ -164,6 +165,7 @@ test("each preset states every privilege, and none can be edited at runtime", ()
     paymentMethods: ["pay_at_store", "online"],
     payAtStorePickup: "always",
     allowPayOnDelivery: true,
+    payAtStoreLimitCents: null,
     bypassLastOrderCutoff: true,
     recordAttribution: false,
     allowCodes: true,
@@ -250,6 +252,27 @@ withDb("the payment-method list can withhold online payment without touching pay
   });
 });
 
+withDb("website orders over $40 must be paid online; the till has no limit", async () => {
+  await at(OPEN, async () => {
+    // Five poutines at $8.99 come to $50.79 with HST; three come to $30.48.
+    const large = (extra: Record<string, unknown> = {}) => pickup({ items: [{ productId: "poutine", quantity: 5 }], ...extra });
+    const refused = await outcome(createOrder(large()));
+    assert.equal(refused.accepted, false);
+    assert.equal(refused.code, "PAY_ONLINE_REQUIRED");
+    assert.equal(refused.message, "Orders over $40.00 must be paid online. Please choose Pay online by card.");
+    const quote = await quoteOrder(large());
+    assert.equal(quote.ok, false);
+    assert.deepEqual(quote.issues.map((issue) => issue.message), [refused.message]);
+    // Choosing online clears it, and an order under the limit can still pay at the store.
+    const online = await quoteOrder(large({ paymentMethod: "online" }));
+    assert.ok(!online.issues.some((issue) => issue.code === "PAYMENT_METHOD_UNAVAILABLE"));
+    assert.equal((await outcome(createOrder(pickup({ items: [{ productId: "poutine", quantity: 3 }] })))).accepted, true);
+    // The till takes the same order at the counter.
+    assert.equal((await outcome(createOrder(large(), staffOrderContext("phone", "limit-staff-user")))).accepted, true);
+    assert.equal((await outcome(createOrder(large(), { policy: websiteWith({ payAtStoreLimitCents: null }) }))).accepted, true);
+  });
+});
+
 withDb("the cutoff exemption is its own privilege", async () => {
   await at(wednesdayAt(22 * 60 - 10), async () => {
     const policy = websiteWith({ bypassLastOrderCutoff: true });
@@ -309,6 +332,8 @@ test("a missing or malformed policy resolves to the website's", () => {
   assert.equal(resolveOrderPolicy({ policy: { allowStaffOnlyItems: true } as never }), WEBSITE_ORDER_POLICY);
   assert.equal(resolveOrderPolicy({ policy: { ...STAFF_PHONE_ORDER_POLICY, channel: "ai_receptionist" } as never }), WEBSITE_ORDER_POLICY);
   assert.equal(resolveOrderPolicy({ policy: { ...STAFF_PHONE_ORDER_POLICY, paymentMethods: ["cash"] } as never }), WEBSITE_ORDER_POLICY);
+  assert.equal(resolveOrderPolicy({ policy: { ...STAFF_PHONE_ORDER_POLICY, payAtStoreLimitCents: undefined } as never }), WEBSITE_ORDER_POLICY);
+  assert.equal(resolveOrderPolicy({ policy: { ...STAFF_PHONE_ORDER_POLICY, payAtStoreLimitCents: "40" } as never }), WEBSITE_ORDER_POLICY);
   assert.equal(resolveOrderPolicy(staffOrderContext("phone")), STAFF_PHONE_ORDER_POLICY);
 });
 

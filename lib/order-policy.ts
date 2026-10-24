@@ -72,6 +72,18 @@ export type OrderPolicy = Readonly<{
   /** Pay-at-store on a delivery, the driver collecting at the door. */
   allowPayOnDelivery: boolean;
   /**
+   * The most a pay-at-store order may leave owing, in cents, or null for no
+   * limit. Above it the order has to be paid online.
+   *
+   * Pay-at-store is a promise, not a payment, and large unpaid pickup orders
+   * were being placed by people who never came to collect them: the kitchen
+   * cooks the food and nobody pays for it. Capping what can be promised caps
+   * what a fake order can cost. Measured against the amount still due after
+   * any gift card, because that is the money the restaurant would be trusting
+   * the customer for.
+   */
+  payAtStoreLimitCents: number | null;
+  /**
    * Exempt from the ASAP last-order cutoff. The till decides whether the
    * kitchen can take one more; nobody else may. Opening hours, closures and
    * the schedule rules apply to everyone regardless.
@@ -103,6 +115,12 @@ export type CreateOrderContext = {
 
 const BOTH_PAYMENT_METHODS: readonly PaymentMethod[] = Object.freeze(["pay_at_store", "online"]);
 
+/**
+ * Website orders over $40 must be paid online. Exported so the checkout can
+ * switch the customer to card before the server would refuse them.
+ */
+export const WEBSITE_PAY_AT_STORE_LIMIT_CENTS = 4000;
+
 /** The public website, and the fallback for anything that does not name a policy. */
 export const WEBSITE_ORDER_POLICY: OrderPolicy = Object.freeze({
   channel: "online",
@@ -112,6 +130,7 @@ export const WEBSITE_ORDER_POLICY: OrderPolicy = Object.freeze({
   paymentMethods: BOTH_PAYMENT_METHODS,
   payAtStorePickup: "setting",
   allowPayOnDelivery: false,
+  payAtStoreLimitCents: WEBSITE_PAY_AT_STORE_LIMIT_CENTS,
   bypassLastOrderCutoff: false,
   recordAttribution: true,
   alertRestaurant: true,
@@ -125,6 +144,8 @@ const STAFF_PRIVILEGES = {
   paymentMethods: BOTH_PAYMENT_METHODS,
   payAtStorePickup: "always",
   allowPayOnDelivery: true,
+  // The counter can see who it is dealing with; no limit.
+  payAtStoreLimitCents: null,
   bypassLastOrderCutoff: true,
   recordAttribution: false,
   allowCodes: true,
@@ -161,6 +182,9 @@ export const AI_PHONE_ORDER_POLICY: OrderPolicy = Object.freeze({
   paymentMethods: Object.freeze(["pay_at_store"]) as readonly PaymentMethod[],
   payAtStorePickup: "setting",
   allowPayOnDelivery: false,
+  // Not the website's limit: a caller cannot pay by voice at all, so a limit
+  // here would refuse every large phone order rather than move it online.
+  payAtStoreLimitCents: null,
   bypassLastOrderCutoff: false,
   recordAttribution: false,
   alertRestaurant: true,
@@ -223,6 +247,8 @@ export function resolveOrderPolicy(context: Partial<CreateOrderContext> | undefi
     policy.paymentMethods.every((method) => method === "pay_at_store" || method === "online") &&
     (policy.payAtStorePickup === "setting" || policy.payAtStorePickup === "always") &&
     typeof policy.allowPayOnDelivery === "boolean" &&
+    (policy.payAtStoreLimitCents === null ||
+      (Number.isSafeInteger(policy.payAtStoreLimitCents) && Number(policy.payAtStoreLimitCents) >= 0)) &&
     typeof policy.bypassLastOrderCutoff === "boolean" &&
     typeof policy.recordAttribution === "boolean" &&
     typeof policy.alertRestaurant === "boolean" &&
