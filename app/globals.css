@@ -287,6 +287,55 @@ text.viz-axis{fill:#6f7a72;font-size:9px;font-weight:700}
 /* Website-editor surfaces: announcement bar, hero photograph, editor controls. */
 .announcement-bar{background:var(--ink);color:var(--paper);text-align:center;padding:9px 20px;font-size:12px;font-weight:700}
 .announcement-bar a{text-decoration:underline}
+
+/* One-day Halloween dressing. Every rule is scoped to the clock-driven class. */
+.customer-site--halloween .public-header { border-bottom: 3px solid #e98b37; }
+.halloween-banner { position: relative; isolation: isolate; display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; align-items: center; gap: 24px; padding: 30px clamp(22px, 5vw, 80px); overflow: hidden; background: #21182d; color: #fff4df; border-bottom: 3px solid #e98b37; }
+.halloween-banner::after { content: ""; position: absolute; z-index: -1; width: 420px; height: 420px; left: -90px; top: -160px; border-radius: 50%; background: radial-gradient(circle, #673b59, transparent 68%); }
+.halloween-banner__art { width: 170px; height: auto; transform: rotate(-7deg); }
+.halloween-kicker { margin: 0 0 10px; color: #ffc17e; font-size: 11px; font-weight: 900; letter-spacing: 1.7px; text-transform: uppercase; }
+.halloween-banner h2 { margin: 0 0 12px; font-family: Georgia, serif; font-size: clamp(34px, 4vw, 60px); line-height: 1; letter-spacing: -2px; text-wrap: balance; }
+.halloween-banner h2 em { color: #ffb467; font-weight: 400; }
+.halloween-banner__copy > p:not(.halloween-kicker) { margin: 0 0 10px; max-width: 560px; font-size: 15px; line-height: 1.5; }
+.halloween-banner small { color: #e5d3e5; font-size: 12px; line-height: 1.5; }
+.halloween-banner__actions { display: grid; gap: 10px; min-width: 175px; }
+.halloween-banner__actions button, .halloween-menu-link { display: flex; align-items: center; justify-content: center; gap: 15px; min-height: 48px; padding: 12px 18px; border: 2px solid #ffb467; background: #ffb467; color: #21182d; font-size: 12px; font-weight: 900; cursor: pointer; }
+.halloween-banner__actions button + button { background: transparent; color: #ffdbb4; }
+.customer-site--halloween .hero-section { background: radial-gradient(ellipse at 75% 30%, #61314b, #21182d 70%); }
+.customer-site--halloween .hero-marquee { background: #ffb467; color: #21182d; }
+.customer-site--halloween .special-popup { background: #ffb467; box-shadow: 10px 10px 0 #603659; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.customer-site--halloween .special-popup::after { font-size: clamp(60px, 9vw, 110px); }
+.customer-site--halloween .special-popup__intro h2 { padding-right: 130px; }
+.halloween-popup-art { position: absolute; width: 190px; right: -6px; top: 10px; transform: rotate(7deg); }
+.customer-site--halloween .special-offer--primary { background: #39213f; }
+.customer-site--halloween .special-offer button { background: #ffb467; }
+.halloween-offer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.halloween-offer-actions button { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.halloween-banner button:focus-visible, .halloween-menu-link:focus-visible { outline: 3px solid #fff4df; outline-offset: 4px; }
+@media (max-width: 1000px) {
+  .halloween-banner { grid-template-columns: 120px minmax(0, 1fr); gap: 16px; }
+  .halloween-banner__art { width: 120px; }
+  .halloween-banner__actions { grid-column: 2; grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 600px) {
+  .halloween-banner { grid-template-columns: minmax(0, 1fr) 85px; gap: 12px; padding: 24px 20px; }
+  .halloween-banner__copy { grid-column: 1; grid-row: 1; }
+  .halloween-banner__art { width: 100px; grid-column: 2; grid-row: 1; align-self: start; margin-left: -10px; }
+  .halloween-kicker { font-size: 9px; line-height: 1.6; letter-spacing: 1px; }
+  .halloween-banner h2 { font-size: 36px; letter-spacing: -1.5px; }
+  .halloween-banner__copy > p:not(.halloween-kicker) { font-size: 13px; }
+  .halloween-banner small { font-size: 11px; }
+  .halloween-banner__actions { grid-column: 1 / -1; }
+  .halloween-popup-art { width: 105px; right: -8px; top: 20px; }
+  .customer-site--halloween .special-popup__intro h2 { padding-right: 70px; font-size: 46px; }
+  .customer-site--halloween .special-popup__offers { max-height: none; overflow: visible; }
+  .halloween-offer-actions { gap: 8px; }
+  .halloween-offer-actions button { padding: 12px 8px; font-size: 10px; }
+}
+@media (max-width: 380px) {
+  .halloween-popup-art { display: none; }
+  .customer-site--halloween .special-popup__intro h2 { padding-right: 0; }
+}
 .hero-art--photo{background-size:cover;background-position:center;min-height:520px}
 .publish-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;background:#173b2c;color:white;border-radius:14px;padding:16px 20px;margin-bottom:18px}
 .publish-bar strong{font-size:13px}
