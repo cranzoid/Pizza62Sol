@@ -1,7 +1,8 @@
 # Halloween wings — October 31, 2026
 
-The Halloween campaign runs from midnight at the start of October 31 until
-midnight at the start of November 1, in `America/Toronto`. It does not recur.
+Halloween decorations run October 30–31. The wings offer runs October 31 only.
+Both end at midnight at the start of November 1, in `America/Toronto`, and do
+not recur.
 
 - `halloween-dollar-wings-2026`: C$1 per wing, Classic or Breaded, with a sauce
   or dry rub; maximum 40 wings across all lines of this item in one cart.
@@ -11,7 +12,8 @@ midnight at the start of November 1, in `America/Toronto`. It does not recur.
   is scoped to the local date and the set of offers, so an older dismissal in
   the same tab cannot suppress the Halloween offer.
 - A pumpkin-and-bat illustration, orange-and-plum banner, and seasonal hero and
-  popup styling are scoped to the campaign date. The illustration is local SVG.
+  popup styling are scoped to October 30–31. The illustration is local SVG.
+  The offer popup and its order buttons still appear only on October 31.
 - The new product opts into `hideOutsideAvailability` and
   `availabilityAppliesToSchedule`. It disappears from the public catalog and
   storefront after the campaign, and both quotes and order creation refuse a
@@ -33,8 +35,13 @@ database health; swap; verify production. Do not upload a laptop-built archive.
 
 ## Validation
 
-Local verification used a disposable PostgreSQL database on port 55462:
+Initial release verification used a disposable PostgreSQL database on port 55462:
 944 tests passed, zero skipped, including real server quotes for both methods,
 delivery rules, the shared wing cap, Toronto midnight boundaries, public catalog
 expiry and rejection of a November scheduled order. Typecheck, lint and the
 production build passed.
+
+The decoration timing follow-up passed all nine Halloween tests, including the
+October 30 decoration start, unchanged October 31 offer start, and shared
+midnight expiry. Typecheck and lint passed; the normal deployment workflow runs
+the full test and build gates again.

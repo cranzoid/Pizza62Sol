@@ -37,7 +37,7 @@ import {
 } from "@/lib/deep-link";
 import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
 import { dailySpecialVisitKey, todaysSpecials, weekdayName } from "@/lib/daily-specials";
-import { HALLOWEEN_WINGS_PRODUCT_ID, isHalloween, isStorefrontProductVisible } from "@/lib/seasonal";
+import { HALLOWEEN_WINGS_PRODUCT_ID, halloweenDecorationsActive, isStorefrontProductVisible } from "@/lib/seasonal";
 import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
 import { centsToQualify, formatEntryNumber, type PublicGiveaway } from "@/lib/giveaway";
 import { WEBSITE_PAY_AT_STORE_LIMIT_CENTS } from "@/lib/order-policy";
@@ -444,7 +444,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     () => (catalog ? todaysSpecials(catalog.products, new Date(now), { pickupEnabled, deliveryEnabled }) : []),
     [catalog, now, pickupEnabled, deliveryEnabled],
   );
-  const halloween = isHalloween(new Date(now));
+  const halloween = halloweenDecorationsActive(new Date(now));
   const halloweenOffer = specials.find((product) => product.id === HALLOWEEN_WINGS_PRODUCT_ID);
   const specialDay = halloweenOffer ? "Halloween" : weekdayName(new Date(now), timeZone);
   const specialKey = dailySpecialVisitKey(specials, new Date(now), timeZone);
@@ -918,7 +918,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         {halloween ? <section className="halloween-banner" aria-labelledby="halloween-heading">
           <HalloweenMark className="halloween-banner__art" />
           <div className="halloween-banner__copy">
-            <p className="halloween-kicker">October 31 only · Happy Halloween</p>
+            <p className="halloween-kicker">Halloween at {businessName} · October 30–31</p>
             <h2 id="halloween-heading">All treats.{halloweenOffer ? <> <em>$1 wings.</em></> : <> <em>No tricks.</em></>}</h2>
             <p>{halloweenOffer ? "Your favourite wings, $1 each. Pickup or delivery. A frightfully good feast." : "Bring your appetite. We’ll take care of the Halloween feast."}</p>
             {halloweenOffer ? <small>Up to 40 wings · plus tax · usual delivery minimum &amp; fee apply</small> : null}
