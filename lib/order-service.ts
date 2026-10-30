@@ -233,6 +233,7 @@ type ProductConfiguration = {
   toppingsFirst?: boolean;
   freeDelivery?: boolean;
   availability?: WeeklyAvailability;
+  availabilityAppliesToSchedule?: boolean;
   [key: string]: unknown;
 };
 
@@ -754,6 +755,7 @@ async function validateItems(
   fulfilment: Fulfilment,
   operations: OperationSetting,
   allowStaffOnlyItems = false,
+  scheduledFor?: number,
 ): Promise<ValidatedItem[]> {
   if (!items?.length || items.length > 50) throw new OrderValidationError("Your cart is empty or too large.");
   const database = getD1();
@@ -796,6 +798,14 @@ async function validateItems(
     if (!isWithinWeeklyAvailability(productConfiguration.availability)) {
       throw new OrderValidationError(
         `${product.name} is only available ${productConfiguration.availability?.label ?? "during its advertised offer hours"}.`,
+        409,
+        "PRODUCT_OUTSIDE_OFFER_HOURS",
+      );
+    }
+    if (productConfiguration.availabilityAppliesToSchedule && Number.isSafeInteger(scheduledFor)
+      && !isWithinWeeklyAvailability(productConfiguration.availability, new Date(scheduledFor!))) {
+      throw new OrderValidationError(
+        `${product.name} cannot be scheduled outside ${productConfiguration.availability?.label ?? "its advertised offer hours"}.`,
         409,
         "PRODUCT_OUTSIDE_OFFER_HOURS",
       );
@@ -1336,13 +1346,13 @@ async function priceQuote(
   let itemIndexes: number[] = [];
   let itemsValid = true;
   try {
-    items = await validateItems(submitted, fulfilment, operations, policy.allowStaffOnlyItems);
+    items = await validateItems(submitted, fulfilment, operations, policy.allowStaffOnlyItems, body.schedule?.type === "scheduled" ? body.schedule.scheduledFor : undefined);
     itemIndexes = submitted.map((_, index) => index);
   } catch (cartError) {
     itemsValid = false;
     for (const [index, line] of submitted.entries()) {
       try {
-        const [validated] = await validateItems([line], fulfilment, operations, policy.allowStaffOnlyItems);
+        const [validated] = await validateItems([line], fulfilment, operations, policy.allowStaffOnlyItems, body.schedule?.type === "scheduled" ? body.schedule.scheduledFor : undefined);
         items.push(validated);
         itemIndexes.push(index);
       } catch (error) {
@@ -1802,7 +1812,7 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     if (fulfilment === "delivery" && !customer.phone) {
       throw new OrderValidationError("A delivery needs a phone number the driver can call.");
     }
-    const items = await validateItems(body.items, fulfilment, operations, policy.allowStaffOnlyItems);
+    const items = await validateItems(body.items, fulfilment, operations, policy.allowStaffOnlyItems, body.schedule?.type === "scheduled" ? body.schedule.scheduledFor : undefined);
     const cartLines: CartLinePrice[] = items.map((item) => ({
       id: item.id,
       productId: item.productId,

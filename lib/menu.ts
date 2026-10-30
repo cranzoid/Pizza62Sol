@@ -1,4 +1,5 @@
 import { PIZZA_BY_SIZE_INCLUDED_TOPPINGS, PIZZA_SIZES } from "@/lib/launch-config";
+import { HALLOWEEN_AVAILABILITY, HALLOWEEN_WINGS_PRODUCT_ID } from "@/lib/seasonal";
 import { BAKE_SAUCE_OPTIONS, CRUST_OPTIONS, EXTRA_CHEESE_OPTION, orderModifierSections, pizzaExtrasSection, pizzaSauceSection, type ModifierSection, type WeeklyAvailability } from "@/lib/domain";
 
 // The pop and wing-sauce lists are not seed data: an option group stores the
@@ -29,7 +30,7 @@ export type MenuProductSeed = {
   }>;
 };
 
-export const MENU_SEED_VERSION = "2026-10-06-sauces-extras-breadsticks";
+export const MENU_SEED_VERSION = "2026-10-30-halloween-wings";
 
 export const MENU_CATEGORIES = [
   ["build-your-own", "Delivery pizzas", "pizza-by-size", 10],
@@ -683,6 +684,24 @@ const mondayWings: MenuProductSeed = {
   configuration: { ...laborDayWings.configuration, availability: MONDAY_WINGS_AVAILABILITY, dailySpecial: true },
 };
 
+// A separate, date-bounded item keeps Monday's pickup-only offer intact. The
+// insert-only seed adds this to existing databases without editing live items.
+const halloweenWings: MenuProductSeed = {
+  ...mondayWings,
+  id: HALLOWEEN_WINGS_PRODUCT_ID,
+  categoryId: "deals",
+  name: "Halloween Wings · $1 Each",
+  description: "$1 per wing, up to 40 wings. Choose Classic (non-breaded) or Breaded and your sauce or dry rub. October 31 only, for pickup and delivery. Plus tax; usual delivery minimum and fee apply.",
+  pickupEligible: true,
+  deliveryEligible: true,
+  configuration: {
+    ...mondayWings.configuration,
+    availability: HALLOWEEN_AVAILABILITY,
+    hideOutsideAvailability: true,
+    availabilityAppliesToSchedule: true,
+  },
+};
+
 // Only genuinely missing Loyverse items are added. Existing public prices remain authoritative.
 const staffOnly = (product: MenuProductSeed): MenuProductSeed => ({
   ...product, configuration: { ...product.configuration, staffOnly: true },
@@ -715,6 +734,7 @@ export const STAFF_IMPORTED_PRODUCTS: MenuProductSeed[] = [
 export const MENU_PRODUCTS: MenuProductSeed[] = [
   laborDayWings,
   mondayWings,
+  halloweenWings,
   gameDaySpecial,
   ...standalonePizzas,
   ...specialtyPizzas,

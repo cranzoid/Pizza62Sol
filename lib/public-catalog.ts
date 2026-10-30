@@ -11,6 +11,7 @@ import { readIntegrationSecret } from "@/lib/integration-secrets";
 import type { PublicCatalog } from "@/lib/catalog-types";
 import { publicGiveaway } from "@/lib/giveaway";
 import { loadGiveaway } from "@/lib/giveaway-store";
+import { isStorefrontProductVisible } from "@/lib/seasonal";
 
 /** Settings an anonymous storefront visitor is allowed to read. */
 const PUBLIC_SETTING_KEYS = [
@@ -97,7 +98,7 @@ export async function loadPublicCatalog(): Promise<PublicCatalog> {
 
   const products = productResult.results.map((product) => ({
     ...(product as { id: string; category_id: string }), configuration: safeJson<Record<string, unknown>>(product.configuration_json as string, {}), configuration_json: undefined,
-  })).filter((product) => !product.configuration.staffOnly);
+  })).filter((product) => !product.configuration.staffOnly && isStorefrontProductVisible(product));
   const publicIds = new Set(products.map((product) => product["id"]));
   return {
     categories: categoryResult.results.filter((category) => products.some((product) => product["category_id"] === category.id)),

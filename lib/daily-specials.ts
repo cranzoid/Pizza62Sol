@@ -48,3 +48,9 @@ export function todaysSpecials<T extends SpecialCandidate>(
 export function weekdayName(now: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", { weekday: "long", timeZone }).format(now);
 }
+
+/** A dismissal belongs to this day's offers, not every future offer in the tab. */
+export function dailySpecialVisitKey(products: Array<{ id: string }>, now: Date, timeZone: string): string {
+  const day = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(now);
+  return `${day}:${products.map((product) => product.id).sort().join(",")}`;
+}

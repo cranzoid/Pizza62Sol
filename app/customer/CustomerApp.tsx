@@ -6,6 +6,7 @@ import { drinkSummary } from "@/lib/drink-slots";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
+import { HalloweenMark } from "@/app/customer/HalloweenMark";
 import { CloverCardForm, type CloverCardFormHandle } from "@/app/customer/CloverCardForm";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
@@ -35,7 +36,8 @@ import {
   type DeepLinkRequest,
 } from "@/lib/deep-link";
 import { orderAttribution, trackEvent, type CommerceItem } from "@/lib/marketing";
-import { todaysSpecials, weekdayName } from "@/lib/daily-specials";
+import { dailySpecialVisitKey, todaysSpecials, weekdayName } from "@/lib/daily-specials";
+import { HALLOWEEN_WINGS_PRODUCT_ID, isHalloween, isStorefrontProductVisible } from "@/lib/seasonal";
 import { recommendUpsells, type UpsellRecommendation } from "@/lib/upsells";
 import { centsToQualify, formatEntryNumber, type PublicGiveaway } from "@/lib/giveaway";
 import { WEBSITE_PAY_AT_STORE_LIMIT_CENTS } from "@/lib/order-policy";
@@ -186,17 +188,17 @@ const SPECIAL_SEEN_KEY = "p62_daily_special_seen";
 const NEVER_CHANGES = () => () => {};
 const SPECIAL_NOT_SEEN_ON_SERVER = () => false;
 
-function specialSeenThisVisit(): boolean {
+function specialSeenThisVisit(key: string): boolean {
   try {
-    return window.sessionStorage.getItem(SPECIAL_SEEN_KEY) === "1";
+    return window.sessionStorage.getItem(SPECIAL_SEEN_KEY) === key;
   } catch {
     return false;
   }
 }
 
-function rememberSpecialSeen() {
+function rememberSpecialSeen(key: string) {
   try {
-    window.sessionStorage.setItem(SPECIAL_SEEN_KEY, "1");
+    window.sessionStorage.setItem(SPECIAL_SEEN_KEY, key);
   } catch {
     // Nothing to do: the dismissal still holds for this page.
   }
@@ -432,10 +434,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     ? countdown(store.acceptingUntil - now)
     : "";
   const [closedNoticeDismissed, setClosedNoticeDismissed] = useState(false);
-  const [specialDismissed, setSpecialDismissed] = useState(false);
-  // Read once, outside React's render, so hydration sees the server's answer
-  // (not seen) and the browser's own follows straight after.
-  const specialSeenEarlier = useSyncExternalStore(NEVER_CHANGES, specialSeenThisVisit, SPECIAL_NOT_SEEN_ON_SERVER);
+  const [dismissedSpecialKey, setDismissedSpecialKey] = useState<string | null>(null);
   // Only while entries are actually open — judged against the page's own
   // clock too, so a tab left open past the last night stops advertising it.
   const liveGiveaway = catalog?.giveaway?.status === "open" && catalog.giveaway.endsAt > now ? catalog.giveaway : null;
@@ -445,11 +444,15 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     () => (catalog ? todaysSpecials(catalog.products, new Date(now), { pickupEnabled, deliveryEnabled }) : []),
     [catalog, now, pickupEnabled, deliveryEnabled],
   );
-  const specialDay = weekdayName(new Date(now), timeZone);
-  const showDailySpecial = specials.length > 0 && !specialDismissed && !specialSeenEarlier;
+  const halloween = isHalloween(new Date(now));
+  const halloweenOffer = specials.find((product) => product.id === HALLOWEEN_WINGS_PRODUCT_ID);
+  const specialDay = halloweenOffer ? "Halloween" : weekdayName(new Date(now), timeZone);
+  const specialKey = dailySpecialVisitKey(specials, new Date(now), timeZone);
+  const specialSeenEarlier = useSyncExternalStore(NEVER_CHANGES, () => specialSeenThisVisit(specialKey), SPECIAL_NOT_SEEN_ON_SERVER);
+  const showDailySpecial = specials.length > 0 && dismissedSpecialKey !== specialKey && !specialSeenEarlier;
   const dismissSpecial = () => {
-    setSpecialDismissed(true);
-    rememberSpecialSeen();
+    setDismissedSpecialKey(specialKey);
+    rememberSpecialSeen(specialKey);
   };
   const showClosedNotice = Boolean(catalog) && !store.open && !closedNoticeDismissed && !showDailySpecial;
 
@@ -474,7 +477,8 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
     ? new Date(store.changesAt).toLocaleString("en-CA", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone })
     : "";
   const categories = catalog?.categories ?? [];
-  const eligibleProducts = (catalog?.products ?? []).filter((product) =>
+  const storefrontProducts = (catalog?.products ?? []).filter((product) => isStorefrontProductVisible(product, new Date(now)));
+  const eligibleProducts = storefrontProducts.filter((product) =>
     fulfilment === "pickup" ? product.pickup_eligible : product.delivery_eligible,
   );
   // Cheapest first inside each category. The menu used to come out in seed
@@ -488,7 +492,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   const visibleCategories = categories.filter((category) =>
     eligibleProducts.some((product) => product.category_id === category.id),
   );
-  const homepageOffers = (catalog?.products ?? [])
+  const homepageOffers = storefrontProducts
     .filter((product) => HOMEPAGE_OFFER_CATEGORY_IDS.has(product.category_id))
     .map((product) => {
       const availability = product.configuration.availability as WeeklyAvailability | undefined;
@@ -743,9 +747,9 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   // Ordered the way the special is sold: a pickup-only special switches the
   // visitor to pickup rather than failing later at the cart, and one sold both
   // ways keeps whatever they already had.
-  const openDailySpecial = (product: Product) => {
-    const nextFulfilment = (fulfilment === "pickup" ? product.pickup_eligible && pickupEnabled : product.delivery_eligible && deliveryEnabled)
-      ? fulfilment
+  const openDailySpecial = (product: Product, requestedMethod = fulfilment) => {
+    const nextFulfilment = (requestedMethod === "pickup" ? product.pickup_eligible && pickupEnabled : product.delivery_eligible && deliveryEnabled)
+      ? requestedMethod
       : product.pickup_eligible && pickupEnabled ? "pickup" : "delivery";
     dismissSpecial();
     setClosedNoticeDismissed(true);
@@ -863,7 +867,7 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
   };
 
   return (
-    <div className="customer-site" style={theme}>
+    <div className={`customer-site${halloween ? " customer-site--halloween" : ""}`} style={theme}>
       <a className="skip-link" href="#menu">Skip to menu</a>
       {content.announcementEnabled && String(content.announcementText ?? "").trim() ? (
         <div className="announcement-bar">
@@ -911,6 +915,19 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
       </header>
 
       <main id="top">
+        {halloween ? <section className="halloween-banner" aria-labelledby="halloween-heading">
+          <HalloweenMark className="halloween-banner__art" />
+          <div className="halloween-banner__copy">
+            <p className="halloween-kicker">October 31 only · Happy Halloween</p>
+            <h2 id="halloween-heading">All treats.{halloweenOffer ? <> <em>$1 wings.</em></> : <> <em>No tricks.</em></>}</h2>
+            <p>{halloweenOffer ? "Your favourite wings, $1 each. Pickup or delivery. A frightfully good feast." : "Bring your appetite. We’ll take care of the Halloween feast."}</p>
+            {halloweenOffer ? <small>Up to 40 wings · plus tax · usual delivery minimum &amp; fee apply</small> : null}
+          </div>
+          {halloweenOffer ? <div className="halloween-banner__actions">
+            {pickupEnabled && halloweenOffer.pickup_eligible ? <button type="button" onClick={() => openDailySpecial(halloweenOffer, "pickup")}>Pickup wings <ArrowIcon /></button> : null}
+            {deliveryEnabled && halloweenOffer.delivery_eligible ? <button type="button" onClick={() => openDailySpecial(halloweenOffer, "delivery")}>Deliver wings <ArrowIcon /></button> : null}
+          </div> : <a className="halloween-menu-link" href="#menu">Explore the menu <ArrowIcon /></a>}
+        </section> : null}
         <section className="offers-first" id="offers" aria-labelledby="offers-title">
           <div className="offers-first__heading">
             <div>
@@ -1015,7 +1032,12 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
         <div className="modal-backdrop special-backdrop" role="presentation" onMouseDown={dismissSpecial}>
           <div ref={specialDialogRef} className="special-popup" data-watermark={specialDay.toUpperCase()} role="dialog" aria-modal="true" aria-labelledby="special-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <button type="button" className="modal-close" onClick={dismissSpecial} aria-label={`Close ${specialDay} special`}>×</button>
-            <div className="special-popup__intro"><p className="eyebrow"><span /> {specialDay} special</p><h2 id="special-title">Today&apos;s<br /><em>special{specials.length === 1 ? "" : "s"}.</em></h2><p>Here&apos;s what&apos;s on today at {businessName}.</p></div>
+            <div className="special-popup__intro">
+              {halloweenOffer ? <HalloweenMark className="halloween-popup-art" /> : null}
+              <p className="eyebrow"><span /> {specialDay} special</p>
+              <h2 id="special-title">{halloweenOffer ? <>All treats.<br /><em>$1 wings.</em></> : <>Today&apos;s<br /><em>special{specials.length === 1 ? "" : "s"}.</em></>}</h2>
+              <p>{halloweenOffer ? "October 31 only. Your Halloween feast, for pickup or delivery." : <>Here&apos;s what&apos;s on today at {businessName}.</>}</p>
+            </div>
             <div className="special-popup__offers">
               {specials.map((product, index) => {
                 const availability = product.configuration.availability as WeeklyAvailability | undefined;
@@ -1026,7 +1048,10 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
                   <h3>{product.name}</h3>
                   <p>{product.description}</p>
                   <strong>{product.product_type === "pizza" ? <small>from </small> : null}{formatMoney(product.base_price_cents)}{perUnit ? <small> each</small> : null}</strong>
-                  <button type="button" onClick={() => openDailySpecial(product)}>Order now <ArrowIcon /></button>
+                  {product.id === HALLOWEEN_WINGS_PRODUCT_ID ? <div className="halloween-offer-actions">
+                    {pickupEnabled && product.pickup_eligible ? <button type="button" onClick={() => openDailySpecial(product, "pickup")}>Pickup wings <ArrowIcon /></button> : null}
+                    {deliveryEnabled && product.delivery_eligible ? <button type="button" onClick={() => openDailySpecial(product, "delivery")}>Deliver wings <ArrowIcon /></button> : null}
+                  </div> : <button type="button" onClick={() => openDailySpecial(product)}>Order now <ArrowIcon /></button>}
                 </article>;
               })}
             </div>
