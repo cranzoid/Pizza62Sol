@@ -3,7 +3,7 @@ import test, { after, mock } from "node:test";
 import { dailySpecialVisitKey, todaysSpecials } from "@/lib/daily-specials";
 import { isWithinWeeklyAvailability } from "@/lib/domain";
 import { MENU_PRODUCTS, MONDAY_WINGS_PRODUCT_ID } from "@/lib/menu";
-import { HALLOWEEN_AVAILABILITY, HALLOWEEN_WINGS_PRODUCT_ID, isHalloween, isStorefrontProductVisible } from "@/lib/seasonal";
+import { HALLOWEEN_AVAILABILITY, HALLOWEEN_WINGS_PRODUCT_ID, halloweenDecorationsActive, isStorefrontProductVisible } from "@/lib/seasonal";
 
 process.env.PGSSLMODE ??= "disable";
 process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
@@ -41,7 +41,7 @@ test("Halloween copies Monday's $1 wing choices and cap, and enables both method
   assert.equal(monday.deliveryEligible, false);
 });
 
-test("the offer, decorations and visibility share exact Toronto date boundaries", () => {
+test("the offer and product visibility share exact Toronto date boundaries", () => {
   for (const [instant, active] of [
     ["2026-10-31T03:59:59.999Z", false],
     ["2026-10-31T04:00:00Z", true],
@@ -51,11 +51,28 @@ test("the offer, decorations and visibility share exact Toronto date boundaries"
     ["2027-10-31T18:00:00Z", false],
   ] as const) {
     const now = new Date(instant);
-    assert.equal(isHalloween(now), active, instant);
     assert.equal(isWithinWeeklyAvailability(HALLOWEEN_AVAILABILITY, now), active, instant);
     assert.equal(isStorefrontProductVisible({ configuration: halloween.configuration! }, now), active, instant);
   }
   assert.equal(isStorefrontProductVisible({ configuration: monday.configuration! }, new Date(OPEN)), true);
+});
+
+test("decorations run October 30–31 in Toronto without opening the offer early", () => {
+  for (const [instant, decorated] of [
+    ["2026-10-30T03:59:59.999Z", false],
+    ["2026-10-30T04:00:00Z", true],
+    ["2026-10-31T03:59:59.999Z", true],
+    ["2026-10-31T04:00:00Z", true],
+    ["2026-11-01T03:59:59.999Z", true],
+    ["2026-11-01T04:00:00Z", false],
+    ["2027-10-30T18:00:00Z", false],
+  ] as const) {
+    assert.equal(halloweenDecorationsActive(new Date(instant)), decorated, instant);
+  }
+  const today = new Date("2026-10-30T18:00:00-04:00");
+  assert.equal(halloweenDecorationsActive(today), true);
+  assert.equal(isWithinWeeklyAvailability(HALLOWEEN_AVAILABILITY, today), false);
+  assert.equal(isStorefrontProductVisible({ configuration: halloween.configuration! }, today), false);
 });
 
 test("Halloween's popup works for delivery-only and pickup-only operation", () => {
