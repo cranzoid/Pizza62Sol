@@ -7,6 +7,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExt
 import Link from "next/link";
 import { BrandLogo } from "@/app/BrandLogo";
 import { HalloweenMark } from "@/app/customer/HalloweenMark";
+import { HalloweenReveal } from "@/app/customer/HalloweenReveal";
 import { CloverCardForm, type CloverCardFormHandle } from "@/app/customer/CloverCardForm";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
@@ -1030,31 +1031,36 @@ export default function CustomerApp({ initialCatalog = null }: { initialCatalog?
 
       {showDailySpecial ? (
         <div className="modal-backdrop special-backdrop" role="presentation" onMouseDown={dismissSpecial}>
-          <div ref={specialDialogRef} className="special-popup" data-watermark={specialDay.toUpperCase()} role="dialog" aria-modal="true" aria-labelledby="special-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+          <div ref={specialDialogRef} className={`special-popup${halloweenOffer ? " special-popup--halloween" : ""}`} data-watermark={specialDay.toUpperCase()} role="dialog" aria-modal="true" aria-labelledby="special-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <button type="button" className="modal-close" onClick={dismissSpecial} aria-label={`Close ${specialDay} special`}>×</button>
-            <div className="special-popup__intro">
-              {halloweenOffer ? <HalloweenMark className="halloween-popup-art" /> : null}
-              <p className="eyebrow"><span /> {specialDay} special</p>
-              <h2 id="special-title">{halloweenOffer ? <>All treats.<br /><em>$1 wings.</em></> : <>Today&apos;s<br /><em>special{specials.length === 1 ? "" : "s"}.</em></>}</h2>
-              <p>{halloweenOffer ? "October 31 only. Your Halloween feast, for pickup or delivery." : <>Here&apos;s what&apos;s on today at {businessName}.</>}</p>
-            </div>
-            <div className="special-popup__offers">
-              {specials.map((product, index) => {
-                const availability = product.configuration.availability as WeeklyAvailability | undefined;
-                const how = product.pickup_eligible && product.delivery_eligible ? "Pickup or delivery" : product.pickup_eligible ? "Pickup only" : "Delivery only";
-                const perUnit = product.configuration.quantitySelectable ? String(product.configuration.unitLabel ?? "item") : null;
-                return <article className={`special-offer${index === 0 ? " special-offer--primary" : ""}`} key={product.id}>
-                  <span>{availability?.label ?? how}</span>
-                  <h3>{product.name}</h3>
-                  <p>{product.description}</p>
-                  <strong>{product.product_type === "pizza" ? <small>from </small> : null}{formatMoney(product.base_price_cents)}{perUnit ? <small> each</small> : null}</strong>
-                  {product.id === HALLOWEEN_WINGS_PRODUCT_ID ? <div className="halloween-offer-actions">
-                    {pickupEnabled && product.pickup_eligible ? <button type="button" onClick={() => openDailySpecial(product, "pickup")}>Pickup wings <ArrowIcon /></button> : null}
-                    {deliveryEnabled && product.delivery_eligible ? <button type="button" onClick={() => openDailySpecial(product, "delivery")}>Deliver wings <ArrowIcon /></button> : null}
-                  </div> : <button type="button" onClick={() => openDailySpecial(product)}>Order now <ArrowIcon /></button>}
-                </article>;
-              })}
-            </div>
+            {halloweenOffer ? <HalloweenReveal
+              offer={halloweenOffer}
+              otherSpecials={specials.filter((product) => product.id !== HALLOWEEN_WINGS_PRODUCT_ID)}
+              businessName={businessName}
+              pickupEnabled={pickupEnabled}
+              deliveryEnabled={deliveryEnabled}
+              onChoose={openDailySpecial}
+            /> : <>
+              <div className="special-popup__intro">
+                <p className="eyebrow"><span /> {specialDay} special</p>
+                <h2 id="special-title">Today&apos;s<br /><em>special{specials.length === 1 ? "" : "s"}.</em></h2>
+                <p>Here&apos;s what&apos;s on today at {businessName}.</p>
+              </div>
+              <div className="special-popup__offers">
+                {specials.map((product, index) => {
+                  const availability = product.configuration.availability as WeeklyAvailability | undefined;
+                  const how = product.pickup_eligible && product.delivery_eligible ? "Pickup or delivery" : product.pickup_eligible ? "Pickup only" : "Delivery only";
+                  const perUnit = product.configuration.quantitySelectable ? String(product.configuration.unitLabel ?? "item") : null;
+                  return <article className={`special-offer${index === 0 ? " special-offer--primary" : ""}`} key={product.id}>
+                    <span>{availability?.label ?? how}</span>
+                    <h3>{product.name}</h3>
+                    <p>{product.description}</p>
+                    <strong>{product.product_type === "pizza" ? <small>from </small> : null}{formatMoney(product.base_price_cents)}{perUnit ? <small> each</small> : null}</strong>
+                    <button type="button" onClick={() => openDailySpecial(product)}>Order now <ArrowIcon /></button>
+                  </article>;
+                })}
+              </div>
+            </>}
           </div>
         </div>
       ) : null}
