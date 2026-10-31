@@ -1385,7 +1385,15 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
   // Orders over the limit must be paid online (lib/order-policy.ts). The server
   // refuses them either way; this moves the customer to card before they try,
   // and back to their own choice if the cart drops under the limit again.
-  const payAtStoreOverLimit = totals.amountDueCents > WEBSITE_PAY_AT_STORE_LIMIT_CENTS;
+  //
+  // Both that switch and whether the card form is shown go by the last price
+  // the server gave, not the one being fetched. A tip tap or promo code
+  // re-prices the order, and while it does `quote` is null; deciding from that
+  // gap unmounted Clover's card form and wiped the card the customer had typed.
+  const [settledQuote, setSettledQuote] = useState(quote);
+  if (quote && quote !== settledQuote) setSettledQuote(quote);
+  const settledAmountDueCents = (quote ?? settledQuote)?.totals.amountDueCents ?? 0;
+  const payAtStoreOverLimit = settledAmountDueCents > WEBSITE_PAY_AT_STORE_LIMIT_CENTS;
   const paymentMethod = payAtStoreOverLimit ? "online" : chosenPaymentMethod;
   const contactComplete = name.trim().length > 1 && phone.trim().length >= 10 && /\S+@\S+\.\S+/.test(email);
   const addressComplete = fulfilment !== "delivery" || (line1.trim().length > 3 && postalCode.trim().length >= 6);
@@ -1510,7 +1518,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
       <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className={`payment-choice ${payAtStoreOverLimit ? "disabled" : ""}`}><input type="radio" disabled={payAtStoreOverLimit} checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>{payAtStoreOverLimit ? `Orders over ${formatMoney(WEBSITE_PAY_AT_STORE_LIMIT_CENTS)} are paid online` : "Cash, debit, or credit card"}</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
-      {paymentMethod === "online" && totals.amountDueCents > 0 && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
+      {paymentMethod === "online" && settledAmountDueCents > 0 && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
         ? <CloverCardForm
             publicToken={cloverIframe.publicToken}
             merchantId={cloverIframe.merchantId}
