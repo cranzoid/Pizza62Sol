@@ -151,7 +151,7 @@ test("each preset states every privilege, and none can be edited at runtime", ()
     allowStaffOnlyItems: false,
     paymentMethods: ["pay_at_store", "online"],
     payAtStorePickup: "setting",
-    allowPayOnDelivery: false,
+    allowPayOnDelivery: true,
     payAtStoreLimitCents: 10000,
     bypassLastOrderCutoff: false,
     recordAttribution: true,
@@ -205,7 +205,8 @@ withDb("allowing counter-only items does not relax the contact rules", async () 
 
 withDb("relaxing the contact rules does not unlock counter-only items or pay at the door", async () => {
   await at(OPEN, async () => {
-    const policy = websiteWith({ contactPolicy: "name_only" });
+    // From a policy with pay at the door off, which the website's no longer is.
+    const policy = websiteWith({ contactPolicy: "name_only", allowPayOnDelivery: false });
     const nameOnly = await outcome(createOrder(pickup({ customer: { name: "Blue cap" } }), { policy }));
     assert.equal(nameOnly.accepted, true);
     const counterItem = await outcome(createOrder(pickup({ items: [{ productId: "chicken-burger", quantity: 1 }] }), { policy }));
@@ -217,12 +218,17 @@ withDb("relaxing the contact rules does not unlock counter-only items or pay at 
   });
 });
 
-withDb("pay at the door can be allowed on its own, and the delivery rules still apply", async () => {
+withDb("the website takes pay at the door up to the limit, and the delivery rules still apply", async () => {
   await at(OPEN, async () => {
-    const policy = websiteWith({ allowPayOnDelivery: true });
+    const policy = WEBSITE_ORDER_POLICY;
     const delivery = (extra: Record<string, unknown> = {}) =>
       pickup({ fulfilment: "delivery", items: [{ productId: "poutine", quantity: 3 }], address: ADDRESS, ...extra });
     assert.equal((await outcome(createOrder(delivery(), { policy }))).accepted, true);
+    const large = await outcome(createOrder(delivery({ items: [{ productId: "poutine", quantity: 12 }] }), { policy }));
+    assert.equal(large.code, "PAY_ONLINE_REQUIRED");
+    // Turned off, the same delivery is refused at any size.
+    const off = await outcome(createOrder(delivery(), { policy: websiteWith({ allowPayOnDelivery: false }) }));
+    assert.equal(off.message, "Pay at store is available for pickup orders only.");
     const small = await outcome(createOrder(delivery({ items: [{ productId: "poutine", quantity: 1 }] }), { policy }));
     assert.equal(small.code, "DELIVERY_ADDRESS_INELIGIBLE");
     const nameOnly = await outcome(createOrder(delivery({ customer: { name: "Blue cap" } }), { policy }));

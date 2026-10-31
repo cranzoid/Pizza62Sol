@@ -1426,7 +1426,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
     ? "Gift card — nothing else to pay"
     : paymentMethod === "online"
       ? inlineCardAvailable ? "Card, entered on this page" : "Card, on Clover's secure page"
-      : "Cash, debit or card at the store";
+      : fulfilment === "delivery" ? "Cash, debit or card to the driver" : "Cash, debit or card at the store";
 
   const submit = async () => {
     setSubmitting(true); setError(""); trackEvent("payment_attempted", { paymentMethod });
@@ -1477,7 +1477,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
       // show the confirmation, otherwise the stale key would resolve every future
       // checkout from this browser to the same duplicate and block ordering for good.
       clearIdempotencyKey();
-      if (result.duplicate) { onConfirmed(result); return; }
+      if (result.duplicate) { onConfirmed({ ...result, fulfilment }); return; }
       if (typeof result.checkoutUrl === "string") {
         // Clover's return URL is configured once per merchant in its dashboard and
         // cannot carry per-order query parameters, the way Stripe's per-session
@@ -1496,7 +1496,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         window.location.assign(result.checkoutUrl);
         return;
       }
-      onConfirmed(result);
+      onConfirmed({ ...result, fulfilment });
     } catch (caught) { setError(caught instanceof Error ? caught.message : "The order was not accepted."); setSubmitting(false); }
   };
   return <div className="modal-backdrop"><section ref={dialogRef} className="checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title" tabIndex={-1}><button className="modal-close" onClick={onClose} aria-label="Close">×</button><p className="eyebrow dark"><span /> Secure checkout</p><h2 id="checkout-title">Finish your <em>{fulfilment}</em> order</h2>
@@ -1517,7 +1517,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
         </label> : null}
         {scheduleType === "scheduled" && !slots.length ? <p className="secure-note">No opening times are available in the next week. Please call the restaurant.</p> : null}
       </fieldset>
-      <fieldset><legend>Payment</legend>{fulfilment === "pickup" ? <label className={`payment-choice ${payAtStoreOverLimit ? "disabled" : ""}`}><input type="radio" disabled={payAtStoreOverLimit} checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>Pay at store</b><small>{payAtStoreOverLimit ? `Orders over ${formatMoney(WEBSITE_PAY_AT_STORE_LIMIT_CENTS)} are paid online` : "Cash, debit, or credit card"}</small></span></label> : null}<label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
+      <fieldset><legend>Payment</legend><label className={`payment-choice ${payAtStoreOverLimit ? "disabled" : ""}`}><input type="radio" disabled={payAtStoreOverLimit} checked={paymentMethod === "pay_at_store"} onChange={() => setPaymentMethod("pay_at_store")} /><span><b>{fulfilment === "delivery" ? "Pay at the door" : "Pay at store"}</b><small>{payAtStoreOverLimit ? `Orders over ${formatMoney(WEBSITE_PAY_AT_STORE_LIMIT_CENTS)} are paid online` : fulfilment === "delivery" ? "Cash, debit, or credit card to the driver" : "Cash, debit, or credit card"}</small></span></label><label className={`payment-choice ${integrations.clover ? "" : "disabled"}`}><input type="radio" disabled={!integrations.clover} checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /><span><b>Pay online by card</b><small>{integrations.clover ? (inlineCardAvailable ? "Card or Apple Pay, right here" : "Secure hosted checkout by Clover") : "Add Clover credentials to enable"}</small></span></label></fieldset>
       {paymentMethod === "online" && settledAmountDueCents > 0 && cloverIframe?.enabled && cloverIframe.publicToken && !cardFormBlocked
         ? <CloverCardForm
             publicToken={cloverIframe.publicToken}
@@ -1703,7 +1703,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
             surprise someone at the card reader.
           */}
           <div className="checkout-grand-total">
-            <span>{totals.giftCardAppliedCents > 0 ? "Total" : paymentMethod === "online" ? "Total charged now" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
+            <span>{totals.giftCardAppliedCents > 0 ? "Total" : paymentMethod === "online" ? "Total charged now" : fulfilment === "delivery" ? "Total to pay the driver" : "Total to pay at the store"}{quoting ? <small>Updating…</small> : null}</span>
             <b>{quoteMoney(totals.totalCents)}</b>
           </div>
           {totals.giftCardAppliedCents > 0 ? (
@@ -1713,7 +1713,7 @@ function Checkout({ cart, fulfilment, toppingNames, settings, integrations, stor
                 <b>−{formatMoney(totals.giftCardAppliedCents)}</b>
               </div>
               <div className="checkout-grand-total checkout-amount-due">
-                <span>{totals.amountDueCents === 0 ? "Amount due" : paymentMethod === "online" ? "Amount charged now" : "Amount due at the store"}</span>
+                <span>{totals.amountDueCents === 0 ? "Amount due" : paymentMethod === "online" ? "Amount charged now" : fulfilment === "delivery" ? "Amount due at the door" : "Amount due at the store"}</span>
                 <b>{formatMoney(totals.amountDueCents)}</b>
               </div>
             </>
@@ -1795,6 +1795,14 @@ function Confirmation({ result, onClose }: { result: Record<string, unknown>; on
   // here — the links are omitted rather than rendered with an "undefined" token.
   const duplicate = result.duplicate === true;
   const orderNumber = String(result.orderNumber ?? "");
+  // Said per order: this screen used to tell every customer, card-paid and
+  // delivery included, that the order was "marked for payment at the store".
+  const delivery = result.fulfilment === "delivery";
+  const paymentNote = result.paymentStatus === "paid" || result.amountDueCents === 0
+    ? "is received and paid."
+    : delivery
+      ? "is received. Please pay the driver at the door."
+      : "is received and marked for payment at the store.";
   const trackingUrl = result.trackingToken
     ? `/track?order=${encodeURIComponent(orderNumber)}&token=${encodeURIComponent(String(result.trackingToken))}`
     : null;
@@ -1806,5 +1814,5 @@ function Confirmation({ result, onClose }: { result: Record<string, unknown>; on
   // `waiting_completion` state and operations.feedbackDelayMinutes.
   const estimateAt = Number(result.estimateAt);
   const giveawayEntry = Number(result.giveawayEntryNumber);
-  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> is received and marked for payment at the store.</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>Estimated pickup</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{!duplicate && Number.isSafeInteger(giveawayEntry) && giveawayEntry > 0 ? <div className="giveaway-entry-badge"><span>You&apos;re in the Thanksgiving Giveaway</span><b>Entry #{formatEntryNumber(giveawayEntry)}</b><small>We&apos;ve emailed it to you too. <Link href="/giveaway">How it works</Link></small></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
+  return <div className="modal-backdrop"><section ref={dialogRef} className="confirmation-card" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" tabIndex={-1}><div className="confirmation-check">✓</div><p className="eyebrow dark"><span /> Confirmed by Pizza 62</p><h2 id="confirmation-title">{duplicate ? "This order is already in." : "You're all set."}</h2><p>{duplicate ? <>Order <strong>{orderNumber}</strong> was already placed, so we did not charge you twice or send a second order to the kitchen.</> : <>Order <strong>{orderNumber}</strong> {paymentNote}</>}</p>{Number.isFinite(estimateAt) && estimateAt > 0 ? <div className="confirmation-estimate"><span>{delivery ? "Estimated delivery" : "Estimated pickup"}</span><b>{new Date(estimateAt).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}</b></div> : null}{!duplicate && Number.isSafeInteger(giveawayEntry) && giveawayEntry > 0 ? <div className="giveaway-entry-badge"><span>You&apos;re in the Thanksgiving Giveaway</span><b>Entry #{formatEntryNumber(giveawayEntry)}</b><small>We&apos;ve emailed it to you too. <Link href="/giveaway">How it works</Link></small></div> : null}{trackingUrl ? <Link className="primary-button" href={trackingUrl}>Track your order <ArrowIcon /></Link> : <p className="confirmation-note">Use the tracking link from your original confirmation, or call Pizza 62 with order {orderNumber}.</p>}<button className="text-button" onClick={onClose}>Back to the menu</button></section></div>;
 }

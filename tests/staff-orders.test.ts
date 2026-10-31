@@ -502,13 +502,13 @@ withDb("quotes a phone delivery paid at the door as ready to send", async () => 
   assert.equal(quote.ok, true);
 });
 
-withDb("still refuses pay-at-the-door delivery from the website", async () => {
-  // The exemption is the till's alone. A stranger promising to pay a driver at
-  // the door is still a risk the restaurant has not agreed to take.
+withDb("the website caps pay-at-the-door delivery at $100; the till does not", async () => {
+  // A stranger promising to pay a driver at the door is a risk the restaurant
+  // takes only up to the website's limit. The till's exemption has no limit.
   const { quoteOrder } = await import("@/lib/order-service");
   const quote = await quoteOrder({
     fulfilment: "delivery",
-    items: [{ productId: "poutine", quantity: 3 }],
+    items: [{ productId: "poutine", quantity: 12 }],
     paymentMethod: "pay_at_store",
     schedule,
     customer: { name: "Ada", phone: "905-555-0142", email: "ada@example.test" },

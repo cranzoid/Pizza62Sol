@@ -263,12 +263,15 @@ withDb("the public quote route applies the website's rules whatever the body say
     new Request("https://order.pizza62.test/api/orders/quote", {
       method: "POST",
       headers: { "content-type": "application/json", "x-azure-clientip": nextClientIp() },
-      body: JSON.stringify({ ...delivery(), ...FORGED }),
+      // Over the website's $100 pay-at-door limit. The forged AI policy has no
+      // limit and refuses pay at the door outright, so either of its answers
+      // would show the body had been obeyed.
+      body: JSON.stringify({ ...delivery({ items: [{ productId: "poutine", quantity: 12 }] }), ...FORGED }),
     }),
   );
-  const quote = (await response.json()) as { ok: boolean; issues: Array<{ code: string }> };
+  const quote = (await response.json()) as { ok: boolean; issues: Array<{ code: string; message: string }> };
   assert.equal(quote.ok, false);
-  assert.ok(quote.issues.some((issue) => issue.code === "PAYMENT_METHOD_UNAVAILABLE"));
+  assert.deepEqual(quote.issues.map((issue) => issue.message), ["Orders over $100.00 must be paid online. Please choose Pay online by card."]);
 });
 
 withDb("the till refuses to label an order ai_phone", async () => {

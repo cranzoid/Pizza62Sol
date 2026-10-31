@@ -531,10 +531,11 @@ withDb("agrees with createOrder about the payment method too", async () => {
   // Found by driving the real flow: the quote said `ok: true` for a delivery
   // order paying at the store, which createOrder refuses outright. Same shape as
   // the schedule bug above — every rule createOrder enforces has to be mirrored
-  // here, or the review screen enables a button that cannot work.
+  // here, or the review screen enables a button that cannot work. Now that
+  // the website takes pay at the door, the rule to mirror is its $100 limit.
   const quote = await quoteOrder({
     fulfilment: "delivery",
-    items: [{ productId: "poutine", quantity: 4 }],
+    items: [{ productId: "poutine", quantity: 12 }],
     paymentMethod: "pay_at_store",
     schedule: openSchedule,
   });
