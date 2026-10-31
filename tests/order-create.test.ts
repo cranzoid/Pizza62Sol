@@ -354,15 +354,17 @@ withDb("refuses a non-positive quantity", async () => {
   assert.equal(response.status, 400);
 });
 
-withDb("refuses pay-at-store for delivery", async () => {
+withDb("refuses pay at the door for a delivery over $100", async () => {
   const response = await post(
     await orderBody({
       fulfilment: "delivery",
       paymentMethod: "pay_at_store",
+      items: [{ productId: "poutine", quantity: 12 }],
       address: { line1: "55 Parkdale Ave N", city: "Hamilton", province: "ON", postalCode: "L8H 5W7" },
     }),
   );
   assert.equal(response.status, 400);
+  assert.equal((await json(response)).code, "PAY_ONLINE_REQUIRED");
 });
 
 withDb("refuses a time outside opening hours", async () => {

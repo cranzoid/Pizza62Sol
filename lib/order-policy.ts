@@ -116,8 +116,10 @@ export type CreateOrderContext = {
 const BOTH_PAYMENT_METHODS: readonly PaymentMethod[] = Object.freeze(["pay_at_store", "online"]);
 
 /**
- * Website orders over $100 must be paid online. Exported so the checkout can
- * switch the customer to card before the server would refuse them.
+ * Website orders over $100 must be paid online, pickup or delivery. Under it a
+ * pickup can be paid at the store and a delivery to the driver at the door.
+ * Exported so the checkout can switch the customer to card before the server
+ * would refuse them.
  */
 export const WEBSITE_PAY_AT_STORE_LIMIT_CENTS = 10000;
 
@@ -129,7 +131,7 @@ export const WEBSITE_ORDER_POLICY: OrderPolicy = Object.freeze({
   allowStaffOnlyItems: false,
   paymentMethods: BOTH_PAYMENT_METHODS,
   payAtStorePickup: "setting",
-  allowPayOnDelivery: false,
+  allowPayOnDelivery: true,
   payAtStoreLimitCents: WEBSITE_PAY_AT_STORE_LIMIT_CENTS,
   bypassLastOrderCutoff: false,
   recordAttribution: true,

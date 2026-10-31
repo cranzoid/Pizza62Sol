@@ -1781,17 +1781,13 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     if (paymentMethod !== "pay_at_store" && paymentMethod !== "online") {
       throw new OrderValidationError("Choose an available payment method.");
     }
-    // Paying on collection is a *public website* setting, and the website only
-    // offers it on pickup: a stranger promising to pay a driver at a door is a
-    // risk the restaurant did not agree to take.
-    //
-    // A member of staff keying in a phone delivery is not that. They have the
-    // customer on the line, they decide whether to take the card number now or
-    // send the machine out with the driver, and refusing them here is what kept
-    // phone deliveries on paper and out of the books entirely. The relaxation is
-    // the till's policy (`allowPayOnDelivery`, `payAtStorePickup: "always"`),
-    // which is a trusted context argument set after authentication and
-    // unreachable from a request body — see lib/order-policy.ts.
+    // Paying on collection is decided by the caller's policy, never the request
+    // body. The website allows it on pickup (when the website setting does) and
+    // to the driver at the door, both up to `payAtStoreLimitCents`, so what a
+    // stranger can leave unpaid is capped. The till's policy
+    // (`allowPayOnDelivery`, `payAtStorePickup: "always"`, no limit) is the
+    // counter's own call with the customer on the line. Both are trusted context
+    // arguments set after authentication — see lib/order-policy.ts.
     const paymentRefusal = paymentMethodRefusal(paymentMethod, fulfilment, ordering, policy);
     if (paymentRefusal) throw new OrderValidationError(paymentRefusal);
     if (!policy.allowCodes && (hasCode(body.couponCode) || hasCode(body.giftCardCode))) {

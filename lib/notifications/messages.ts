@@ -196,6 +196,8 @@ export async function renderCustomerConfirmation(
   const giftCardCents = Number(order.gift_card_applied_cents ?? 0);
   const amountDueCents = Math.max(0, Number(order.total_cents ?? 0) - giftCardCents);
   const address = deliveryAddress(order);
+  // A delivery that is not paid online is paid to the driver, not at the store.
+  const payWhere = order.fulfilment === "delivery" ? "to the driver" : "at the store";
 
   const sections: Section[] = [
     { type: "paragraph", text: `Hi ${firstName(order.customer_name)}, thanks for ordering. We have everything below and the kitchen has been told.` },
@@ -219,10 +221,10 @@ export async function renderCustomerConfirmation(
             giftCardCents > 0 && amountDueCents === 0
               ? "Paid in full by gift card"
               : giftCardCents > 0
-                ? `${money(giftCardCents)} by gift card · ${money(amountDueCents)} ${paid ? "paid online" : "at the store"}`
+                ? `${money(giftCardCents)} by gift card · ${money(amountDueCents)} ${paid ? "paid online" : payWhere}`
                 : paid
                   ? "Paid online"
-                  : "Pay at the store",
+                  : order.fulfilment === "delivery" ? "Pay the driver at the door" : "Pay at the store",
         },
         ...(address ? [] : [{ label: "Collect from", value: "55 Parkdale Ave N, Hamilton" }]),
       ],
@@ -646,7 +648,9 @@ export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<Re
       type: "callout",
       label: `${order.fulfilment.toUpperCase()} · ${orderChannelTicketLabel(order.channel)}`,
       value: `${order.order_number} · ${money(order.total_cents)}`,
-      note: paid ? "Paid online — do not take payment again." : "COLLECT PAYMENT AT THE STORE.",
+      note: paid
+        ? "Paid online — do not take payment again."
+        : order.fulfilment === "delivery" ? "DRIVER COLLECTS PAYMENT AT THE DOOR." : "COLLECT PAYMENT AT THE STORE.",
       tone: paid ? "neutral" : "warn",
     },
     {
@@ -691,7 +695,7 @@ export async function renderRestaurantNewOrder(order: OrderSnapshot): Promise<Re
     restaurantAlertOpening(order.channel),
     `${order.fulfilment === "delivery" ? "Delivery" : "Pickup"} order, number ${order.order_number.replace("P62-", "")}.`,
     `${itemLines.length} ${itemLines.length === 1 ? "item" : "items"}, total ${money(order.total_cents)}.`,
-    paid ? "Already paid online." : "To be paid at the store.",
+    paid ? "Already paid online." : order.fulfilment === "delivery" ? "To be paid to the driver at the door." : "To be paid at the store.",
     order.schedule_type === "scheduled" && order.scheduled_for
       ? `Scheduled for ${clockTime(order.scheduled_for)}.`
       : "As soon as possible.",
