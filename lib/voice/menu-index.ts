@@ -44,6 +44,7 @@ import {
   type ToppingPlacement,
   type WeeklyAvailability,
 } from "@/lib/domain";
+import { isStorefrontProductVisible } from "@/lib/seasonal";
 
 // --- the catalogue the index is built from ------------------------------------
 
@@ -473,6 +474,9 @@ export function buildMenuIndex(catalog: VoiceCatalog, options: { now?: number } 
   for (const product of catalog.products) {
     const availability = product.configuration.availability as WeeklyAvailability | undefined;
     if (hasExpired(availability, now)) continue;
+    // A seasonal product does not exist outside its window, judged by this
+    // index's clock rather than the moment the catalogue happened to load.
+    if (!isStorefrontProductVisible(product, new Date(now))) continue;
     const nameTokens = normalizeWords(product.name);
     const family = classify(product, nameTokens);
     const sections = product.sections;
