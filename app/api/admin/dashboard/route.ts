@@ -42,7 +42,11 @@ export async function GET(request: Request) {
                   payment_status, payment_method, schedule_type, scheduled_for, estimated_for,
                   address_json, instructions, subtotal_cents, discount_cents, tax_cents,
                   delivery_fee_cents, tip_cents, total_cents, gift_card_applied_cents,
-                  created_at, acknowledged_at,
+                  created_at, updated_at, acknowledged_at,
+                  -- When it was last changed at the till, so the board and the
+                  -- reprinted ticket can say the kitchen's copy is out of date.
+                  (SELECT MAX(ev.created_at) FROM order_events ev
+                    WHERE ev.order_id = orders.id AND ev.note LIKE 'Edited at the till%') AS edited_at,
                   -- Printed on the ticket, so a walk-in who gave no email can
                   -- still be told their giveaway entry number at the counter.
                   (SELECT entry_number FROM giveaway_entries e WHERE e.order_id = orders.id) AS giveaway_entry_number
@@ -128,7 +132,7 @@ export async function GET(request: Request) {
     const items = orderIds.length
       ? await getD1()
           .prepare(
-            `SELECT id, order_id, product_name, variation_name, quantity, unit_price_cents,
+            `SELECT id, order_id, product_id, product_name, variation_name, quantity, unit_price_cents,
                     line_total_cents, snapshot_json, instructions
              FROM order_items WHERE order_id IN (${orderIds.map(() => "?").join(",")})
              ORDER BY created_at`,
@@ -142,6 +146,7 @@ export async function GET(request: Request) {
       const list = itemsByOrder.get(key) ?? [];
       list.push({
         id: item.id,
+        productId: item.product_id,
         productName: item.product_name,
         variationName: item.variation_name,
         quantity: item.quantity,

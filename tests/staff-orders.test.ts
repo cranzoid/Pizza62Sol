@@ -24,7 +24,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5432/pizza62_test";
 const { getPool, closePool } = await import("@/db/pg-driver");
 const { createPasswordHash } = await import("@/lib/auth");
 const { POST: loginRoute } = await import("@/app/api/auth/login/route");
-const { POST: staffOrderRoute } = await import("@/app/api/admin/orders/route");
+const { POST: staffOrderRoute, PUT: staffOrderEditRoute } = await import("@/app/api/admin/orders/route");
 const { POST: staffActionRoute } = await import("@/app/api/admin/actions/route");
 const { POST: publicOrderRoute } = await import("@/app/api/orders/route");
 const { getSetting } = await import("@/db/runtime");
@@ -611,4 +611,118 @@ withDb("queues no status email for a counter order with no address to send it to
     [orderId],
   );
   assert.equal(queued.rowCount, 0);
+});
+
+// --- editing a placed order --------------------------------------------------
+
+const editOrderRequest = (cookie: string, body: unknown) =>
+  staffOrderEditRoute(
+    new Request("https://order.pizza62.test/api/admin/orders", {
+      method: "PUT",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+
+async function placeCounterOrder(cookie: string, extra: Record<string, unknown> = {}) {
+  const response = await staffOrder(cookie, { ...cart, channel: "walk_in", idempotencyKey: nextKey(), customer: { name: "Edit me" }, ...extra });
+  assert.equal(response.status, 201, await response.clone().text());
+  const placed = (await response.json()) as { orderId: string; orderNumber: string };
+  const row = await getPool().query<{ updated_at: string; total_cents: string }>("SELECT updated_at, total_cents FROM orders WHERE id = $1", [placed.orderId]);
+  return { ...placed, totalCents: Number(row.rows[0].total_cents), updatedAt: Number(row.rows[0].updated_at) };
+}
+
+withDb("edits a placed counter order in place, keeping its number", async () => {
+  const cookie = await signedInAs("owner");
+  const placed = await placeCounterOrder(cookie);
+  const response = await editOrderRequest(cookie, {
+    ...cart,
+    orderId: placed.orderId,
+    expectedUpdatedAt: placed.updatedAt,
+    channel: "walk_in",
+    items: [{ productId: "poutine", quantity: 3 }],
+    customer: { name: "Edited name" },
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const result = (await response.json()) as { orderNumber: string; totalCents: number; previousTotalCents: number; printOrder: { edited_at: number; items: Array<{ quantity: number }> } };
+  assert.equal(result.orderNumber, placed.orderNumber, "the kitchen and the customer know the order by its number");
+  assert.equal(result.previousTotalCents, placed.totalCents);
+  assert.ok(result.totalCents > placed.totalCents);
+  assert.ok(result.printOrder.edited_at, "the reprinted ticket says it replaces the earlier one");
+  assert.equal(result.printOrder.items[0].quantity, 3);
+
+  const order = await getPool().query("SELECT customer_name, total_cents, channel, status FROM orders WHERE id = $1", [placed.orderId]);
+  assert.equal(order.rows[0].customer_name, "Edited name");
+  assert.equal(Number(order.rows[0].total_cents), result.totalCents);
+  assert.equal(order.rows[0].channel, "walk_in");
+  const items = await getPool().query("SELECT quantity FROM order_items WHERE order_id = $1", [placed.orderId]);
+  assert.deepEqual(items.rows.map((row) => Number(row.quantity)), [3], "the old items are replaced, not added to");
+  const payment = await getPool().query("SELECT amount_cents FROM payments WHERE order_id = $1", [placed.orderId]);
+  assert.equal(Number(payment.rows[0].amount_cents), result.totalCents);
+  const events = await getPool().query("SELECT note, actor_type FROM order_events WHERE order_id = $1 AND note LIKE 'Edited at the till%'", [placed.orderId]);
+  assert.equal(events.rows.length, 1);
+  assert.equal(events.rows[0].actor_type, "staff");
+});
+
+withDb("refuses an edit made against an out-of-date copy of the order", async () => {
+  const cookie = await signedInAs("owner");
+  const placed = await placeCounterOrder(cookie);
+  const first = await editOrderRequest(cookie, { ...cart, orderId: placed.orderId, expectedUpdatedAt: placed.updatedAt, channel: "walk_in", customer: { name: "First" } });
+  assert.equal(first.status, 200, await first.clone().text());
+  // A second till still holding the version from before the first edit.
+  const second = await editOrderRequest(cookie, {
+    ...cart,
+    orderId: placed.orderId,
+    expectedUpdatedAt: placed.updatedAt,
+    channel: "walk_in",
+    items: [{ productId: "poutine", quantity: 5 }],
+    customer: { name: "Second" },
+  });
+  assert.equal(second.status, 409);
+  const order = await getPool().query("SELECT customer_name FROM orders WHERE id = $1", [placed.orderId]);
+  assert.equal(order.rows[0].customer_name, "First");
+  const items = await getPool().query("SELECT quantity FROM order_items WHERE order_id = $1", [placed.orderId]);
+  assert.deepEqual(items.rows.map((row) => Number(row.quantity)), [2], "a refused edit writes nothing");
+});
+
+withDb("refuses to edit a completed order", async () => {
+  const cookie = await signedInAs("owner");
+  const placed = await placeCounterOrder(cookie);
+  await getPool().query("UPDATE orders SET status = 'completed' WHERE id = $1", [placed.orderId]);
+  const response = await editOrderRequest(cookie, { ...cart, orderId: placed.orderId, channel: "walk_in", customer: { name: "Late" } });
+  assert.equal(response.status, 409);
+});
+
+withDb("refuses to edit an order paid online", async () => {
+  const cookie = await signedInAs("owner");
+  const placed = await placeCounterOrder(cookie);
+  await getPool().query("UPDATE orders SET payment_method = 'online', payment_status = 'paid' WHERE id = $1", [placed.orderId]);
+  const response = await editOrderRequest(cookie, { ...cart, orderId: placed.orderId, channel: "walk_in", customer: { name: "Card" } });
+  assert.equal(response.status, 409);
+  assert.match(((await response.json()) as { error: string }).error, /paid online/);
+});
+
+withDb("refuses an edit from an employee without the override permission", async () => {
+  const owner = await signedInAs("owner");
+  const placed = await placeCounterOrder(owner);
+  const cookie = await signedInAs("employee", ["view_orders"]);
+  const response = await editOrderRequest(cookie, { ...cart, orderId: placed.orderId, channel: "walk_in", customer: { name: "Nope" } });
+  assert.equal(response.status, 403);
+});
+
+withDb("keeps hidden contact details when someone who cannot see them edits", async () => {
+  const owner = await signedInAs("owner");
+  const placed = await placeCounterOrder(owner, { customer: { name: "Private", phone: "905-555-0142", email: "private@example.test" } });
+  const cookie = await signedInAs("employee", ["view_orders", "manual_order_override"]);
+  const response = await editOrderRequest(cookie, {
+    ...cart,
+    orderId: placed.orderId,
+    channel: "walk_in",
+    items: [{ productId: "poutine", quantity: 1 }],
+    customer: { name: "Private" },
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const order = await getPool().query("SELECT customer_phone, customer_email FROM orders WHERE id = $1", [placed.orderId]);
+  assert.ok(order.rows[0].customer_phone, "the blank they were shown is not an edit");
+  assert.equal(order.rows[0].customer_email, "private@example.test");
 });

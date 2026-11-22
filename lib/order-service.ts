@@ -4,6 +4,7 @@ import {
   CHEESE_OPTIONS,
   CRUST_OPTIONS,
   explainPromotionMiss,
+  formatMoney,
   generateOpaqueToken,
   hashOpaqueToken,
   isRetiredSection,
@@ -53,6 +54,7 @@ import {
   CloverDeclinedError,
 } from "@/lib/clover";
 import { applyPaymentApproved } from "@/lib/payment-completion";
+import { ORDER_EDIT_EVENT_PREFIX, orderEditRefusal } from "@/lib/order-edit";
 import { recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { anyProviderConfigured } from "@/lib/notifications/config";
 import { dispatchSoon } from "@/lib/notifications/dispatcher";
@@ -2481,4 +2483,268 @@ export async function createOrder(body: OrderRequest, context: CreateOrderContex
     await getD1().prepare("DELETE FROM idempotency_keys WHERE key_hash = ? AND status = 'pending'").bind(keyHash).run();
     throw error;
   }
+}
+
+export { EDITABLE_ORDER_STATUSES, ORDER_EDIT_EVENT_PREFIX, orderEditRefusal } from "@/lib/order-edit";
+
+export type EditOrderRequest = OrderRequest & {
+  /** `orders.updated_at` as the till loaded it, so two people cannot edit over each other. */
+  expectedUpdatedAt?: number;
+};
+
+export type EditOrderResult = {
+  orderId: string;
+  orderNumber: string;
+  previousTotalCents: number;
+  totalCents: number;
+  /** What is now owed in total. Nothing has been taken against a pay-at-store order. */
+  amountDueCents: number;
+  price: ReturnType<typeof priceCart>;
+  giveawayEntryNumber: number | null;
+};
+
+/**
+ * Changing an order that has already been placed — the customer came back, or
+ * rang again, and wants something added, taken off or changed.
+ *
+ * The order keeps its number, its channel and its place in the queue, which is
+ * what the kitchen and the customer both know it by. Everything that depends on
+ * what is in it is worked out again by the same code that created it: the
+ * items are validated by `validateItems`, the bill by `priceCart` with the
+ * promotions running now, and a delivery address by the same radius check. So
+ * an edited order is priced exactly as a fresh one with the same contents.
+ *
+ * Opening hours, the last-order cutoff and a paused website do not apply: the
+ * order has already been accepted, and refusing to change it would only mean
+ * cancelling it and ringing it in again.
+ *
+ * Written in one transaction that is guarded on the order being exactly as the
+ * till loaded it. If someone else changed it first, or it moved to completed,
+ * nothing is written and the till is told to reload it.
+ */
+export async function editOrder(
+  orderId: string,
+  body: EditOrderRequest,
+  context: { staffUserId: string },
+): Promise<EditOrderResult> {
+  await ensureDatabase();
+  const existing = await getD1()
+    .prepare(
+      `SELECT id, order_number, status, payment_method, payment_status, gift_card_applied_cents,
+              schedule_type, scheduled_for, tip_cents, total_cents, pricing_json, updated_at
+       FROM orders WHERE id = ?`,
+    )
+    .bind(orderId)
+    .first<{
+      id: string;
+      order_number: string;
+      status: string;
+      payment_method: string;
+      payment_status: string;
+      gift_card_applied_cents: number;
+      schedule_type: string;
+      scheduled_for: number | null;
+      tip_cents: number;
+      total_cents: number;
+      pricing_json: string | null;
+      updated_at: number;
+    }>();
+  if (!existing) throw new OrderValidationError("That order could not be found.", 404, "ORDER_NOT_FOUND");
+  const refusal = orderEditRefusal(existing);
+  if (refusal) throw new OrderValidationError(refusal, 409, "ORDER_NOT_EDITABLE");
+  const expectedUpdatedAt = Number(body.expectedUpdatedAt);
+  if (Number.isSafeInteger(expectedUpdatedAt) && Number(existing.updated_at) !== expectedUpdatedAt) {
+    throw new OrderValidationError(
+      "This order was changed somewhere else since you opened it. Open it again to see the latest version.",
+      409,
+      "ORDER_CHANGED",
+    );
+  }
+  if (hasCode(body.giftCardCode)) {
+    throw new OrderValidationError("A gift card cannot be added while editing an order.", 400, "CODES_NOT_ACCEPTED");
+  }
+
+  const fulfilment = body.fulfilment;
+  if (fulfilment !== "pickup" && fulfilment !== "delivery") throw new OrderValidationError("Choose pickup or delivery.");
+  const customer = normalizeCustomer(body.customer, "name_only");
+  const [delivery, taxTips, operations, ordering, business] = await Promise.all([
+    getSetting<DeliverySetting>("delivery"),
+    getSetting<TaxTipSetting>("taxAndTips"),
+    getSetting<OperationSetting>("operations"),
+    getSetting<OrderingSetting>("ordering"),
+    getSetting<BusinessSetting>("business"),
+  ]);
+  const deliveryAddress = fulfilment === "delivery" ? normalizeDeliveryAddress(body.address) : null;
+  if (fulfilment === "delivery" && !customer.phone) {
+    throw new OrderValidationError("A delivery needs a phone number the driver can call.");
+  }
+  const items = await validateItems(
+    body.items,
+    fulfilment,
+    operations,
+    true,
+    existing.schedule_type === "scheduled" && existing.scheduled_for ? Number(existing.scheduled_for) : undefined,
+  );
+  const couponCode = normalizeCouponCode(body.couponCode);
+  const promotions = await activePromotions(fulfilment, couponCode);
+  if (fulfilment === "delivery" && items.some((item) => item.freeDelivery)) {
+    promotions.push({
+      id: "included-free-delivery",
+      name: "Included free delivery",
+      type: "free_delivery",
+      amount: 0,
+      priority: 10_000,
+      combinable: true,
+      exclusive: false,
+    });
+  }
+  // A tip the customer chose online is theirs and stays as it was.
+  const tipCents = Number(existing.tip_cents ?? 0);
+  const price = priceCart({
+    lines: items.map((item) => ({
+      id: item.id,
+      productId: item.productId,
+      categoryId: item.categoryId,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      taxable: item.taxable,
+      promotionEligible: item.promotionEligible,
+    })),
+    promotions,
+    fulfilment,
+    deliveryFeeCents: delivery.feeCents,
+    taxRateBps: taxTips.taxRateBps,
+    deliveryFeeTaxable: delivery.feeTaxable,
+    tip: tipCents > 0 ? { type: "custom", amountCents: tipCents } : { type: "none" },
+    customTipMaxCents: Math.max(taxTips.customTipMaxCents, tipCents),
+    customTipMaxBasisBps: taxTips.customTipMaxBasisBps,
+  });
+  if (fulfilment === "delivery" && deliveryAddress) {
+    const eligibility = await checkDeliveryEligibility(
+      { address: deliveryAddress, menuSubtotalCents: price.menuSubtotalCents, items },
+      { ordering, delivery, business },
+    );
+    if (!eligibility.eligible) {
+      throw new OrderValidationError(eligibility.message ?? "", 422, "DELIVERY_ADDRESS_INELIGIBLE");
+    }
+  }
+
+  const previousPromotionIds = new Set(
+    (safeJson<{ appliedPromotions?: Array<{ id?: string }> }>(existing.pricing_json ?? "{}", {}).appliedPromotions ?? [])
+      .map((promotion) => String(promotion.id ?? "")),
+  );
+  // Strictly later than what the till saw, so the guard below can recognise the
+  // row this transaction wrote even if two edits land in the same millisecond.
+  const now = Math.max(Date.now(), Number(existing.updated_at) + 1);
+  // Every statement after the first only acts if the first one did: the order
+  // carries this transaction's timestamp only when its guarded update matched.
+  const ours = "EXISTS (SELECT 1 FROM orders WHERE id = ? AND updated_at = ?)";
+  const statements: D1PreparedStatement[] = [
+    getD1()
+      .prepare(
+        `UPDATE orders SET customer_name = ?, customer_phone = ?, customer_email = ?, fulfilment = ?,
+           address_json = ?, instructions = ?, pricing_json = ?, subtotal_cents = ?, discount_cents = ?,
+           tax_cents = ?, delivery_fee_cents = ?, tip_cents = ?, total_cents = ?, updated_at = ?
+         WHERE id = ? AND updated_at = ?
+           AND status IN ('received', 'preparing', 'ready_for_pickup', 'out_for_delivery')
+           AND payment_method = 'pay_at_store' AND payment_status = 'pending_at_store'
+           AND gift_card_applied_cents = 0`,
+      )
+      .bind(
+        customer.name,
+        customer.phone,
+        customer.email,
+        fulfilment,
+        deliveryAddress ? JSON.stringify(deliveryAddress) : null,
+        cleanInstructions(body.address?.instructions),
+        JSON.stringify(price),
+        price.menuSubtotalCents,
+        price.discountCents,
+        price.taxCents,
+        price.deliveryFeeCents,
+        price.tipCents,
+        price.totalCents,
+        now,
+        orderId,
+        existing.updated_at,
+      ),
+    getD1()
+      .prepare(`UPDATE payments SET amount_cents = ?, updated_at = ? WHERE order_id = ? AND status = 'pending' AND ${ours}`)
+      .bind(price.totalCents, now, orderId, orderId, now),
+    getD1().prepare(`DELETE FROM order_items WHERE order_id = ? AND ${ours}`).bind(orderId, orderId, now),
+    ...items.map((item) =>
+      getD1()
+        .prepare(
+          `INSERT INTO order_items
+           (id, order_id, product_id, product_name, variation_name, quantity, unit_price_cents,
+            line_total_cents, taxable, snapshot_json, instructions, created_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${ours}`,
+        )
+        .bind(
+          item.id,
+          orderId,
+          item.productId,
+          item.productName,
+          item.variationName,
+          item.quantity,
+          item.unitPriceCents,
+          item.unitPriceCents * item.quantity,
+          item.taxable ? 1 : 0,
+          JSON.stringify(item.snapshot),
+          item.instructions,
+          now,
+          orderId,
+          now,
+        ),
+    ),
+    getD1()
+      .prepare(
+        `INSERT INTO order_events
+         (id, order_id, previous_status, next_status, actor_type, actor_id, note, created_at)
+         SELECT ?, ?, ?, ?, 'staff', ?, ?, ? WHERE ${ours}`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        orderId,
+        existing.status,
+        existing.status,
+        context.staffUserId,
+        `${ORDER_EDIT_EVENT_PREFIX}: total ${formatMoney(Number(existing.total_cents))} → ${formatMoney(price.totalCents)}`,
+        now,
+        orderId,
+        now,
+      ),
+    // A promotion the edit newly brought in counts as used, as it would on a
+    // fresh order. One the order already had was counted when it was placed.
+    ...price.appliedPromotions
+      .filter((promotion) => promotion.id !== "included-free-delivery" && !previousPromotionIds.has(promotion.id))
+      .map((promotion) =>
+        getD1()
+          .prepare(
+            `UPDATE promotions SET usage_count = usage_count + 1, updated_at = ?
+             WHERE id = ? AND (usage_limit IS NULL OR usage_count < usage_limit) AND ${ours}`,
+          )
+          .bind(now, promotion.id, orderId, now),
+      ),
+  ];
+  const results = await getD1().batch(statements);
+  if (!results[0]?.meta.changes) {
+    throw new OrderValidationError(
+      "This order was changed somewhere else, or can no longer be edited. Open it again to see the latest version.",
+      409,
+      "ORDER_CHANGED",
+    );
+  }
+  // An edit that takes the order over the line earns its entry, as a new order
+  // would. One that drops below keeps the entry it was already told about.
+  const giveawayEntryNumber = await recordGiveawayEntrySafely(orderId);
+  return {
+    orderId,
+    orderNumber: existing.order_number,
+    previousTotalCents: Number(existing.total_cents),
+    totalCents: price.totalCents,
+    amountDueCents: price.totalCents,
+    price,
+    giveawayEntryNumber,
+  };
 }
