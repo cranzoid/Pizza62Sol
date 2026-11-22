@@ -22,6 +22,13 @@ export type PassPrntTicketInput = {
   toppingNames: Map<string, string>;
   printedAt: number;
   callbackUrl: string;
+  /**
+   * Kick the cash drawer as the ticket prints. Only the till's "Take payment &
+   * print" asks for this: that tap *is* the payment, cash or card, so staff
+   * should not need a second tap to get the drawer open. Reprints, kitchen
+   * board prints and deliveries (the driver collects) leave it shut.
+   */
+  openDrawer?: boolean;
 };
 
 export type PassPrntDrawerInput = {
@@ -148,9 +155,11 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
 .address{font-size:22px}.money-row,.total{display:flex;justify-content:space-between;gap:16px}.money-row{font-size:20px;margin:4px 0}
 .total{font-size:28px;font-weight:900;border-top:4px solid #000;border-bottom:4px solid #000;padding:10px 0;margin-top:10px}
 .footer{text-align:center;font-size:16px;margin-top:14px}
+.edited{border:4px solid #000;text-align:center;font-size:24px;font-weight:900;padding:8px;margin-bottom:10px}
 .giveaway{border:3px dashed #000;text-align:center;font-size:20px;margin-top:14px;padding:10px 12px}.giveaway-title{font-weight:900;letter-spacing:2px}
 .giveaway b{display:block;font-size:34px;letter-spacing:3px;margin:2px 0 6px}.giveaway p{margin:6px 0}.giveaway b.giveaway-url{display:inline;font-size:20px;letter-spacing:0;margin:0}.giveaway .giveaway-small{font-size:17px}
 </style></head><body>
+  ${order.edited_at ? `<div class="edited">** UPDATED ORDER &mdash; REPLACES EARLIER TICKET **</div>` : ""}
   <header class="head"><div class="number">${escapeHtml(String(order.order_number ?? "").replace("P62-", "#"))}</div><div class="type">${escapeHtml(String(order.fulfilment ?? "").toUpperCase())}</div></header>
   <div class="when">${scheduled ? `SCHEDULED ${escapeHtml(ticketTime(scheduled))}` : `ASAP &mdash; in by ${escapeHtml(ticketTime(Number(order.created_at)))}`}</div>
   <div class="rule"></div>
@@ -169,8 +178,12 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.28;padd
 
 /**
  * Build the URL Star documents for a no-preview, one-tap Android print.
- * `drawer=off` is explicit: printing a kitchen ticket and opening the cash
- * drawer are separate staff actions. A receipt must never kick the drawer.
+ *
+ * The drawer stays shut (`drawer=off`, said explicitly) unless the caller asks
+ * for it with `openDrawer`. Staff reported that "Take payment & print" left the
+ * drawer closed and needed a separate "Open cash drawer" tap with the customer
+ * holding their money, so the till's payment tap now asks for it. `ahead`
+ * opens it before the ticket prints, so the money goes in while paper feeds.
  */
 export function buildPassPrntUri(input: PassPrntTicketInput): string {
   const html = buildPassPrntTicketHtml(input.order, input.toppingNames, input.printedAt);
@@ -178,7 +191,7 @@ export function buildPassPrntUri(input: PassPrntTicketInput): string {
     `back=${encodeQueryValue(input.callbackUrl)}`,
     `html=${encodeQueryValue(html)}`,
     "size=576",
-    "drawer=off",
+    input.openDrawer ? "drawer=ahead" : "drawer=off",
     "drawerpulse=200",
     "cut=partial",
     "popup=enable",

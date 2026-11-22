@@ -2286,3 +2286,193 @@ fieldset.clover-card-fields {
 .till-pos .staff-panel-head .staff-button { color: var(--ink); min-height: 44px; font-size: 12px; }
 .till-pos .till-line strong { font-size: 14px; }
 .till-pos .till-line small, .till-pos .till-line-price { font-size: 12px; }
+
+/* --- Full-screen till (POS) ---------------------------------------------------
+   Staff feedback, Nov 2026: the old till was boxy, scrolled, and buried the menu
+   under headings. This takes the whole display like the Loyverse register they
+   came from: a thin bar, then categories | items | receipt, each scrolling on
+   its own, with the Charge button always on screen. Sized for the Samsung tab
+   at the counter (about 1280 x 800 CSS px in landscape). */
+.staff-shell--pos { display: block; background: #eef0ea; }
+.staff-shell--pos .staff-sidebar,
+.staff-shell--pos .staff-topbar,
+.staff-shell--pos .new-order-alert,
+.staff-shell--pos .staff-main > .form-error { display: none !important; }
+.staff-shell--pos .staff-main { padding: 0 !important; }
+
+.pos { --pos-ink: #172019; --pos-green: #1f4a33; --pos-green-soft: #e6efe8; --pos-line: #d9dfd9; --pos-muted: #66706a;
+  border: 0; margin: 0; padding: 0; min-width: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; color: var(--pos-ink); font-size: 15px; }
+.pos button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; }
+.pos button:disabled { cursor: not-allowed; opacity: .45; }
+.pos button:focus-visible, .pos input:focus-visible, .pos select:focus-visible { outline: 3px solid #d79526; outline-offset: 2px; }
+
+.pos-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #173b2c; color: white; flex: none; }
+.pos-bar-exit, .pos-bar-button { min-height: 48px; padding: 0 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.08); color: white !important; font-weight: 700 !important; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.pos-bar-exit:hover, .pos-bar-button:hover { background: rgba(255,255,255,.16); }
+.pos-badge { background: var(--red); color: white; border-radius: 999px; min-width: 24px; height: 24px; display: inline-grid; place-items: center; font-size: 13px; padding: 0 6px; }
+.pos-seg { display: inline-flex; background: rgba(0,0,0,.22); border-radius: 10px; padding: 3px; flex: none; }
+.pos-seg button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: rgba(255,255,255,.78) !important; font-weight: 700 !important; }
+.pos-seg button[aria-pressed="true"] { background: white; color: var(--pos-green) !important; }
+.pos-customer { min-height: 48px; display: inline-flex; align-items: center; gap: 10px; padding: 4px 14px 4px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.08); color: white !important; text-align: left; min-width: 0; max-width: 240px; }
+.pos-customer > span:last-child { display: grid; min-width: 0; }
+.pos-customer strong, .pos-customer small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pos-customer small { font-size: 12px; opacity: .75; }
+.pos-customer-icon { width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,.16); display: grid; place-items: center; font-size: 15px; flex: none; }
+.pos-customer--needs { border-color: #f2b83b; background: rgba(242,184,59,.18); }
+.pos-customer--needs small { color: #ffd77d; opacity: 1; font-weight: 700; }
+.pos-search { flex: 1; min-width: 140px; min-height: 48px; border-radius: 10px; border: 0; padding: 0 16px; font: inherit; font-size: 16px; background: white; color: var(--pos-ink); }
+
+.pos-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 172px minmax(0, 1fr) minmax(340px, 400px); }
+.pos-cats { overflow-y: auto; padding: 10px 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; background: #e4e8e2; border-right: 1px solid var(--pos-line); }
+.pos-cat { min-height: 56px; flex: none; text-align: left; padding: 10px 12px 10px 14px; border-radius: 10px; border: 1px solid transparent; background: white; font-weight: 700 !important; font-size: 15px !important; line-height: 1.2; position: relative; overflow: hidden; }
+.pos-cat::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--pos-tone); }
+.pos-cat[aria-pressed="true"] { background: var(--pos-green); color: white !important; border-color: var(--pos-green); }
+.pos-cat[aria-pressed="true"]::before { background: var(--pos-tone-light); }
+
+.pos-menu { overflow-y: auto; padding: 12px; min-width: 0; }
+.pos-menu-note { margin: 0 0 10px; font-size: 14px; color: var(--pos-muted); }
+.pos-menu-note button { border: 0; background: none; text-decoration: underline; font-weight: 700; margin-left: 6px; }
+.pos-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.pos-item { min-height: 104px; display: flex; flex-direction: column; justify-content: space-between; gap: 8px; text-align: left; padding: 12px 12px 10px; border-radius: 12px; border: 1px solid var(--pos-line); border-top: 6px solid var(--pos-tone); background: white; box-shadow: 0 1px 0 rgba(0,0,0,.04); }
+.pos-item:hover { border-color: #b7c2b9; border-top-color: var(--pos-tone); }
+.pos-item:active { transform: scale(.98); background: var(--pos-green-soft); }
+.pos-item strong { font-size: 15px; line-height: 1.25; font-weight: 800; }
+.pos-item-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; }
+.pos-item-foot em { font-style: normal; font-size: 12px; color: var(--pos-muted); font-weight: 600; }
+.pos-item-foot b { font-size: 15px; white-space: nowrap; }
+.pos-tone-0 { --pos-tone: #2f7a4b; --pos-tone-light: #9fd6b1; }
+.pos-tone-1 { --pos-tone: #d08a19; --pos-tone-light: #f6cf86; }
+.pos-tone-2 { --pos-tone: #2f62a8; --pos-tone-light: #a8c6ef; }
+.pos-tone-3 { --pos-tone: #c0432f; --pos-tone-light: #f1aa9d; }
+.pos-tone-4 { --pos-tone: #6b4fb0; --pos-tone-light: #c8b7ef; }
+.pos-tone-5 { --pos-tone: #12808a; --pos-tone-light: #95d9df; }
+
+.pos-ticket { display: flex; flex-direction: column; min-height: 0; background: white; border-left: 1px solid var(--pos-line); }
+.pos-ticket-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--pos-line); flex: none; }
+.pos-ticket-head h2 { margin: 0; font-size: 18px; font-family: inherit; }
+.pos-ticket-head small { color: var(--pos-muted); font-size: 13px; }
+.pos-ticket-head--edit { background: #fff4dc; border-bottom-color: #f0d79c; }
+.pos-link { border: 0; background: none; padding: 8px 4px; font-weight: 700 !important; text-decoration: underline; color: var(--red) !important; white-space: nowrap; }
+.pos-lines { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0; }
+.pos-line { border-bottom: 1px solid #eef1ee; }
+.pos-line-main { width: 100%; display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: start; text-align: left; padding: 10px 16px; border: 0; background: none; }
+.pos-line--selected .pos-line-main { background: var(--pos-green-soft); }
+.pos-line-qty { font-weight: 800; color: var(--pos-green); }
+.pos-line-name { display: grid; min-width: 0; }
+.pos-line-name strong { font-size: 15px; }
+.pos-line-name small { font-size: 12.5px; color: var(--pos-muted); line-height: 1.4; }
+.pos-line-main b { font-size: 15px; white-space: nowrap; }
+.pos-line-tools { display: flex; align-items: center; gap: 8px; padding: 4px 16px 12px 58px; background: var(--pos-green-soft); flex-wrap: wrap; }
+.pos-line-tools > button { min-height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--pos-line); background: white; font-weight: 700 !important; font-size: 14px !important; }
+.pos-line-tools .pos-danger { color: var(--red) !important; border-color: #efc7c0; }
+.pos-qty { display: inline-flex; align-items: center; gap: 4px; background: white; border: 1px solid var(--pos-line); border-radius: 10px; padding: 2px; }
+.pos-qty button { width: 44px; height: 40px; border: 0; border-radius: 8px; background: #f1f4f1; font-size: 22px !important; font-weight: 700 !important; line-height: 1; }
+.pos-qty span { min-width: 28px; text-align: center; font-weight: 800; font-size: 16px; }
+.pos-empty { padding: 30px 16px; text-align: center; color: var(--pos-muted); font-size: 14px; }
+.pos-done { margin: 10px 12px; padding: 14px; border-radius: 12px; background: #e5f2e9; color: #1f5937; display: grid; gap: 8px; }
+.pos-done strong { font-size: 15px; line-height: 1.4; }
+.pos-done p { margin: 0; font-size: 20px; font-weight: 800; display: grid; }
+.pos-done p small { font-size: 13px; font-weight: 600; }
+
+.pos-ticket-foot { flex: none; border-top: 1px solid var(--pos-line); padding: 10px 16px 12px; display: grid; gap: 8px; background: #fbfcfa; max-height: 62%; overflow-y: auto; }
+.pos-codes-toggle { justify-self: start; color: var(--pos-green) !important; padding: 2px 0; font-size: 14px !important; }
+.pos-codes { display: grid; gap: 6px; }
+.pos-code-row { display: flex; gap: 6px; }
+.pos-code-row input { flex: 1; min-width: 0; min-height: 44px; border: 1px solid var(--pos-line); border-radius: 10px; padding: 0 12px; font: inherit; }
+.pos-code-row button { min-height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--pos-line); background: white; font-weight: 700 !important; }
+.pos-totals { display: grid; gap: 2px; font-size: 14px; }
+.pos-totals > div { display: flex; justify-content: space-between; }
+.pos-totals span { color: var(--pos-muted); }
+.pos-discount b { color: #29623e; }
+.pos-msg { margin: 0; padding: 8px 10px; border-radius: 8px; background: #e5f2e9; color: #1f5937; font-size: 13.5px; line-height: 1.4; }
+.pos-msg--bad { background: #ffe8e2; color: #8a2117; }
+.pos-ticket-foot .cart-blocker, .pos-ticket-foot .giveaway-hint { margin: 0; }
+.pos-charge { min-height: 68px; border: 0; border-radius: 12px; background: var(--red); color: white !important; display: grid; place-items: center; align-content: center; gap: 2px; box-shadow: 0 3px 0 var(--red-dark); }
+.pos-charge span { font-size: 21px; font-weight: 800; }
+.pos-charge small { font-size: 12.5px; opacity: .85; }
+.pos-charge:not(:disabled):active { transform: translateY(2px); box-shadow: 0 1px 0 var(--red-dark); }
+.pos-foot-tools { display: flex; gap: 8px; justify-content: space-between; }
+.pos-foot-tools button { min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--pos-line); background: white; font-size: 13px !important; font-weight: 700 !important; color: var(--pos-muted) !important; }
+
+.pos-primary { min-height: 60px; width: 100%; border: 0; border-radius: 12px; background: var(--pos-green); color: white !important; font-size: 18px !important; font-weight: 800 !important; }
+.pos-secondary { min-height: 48px; width: 100%; border-radius: 10px; border: 1px solid #b7d1bf; background: white; font-weight: 700 !important; }
+
+.pos-sheet-backdrop { position: fixed; inset: 0; z-index: 210; background: rgba(15, 22, 17, .55); display: grid; place-items: center; padding: 16px; }
+.pos-sheet { width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; background: white; border-radius: 18px; padding: 18px 20px 20px; display: grid; gap: 12px; box-shadow: 0 30px 80px rgba(0,0,0,.3); }
+.pos-sheet--wide { width: min(680px, 100%); }
+.pos-sheet--pay { width: min(560px, 100%); }
+.pos-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pos-sheet-head h2 { margin: 0; font-size: 22px; font-family: inherit; }
+.pos-sheet-close { width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--pos-line); background: white; font-size: 26px !important; line-height: 1; }
+.pos-form { display: grid; gap: 10px; }
+.pos-form label { display: grid; gap: 4px; font-size: 13px; font-weight: 700; color: var(--pos-muted); }
+.pos-form input { min-height: 50px; border: 1px solid var(--pos-line); border-radius: 10px; padding: 0 14px; font: inherit; font-size: 17px; color: var(--pos-ink); }
+.pos-form .till-birthday select { min-height: 48px; }
+.pos-hint { margin: 0; font-size: 13px; color: var(--pos-muted); line-height: 1.45; }
+
+.pos-order-list { display: grid; gap: 6px; }
+.pos-order-row { display: grid; grid-template-columns: 70px 1fr auto; gap: 12px; align-items: center; text-align: left; min-height: 64px; padding: 8px 14px; border-radius: 12px; border: 1px solid var(--pos-line); background: white; }
+.pos-order-row:not(:disabled):hover { border-color: var(--pos-green); background: var(--pos-green-soft); }
+.pos-order-row b { font-size: 18px; color: var(--pos-green); }
+.pos-order-row span { display: grid; min-width: 0; }
+.pos-order-row small { color: var(--pos-muted); font-size: 13px; }
+.pos-order-row em { font-style: normal; font-weight: 800; }
+
+.pos-pay-diff { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pos-pay-diff > div { background: #f3f5f2; border-radius: 10px; padding: 10px; display: grid; gap: 2px; }
+.pos-pay-diff span { font-size: 12px; color: var(--pos-muted); font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.pos-pay-diff b { font-size: 19px; }
+.pos-pay-diff .pos-up b { color: #8a2117; }
+.pos-pay-diff .pos-down b { color: #1f5937; }
+.pos-pay-due { display: flex; align-items: baseline; justify-content: space-between; padding: 12px 14px; background: #f3f5f2; border-radius: 12px; }
+.pos-pay-due span { font-size: 14px; font-weight: 700; color: var(--pos-muted); }
+.pos-pay-due b { font-size: 34px; letter-spacing: -.5px; }
+.pos-pay-due--refund { background: #e5f2e9; }
+.pos-pay-due--refund b { color: #1f5937; }
+.pos-tabs { display: flex; gap: 6px; background: #eef1ee; padding: 4px; border-radius: 12px; }
+.pos-tabs button { flex: 1; min-height: 50px; border: 0; border-radius: 9px; background: transparent; font-weight: 800 !important; font-size: 16px !important; color: var(--pos-muted) !important; }
+.pos-tabs button[aria-pressed="true"] { background: white; color: var(--pos-green) !important; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.pos-cash { display: grid; gap: 10px; }
+.pos-quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.pos-quick button { min-height: 64px; border-radius: 12px; border: 1px solid var(--pos-line); background: white; font-size: 19px !important; font-weight: 800 !important; display: grid; place-items: center; align-content: center; line-height: 1.1; }
+.pos-quick button small { font-size: 12px; font-weight: 700; color: var(--pos-muted); text-transform: uppercase; letter-spacing: .5px; }
+.pos-quick button[aria-pressed="true"] { border-color: var(--pos-green); background: var(--pos-green-soft); box-shadow: inset 0 0 0 2px var(--pos-green); }
+.pos-cash-input { display: grid; gap: 4px; font-size: 13px; font-weight: 700; color: var(--pos-muted); }
+.pos-cash-input input { min-height: 54px; border: 1px solid var(--pos-line); border-radius: 10px; padding: 0 14px; font: inherit; font-size: 22px; font-weight: 700; color: var(--pos-ink); }
+.pos-change { background: #e5f2e9; border-radius: 12px; padding: 12px 14px; color: #1f5937; }
+.pos-change > div { display: flex; align-items: baseline; justify-content: space-between; }
+.pos-change span { font-weight: 700; }
+.pos-change b { font-size: 34px; }
+.pos-change p { margin: 4px 0 0; font-size: 14px; }
+.pos-pay-note { margin: 0; padding: 12px 14px; background: #f3f5f2; border-radius: 12px; font-size: 15px; line-height: 1.45; }
+.pos-pay-go { min-height: 66px; background: var(--red); box-shadow: 0 3px 0 var(--red-dark); font-size: 20px !important; }
+.pos-pay-foot { text-align: center; color: var(--pos-muted); font-size: 13px; margin-top: -4px; }
+.status-pill--edited { margin-left: 8px; background: #fff4dc; color: #7a5410; vertical-align: middle; }
+
+/* Narrower than the counter tablet: the receipt goes under the menu and the
+   categories become a scrolling row. */
+@media (max-width: 960px) {
+  .pos { height: auto; min-height: 100dvh; }
+  .pos-bar { flex-wrap: wrap; }
+  .pos-search { flex-basis: 100%; order: 10; }
+  .pos-body { grid-template-columns: 1fr; }
+  .pos-cats { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--pos-line); }
+  .pos-cat { min-height: 48px; white-space: nowrap; }
+  .pos-menu { max-height: 55dvh; }
+  .pos-ticket { border-left: 0; border-top: 1px solid var(--pos-line); }
+  .pos-ticket-foot { max-height: none; }
+  .pos-quick { grid-template-columns: repeat(2, 1fr); }
+}
+.pos-done-paid { font-size: 13px; font-weight: 700; }
+.pos-order-search { min-height: 50px; border: 1px solid var(--pos-line); border-radius: 10px; padding: 0 14px; font: inherit; font-size: 17px; }
+.pos-order-row { grid-template-columns: minmax(70px, max-content) 1fr auto; }
+.pos-line-tools { padding-left: 16px; }
+.pos-sheet--pay { gap: 10px; padding-top: 14px; }
+.pos-sheet--pay .pos-sheet-close { width: 44px; height: 44px; }
+@media (max-height: 760px) {
+  .pos-pay-due { padding: 8px 14px; }
+  .pos-pay-due b, .pos-change b { font-size: 28px; }
+  .pos-quick button { min-height: 54px; }
+  .pos-tabs button { min-height: 44px; }
+  .pos-pay-go { min-height: 58px; }
+}

@@ -153,3 +153,20 @@ test("returns nothing for a page that was not returned to by PassPRNT", () => {
   assert.equal(readPassPrntResult("https://pizza62.ca/kitchen"), null);
   assert.equal(readPassPrntResult("not a url"), null);
 });
+
+test("opens the drawer with the ticket only when the till's payment tap asks", () => {
+  const base = { order, toppingNames, printedAt: Date.UTC(2026, 10, 22, 17, 0), callbackUrl: "https://pizza62.ca/admin" };
+  const paying = new URL(buildPassPrntUri({ ...base, openDrawer: true }));
+  assert.equal(paying.searchParams.get("drawer"), "ahead");
+  assert.equal(paying.searchParams.get("drawerpulse"), "200");
+  assert.equal(paying.searchParams.get("cut"), "partial");
+  assert.match(paying.searchParams.get("html") ?? "", /#123/);
+  const reprint = new URL(buildPassPrntUri({ ...base, openDrawer: false }));
+  assert.equal(reprint.searchParams.get("drawer"), "off");
+});
+
+test("marks a ticket reprinted after an edit as replacing the earlier one", () => {
+  const edited = buildPassPrntTicketHtml({ ...order, edited_at: Date.UTC(2026, 10, 22, 17, 5) }, toppingNames, Date.UTC(2026, 10, 22, 17, 5));
+  assert.match(edited, /UPDATED ORDER/);
+  assert.doesNotMatch(buildPassPrntTicketHtml(order, toppingNames, Date.UTC(2026, 10, 22, 17, 5)), /UPDATED ORDER/);
+});

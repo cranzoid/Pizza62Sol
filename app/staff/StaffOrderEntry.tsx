@@ -3,44 +3,52 @@
 /**
  * Taking an order at the counter or on the phone.
  *
- * Written for someone standing at a till with a customer waiting, which sets
- * every decision here: the menu is a grid of buttons rather than a catalogue,
- * quantities adjust in place, and the total is always on screen. Nothing is
- * hidden behind a step.
+ * Written for someone standing at a till with a customer waiting. Staff
+ * feedback on the first version (November 2026) was that it felt boxy and
+ * confusing: the menu sat below a page of headings and customer fields, every
+ * category was a page of its own to drill into, and paying meant scrolling to
+ * the bottom of a long receipt. They had come from Loyverse, which is one full
+ * screen. So this is laid out the same way:
+ *
+ * - **One screen, no page scroll.** The till takes the whole display. A thin
+ *   bar along the top holds the order type and the customer; below it the
+ *   categories, the items and the receipt sit side by side and each scrolls on
+ *   its own.
+ * - **Categories are always on screen.** One tap changes the items beside them;
+ *   there is no "all categories" page to go back to.
+ * - **Customer details live in a sheet**, opened from the bar (and on its own
+ *   when a delivery needs an address), instead of pushing the menu down.
+ * - **Paying is its own screen.** "Charge" opens a payment sheet with the amount
+ *   due, the usual notes and the change, like the card machine. "Take payment &
+ *   print" there opens the cash drawer as the ticket prints — cash or card —
+ *   because staff reported needing a second tap to get the drawer open with the
+ *   customer holding their money. A manual "Open cash drawer" stays at the
+ *   bottom of the receipt for change and swapped notes.
+ * - **A placed order can be edited.** "Edit an order" (or Edit on the Live
+ *   orders board) loads it back into the till; saving keeps its number and
+ *   prints an UPDATED ORDER ticket. See `editOrder` in lib/order-service.ts.
  *
  * The total comes from the server on every change, from the same pricing path
  * the website uses. That is the point of the whole feature — a counter order
  * priced by a second implementation is how a restaurant ends up with two sets of
  * books, and it is also how the HST on the day's takings stops adding up.
  *
- * **The whole menu can be rung in.** Anything needing a choice made about it —
- * a pizza and its three toppings, a two-pizza deal, a pound of wings, the pops
- * that come with a combo — used to be excluded here, on the grounds that a
- * half-built customizer written for a till screen produces orders the kitchen
- * cannot read. That was true of writing a second one. It is not a reason to
- * write none: the counter takes the phone calls, and the phone is where the
- * complicated orders arrive. So the till mounts the *same* customizer the
- * website does (`app/menu/ItemCustomizer.tsx`), which means a pizza rung in here
- * is built from the same steps, priced by the same code, and reaches the kitchen
- * in the same shape as one ordered online. What was excluded was never the
- * counter's rare traffic; it was most of the menu.
- *
- * **A phone order can be a delivery.** It was pickup-only, which meant the one
- * thing the phone is actually used for — "can you bring it round" — had to be
- * written on paper and kept out of the system entirely, taking the address, the
- * delivery fee and the HST on it with it. The address goes through exactly the
- * same validation as a website order: same Hamilton/postal-code check, same
- * radius test against the store origin, same fee. An address the website would
- * refuse is refused here too, and the counter is told why.
+ * The whole menu can be rung in, through the *same* customizer the website
+ * mounts (`app/menu/ItemCustomizer.tsx`), so a pizza rung in here is built from
+ * the same steps, priced by the same code, and reaches the kitchen in the same
+ * shape as one ordered online. A phone order can be a delivery, and its address
+ * goes through exactly the same validation as a website order.
  */
 
-import { useCallback, useEffect, useState, useSyncExternalStore, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
 import { cashChange, parseCashTender, compareMenuPrice, formatMoney, isWithinWeeklyAvailability, type WeeklyAvailability } from "@/lib/domain";
 import { drinkSummary } from "@/lib/drink-slots";
 import { useServerQuote } from "@/app/menu/useServerQuote";
 import { buildPassPrntDrawerUri, buildPassPrntUri, shouldUsePassPrnt } from "@/lib/passprnt";
 import { capturePassPrntResult } from "@/lib/passprnt-result";
 import { centsToQualify, formatEntryNumber } from "@/lib/giveaway";
+import { orderEditRefusal } from "@/lib/order-edit";
+import type { ToppingPlacement } from "@/lib/domain";
 import {
   GenericCustomizer,
   PizzaCustomizer,
@@ -54,14 +62,9 @@ import type { Dashboard } from "@/app/staff/StaffPortal";
 
 /**
  * Two identical items are one line with a quantity of two; two pizzas built
- * differently are two lines.
- *
- * Merging on the product alone was safe while nothing here could be customized.
- * It is not any more: a pepperoni and a Hawaiian are both "Large Pizza", and
- * collapsing them would send one of the two to the kitchen as a copy of the
- * other. So the whole build is the identity — every choice, in a stable order,
- * because `{cheese, crust}` and `{crust, cheese}` are the same pizza and must
- * stringify the same way.
+ * differently are two lines. The whole build is the identity — every choice, in
+ * a stable order, because `{cheese, crust}` and `{crust, cheese}` are the same
+ * pizza and must stringify the same way.
  */
 function buildSignature(item: BuiltItem): string {
   return JSON.stringify([
@@ -111,11 +114,13 @@ type Quote = {
     discountCents: number;
     taxCents: number;
     deliveryFeeCents: number;
+    tipCents?: number;
     totalCents: number;
     giftCardAppliedCents: number;
     amountDueCents: number;
   };
-  issues: Array<{ index: number | null; message: string }>;
+  issues: Array<{ index: number | null; message: string; code?: string }>;
+  appliedPromotions?: Array<{ id: string; name: string; discountCents: number }>;
   /** Null until a code is entered. `message` says why one did not come off. */
   coupon: { code: string; accepted: boolean; message: string | null } | null;
   /** Null until a gift card code is entered. Never carries the code itself. */
@@ -133,6 +138,7 @@ type PlacedOrder = {
   duplicate?: boolean;
   orderNumber?: string;
   totalCents?: number;
+  previousTotalCents?: number;
   /** What is left to collect once a gift card has paid its part. */
   amountDueCents?: number;
   giftCardAppliedCents?: number;
@@ -143,13 +149,95 @@ type PlacedOrder = {
   error?: string;
 };
 
+type Tender = "cash" | "card" | "later";
+
+/** The order being changed, as it was when it was loaded into the till. */
+type EditTarget = {
+  id: string;
+  orderNumber: string;
+  updatedAt: number;
+  previousTotalCents: number;
+  channel: string;
+  contactRedacted: boolean;
+};
+
+/**
+ * What the last placed or edited order needs said about it once it is in.
+ *
+ * Kept in localStorage as well as state because PassPRNT prints by leaving the
+ * page and coming back to it, which reloads the till. Without this the change
+ * to give and the "print again" button disappeared at the exact moment they
+ * were needed.
+ */
+type Done = {
+  at: number;
+  orderNumber: string;
+  edited: boolean;
+  /** Money that changed hands at the till, if any, and which way. */
+  collectedCents: number;
+  refundCents: number;
+  tender: Tender | null;
+  changeCents: number | null;
+  changeBreakdown: string | null;
+  note: string;
+  printOrder: Record<string, unknown> | null;
+  /** The print could not be handed off from the tap; the button must be pressed. */
+  printPending: boolean;
+  /** The pending print should still open the drawer when it goes. */
+  drawerWithPrint: boolean;
+};
+
+const DONE_KEY = "p62.till.lastOrder";
+const DONE_TTL_MS = 20 * 60_000;
+
+function readDone(): Done | null {
+  try {
+    const raw = window.localStorage.getItem(DONE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Done;
+    return Date.now() - Number(parsed.at) < DONE_TTL_MS ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDone(done: Done | null) {
+  try {
+    if (done) window.localStorage.setItem(DONE_KEY, JSON.stringify(done));
+    else window.localStorage.removeItem(DONE_KEY);
+  } catch {
+    // Private mode or storage full: the on-screen state still works.
+  }
+}
+
 const BIRTHDAY_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 const NEVER_CHANGES = () => () => {};
 const NO_PRINT_RESULT = () => null;
 
-export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftChange }: { dashboard: Dashboard; onPlaced: () => Promise<void>; active?: boolean; onDraftChange?: (dirty: boolean) => void }) {
+/** What the Live orders board calls to send an order to the till for editing. */
+export type TillApi = { startEdit: (order: Record<string, unknown>) => void };
+
+export function StaffOrderEntry({
+  dashboard,
+  onPlaced,
+  active = true,
+  onDraftChange,
+  onExit,
+  newOrderCount = 0,
+  apiRef,
+}: {
+  dashboard: Dashboard;
+  onPlaced: () => Promise<void>;
+  active?: boolean;
+  onDraftChange?: (dirty: boolean) => void;
+  /** Leave the full-screen till for the rest of the admin. */
+  onExit?: () => void;
+  /** Website and phone orders not yet acknowledged, shown on the bar. */
+  newOrderCount?: number;
+  apiRef?: MutableRefObject<TillApi | null>;
+}) {
   const [channel, setChannel] = useState<"walk_in" | "phone">("walk_in");
   const [fulfilment, setFulfilment] = useState<"pickup" | "delivery">("pickup");
   const [name, setName] = useState("");
@@ -165,7 +253,9 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
   const [lines, setLines] = useState<BuiltItem[]>([]);
   // The product whose customizer is open, if any.
   const [building, setBuilding] = useState<CustomizerProduct | null>(null);
-  const [editing, setEditing] = useState<BuiltItem | undefined>();
+  const [editingLine, setEditingLine] = useState<BuiltItem | undefined>();
+  const [selectedLine, setSelectedLine] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const submittingRef = useRef(false);
   const submission = useRef<{ signature: string; key: string } | null>(null);
   const handoff = useRef(false);
@@ -176,44 +266,28 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
   }, []);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
-  const [lastPrintOrder, setLastPrintOrder] = useState<Record<string, unknown> | null>(null);
-  // Set when the order went in but its ticket could not be sent on its own;
-  // see `place`. The reprint button becomes the main action until it is tapped.
-  const [printPending, setPrintPending] = useState(false);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
-  // Read out over the phone as often as typed at a keyboard — the thank-you
-  // email tells customers to do exactly that, and until now there was nowhere
-  // at the counter to put it, so a code the website honours was refused by the
-  // one person the customer was talking to.
   const [couponInput, setCouponInput] = useState("");
   const [couponCode, setCouponCode] = useState("");
-  // Read out over the phone or off a phone screen at the counter. Its own box
-  // beside the promo one for the same reason as on the website: a promo code
-  // comes off the food before HST, a gift card pays the finished bill.
   const [giftCardInput, setGiftCardInput] = useState("");
   const [giftCardCode, setGiftCardCode] = useState("");
+  const [showCodes, setShowCodes] = useState(false);
+  const [orderSearch, setOrderSearch] = useState("");
+  const [sheet, setSheet] = useState<"customer" | "payment" | "orders" | null>(null);
+  const [tender, setTender] = useState<Tender>("cash");
+  // For an edit: whether the customer already paid the old total at the till.
+  const [alreadyPaid, setAlreadyPaid] = useState(true);
   // Cash handed over, in dollars as typed. Kept as the raw string so someone
   // half way through "20" is not shown change for C$2.
   const [cashGiven, setCashGiven] = useState("");
-  /**
-   * The order the money is still being counted for.
-   *
-   * The till clears itself the moment an order is sent to the kitchen, which is
-   * a beat *before* the cash changes hands — so without this the total to make
-   * change from disappears at the exact moment someone needs it. Held until the
-   * next order is started.
-   */
-  const [settled, setSettled] = useState<{ orderNumber: string; dueCents: number; giftCardCents: number } | null>(null);
+  // Restored from the last visit: see `Done` on why it outlives a reload.
+  const [done, setDone] = useState<Done | null>(() => (typeof window === "undefined" ? null : readDone()));
 
   /**
-   * What is on the menu right now, for this kind of order.
-   *
-   * The only exclusions left are the ones the server would enforce anyway:
-   * hidden, sold out, waiting on owner setup, or not offered for the fulfilment
-   * the counter has selected. Offering a pickup-only special on a delivery
-   * ticket produces an order that is rejected after it has been keyed in with a
-   * customer on the phone.
+   * What is on the menu right now, for this kind of order. The only exclusions
+   * are the ones the server would enforce anyway: hidden, sold out, waiting on
+   * owner setup, or not offered for the fulfilment the counter has selected.
    */
   const categoryOrder = new Map(dashboard.categories.map((category) => [category.id, category.display_order]));
   const sellable = dashboard.products
@@ -221,54 +295,43 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
       if (!product.active || product.sold_out || product.setup_required || !isWithinWeeklyAvailability(product.configuration.availability as WeeklyAvailability | undefined)) return false;
       return Boolean(fulfilment === "delivery" ? product.delivery_eligible : product.pickup_eligible);
     })
-    // Same order the website shows: categories in menu order, cheapest first
-    // inside each one. The counter reads down a price column while a customer
-    // is on the phone, so a category whose items are in seed order costs time.
+    // Same order the website shows: categories in menu order, cheapest first.
     .sort((left, right) =>
       (categoryOrder.get(left.category_id) ?? 0) - (categoryOrder.get(right.category_id) ?? 0)
       || compareMenuPrice(left, right));
 
-  // Read straight off the same settings row the storefront reads, so a pizza
-  // built at the counter is charged for a half topping exactly as one built at
-  // home is.
   const operations = (dashboard.settings.operations?.value ?? {}) as Record<string, unknown>;
   const halfToppingUnitsBps = Number(operations.halfToppingUnitsBps ?? 5_000);
   const activeToppings = dashboard.toppings.filter((topping) => topping.active);
-  const toppingNames = new Map(dashboard.toppings.map((topping) => [topping.id, topping.name]));
+  const toppingNames = useMemo(() => new Map(dashboard.toppings.map((topping) => [topping.id, topping.name])), [dashboard.toppings]);
   const buildingVariations = building
     ? dashboard.variations.filter((variation) => variation.product_id === building.id && variation.active)
     : [];
 
   const categories = dashboard.categories.filter((category) => category.active && sellable.some((product) => product.category_id === category.id));
-  const selectedCategory = categories.find((category) => category.id === categoryId);
-  // Searching crosses categories so staff can find an item without knowing its group.
-  const matching = search.trim()
+  const categoryIndex = new Map(categories.map((category, index) => [category.id, index]));
+  // Always a category on screen: there is no "pick a category" page any more.
+  const shownCategoryId = categories.some((category) => category.id === categoryId) ? categoryId : categories[0]?.id ?? null;
+  const searching = Boolean(search.trim());
+  const matching = searching
     ? sellable.filter((product) => `${product.name} ${dashboard.categories.find((category) => category.id === product.category_id)?.name ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()))
-    : selectedCategory ? sellable.filter((product) => product.category_id === categoryId) : [];
+    : sellable.filter((product) => product.category_id === shownCategoryId);
 
+  const quoteChannel = editTarget ? (editTarget.channel === "walk_in" ? "walk_in" : "phone") : channel;
   const body = useCallback(
     (extra: Record<string, unknown> = {}) => ({
-      channel,
+      channel: quoteChannel,
       fulfilment,
       customer: { name: name.trim() || "Counter", phone: phone.trim(), email: email.trim() },
-      // Encoded by the same function the website uses, so "extra cheese, no
-      // mushrooms, sauce on the side" survives the trip from a phone call
-      // exactly as it does from a browser.
+      // Encoded by the same function the website uses.
       items: toOrderItems(lines),
       schedule: { type: "asap" as const },
       paymentMethod: "pay_at_store" as const,
       tip: { type: "none" as const },
-      // Priced by the server like everything else here. A code that does not
-      // apply comes back as a message rather than a silent full-price total, so
-      // the counter can say why before the customer hands over money.
       ...(couponCode ? { couponCode } : {}),
-      // Priced by the server here too. The till never works out what a card is
-      // worth: it shows what the quote came back with.
       ...(giftCardCode ? { giftCardCode } : {}),
-      // City and province are fixed rather than asked for: the delivery area is
-      // a radius around one Hamilton store, so any other answer is an address
-      // the radius check would reject anyway, and two more fields to mistype
-      // while a customer is on the phone.
+      // City and province are fixed: the delivery area is a radius around one
+      // Hamilton store, so any other answer is one the radius check rejects.
       ...(fulfilment === "delivery"
         ? {
             address: {
@@ -283,14 +346,14 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
         : {}),
       ...extra,
     }),
-    [channel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines, couponCode, giftCardCode],
+    [quoteChannel, fulfilment, name, phone, email, line1, unit, postalCode, deliveryInstructions, lines, couponCode, giftCardCode],
   );
 
   // Re-priced by the server on every change. Sequenced so a slow earlier reply
   // cannot overwrite a newer total while someone is adding items quickly.
   const serialized = JSON.stringify(body({ quoteOnly: true }));
   const { quote, loading: quoteLoading, failed: quoteFailed, error: quoteError, retry: retryQuote } = useServerQuote<Quote>("/api/admin/orders", lines.length ? serialized : null, JSON.stringify([dashboard.settings, dashboard.products, dashboard.variations, dashboard.toppings]));
-  const dirty = Boolean(lines.length || building || name || phone || email || line1 || unit || postalCode || deliveryInstructions || couponInput || giftCardInput || birthMonth || birthDay);
+  const dirty = Boolean(lines.length || building || editTarget || name || phone || email || line1 || unit || postalCode || deliveryInstructions || couponInput || giftCardInput || birthMonth || birthDay);
   useEffect(() => { onDraftChange?.(dirty); }, [dirty, onDraftChange]);
   useEffect(() => {
     if (!dirty) return;
@@ -313,23 +376,38 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
     discountCents: 0,
     taxCents: 0,
     deliveryFeeCents: 0,
+    tipCents: 0,
     totalCents: 0,
     giftCardAppliedCents: 0,
     amountDueCents: 0,
   };
+  /**
+   * What stops this order going in. An edit ignores the whole-order checks
+   * about *placing* an order — hours, a paused website, a closure — because the
+   * order was already accepted; `editOrder` does not apply them either.
+   */
+  const blockingIssues = (quote?.issues ?? []).filter((issue) =>
+    !editTarget || issue.index !== null || issue.code === "DELIVERY_BELOW_MINIMUM" || issue.code === "GIFT_CARD_UNAVAILABLE");
+  const quoteUsable = Boolean(quote && !quoteLoading && (editTarget ? blockingIssues.length === 0 : quote.ok));
+
+  const clearDraft = () => {
+    setLines([]); setBuilding(null); setEditingLine(undefined); setSelectedLine(null); setEditTarget(null);
+    setName(""); setPhone(""); setEmail(""); setBirthMonth(""); setBirthDay("");
+    setLine1(""); setUnit(""); setPostalCode(""); setDeliveryInstructions("");
+    setCouponCode(""); setCouponInput(""); setGiftCardCode(""); setGiftCardInput(""); setShowCodes(false);
+    setCashGiven(""); setTender("cash"); setAlreadyPaid(true);
+    submission.current = null;
+  };
 
   /**
-   * Puts a built item on the receipt.
-   *
-   * An identical build adds a quantity rather than a second line — a till that
-   * shows "1 × Poutine" four times is harder to check against the bag — but two
-   * pizzas built differently stay apart, because they are different pizzas.
+   * Puts a built item on the receipt. An identical build adds a quantity
+   * rather than a second line; two pizzas built differently stay apart.
    */
   const add = (item: BuiltItem) => {
     setMessage(null);
     setBuilding(null);
-    setEditing(undefined);
-    if (settled) { setSettled(null); setCashGiven(""); }
+    setEditingLine(undefined);
+    if (done && !lines.length) { setDone(null); writeDone(null); }
     setLines((current) => {
       const signature = buildSignature(item);
       const existing = current.find((line) => buildSignature(line) === signature);
@@ -362,33 +440,96 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
         .filter((line) => line.quantity > 0),
     );
 
-  // Its own control rather than "press − until it disappears". Taking a wrong
-  // item off a six-quantity line meant six taps, and a till that makes undoing a
-  // mistake slower than making it is a till people work around.
-  const removeLine = (key: string) => setLines((current) => current.filter((line) => line.key !== key));
+  const removeLine = (key: string) => { setLines((current) => current.filter((line) => line.key !== key)); setSelectedLine(null); };
 
   const editLine = (line: BuiltItem) => {
     const product = dashboard.products.find((entry) => entry.id === line.productId);
     if (!product) { setMessage({ tone: "bad", text: "This item is no longer in the menu. Remove it and choose another item." }); return; }
-    setEditing(line); setBuilding(product);
+    setEditingLine(line); setBuilding(product);
   };
   const saveLine = (line: BuiltItem) => {
-    setLines((current) => current.map((entry) => entry.key === editing?.key ? { ...line, key: entry.key } : entry));
-    setBuilding(null); setEditing(undefined);
+    setLines((current) => current.map((entry) => entry.key === editingLine?.key ? { ...line, key: entry.key } : entry));
+    setBuilding(null); setEditingLine(undefined);
   };
-  const closeBuilder = () => { setBuilding(null); setEditing(undefined); };
+  const closeBuilder = () => { setBuilding(null); setEditingLine(undefined); };
   const discard = () => {
-    if (!window.confirm("Discard this unfinished order?")) return;
-    setLines([]); closeBuilder(); setName(""); setPhone(""); setEmail(""); setBirthMonth(""); setBirthDay("");
-    setLine1(""); setUnit(""); setPostalCode(""); setDeliveryInstructions(""); setCouponCode(""); setCouponInput("");
-    setGiftCardCode(""); setGiftCardInput(""); setCashGiven(""); setSettled(null); setMessage(null); submission.current = null;
+    if (!window.confirm(editTarget ? `Stop editing ${editTarget.orderNumber.replace("P62-", "#")}? The order stays as it was.` : "Discard this unfinished order?")) return;
+    clearDraft(); setMessage(null); setSheet(null);
   };
 
-  // What the printer app reported on its way back. Previously deleted unread,
-  // so a ticket that never printed looked exactly like one that did. This
-  // screen has no print-dialog fallback of its own, so it points at the board,
-  // which does — and says the order is safe first, because the thing staff
-  // reach for when a ticket fails to appear is entering it a second time.
+  /**
+   * Loads a placed order back into the till for editing.
+   *
+   * Each saved item is turned back into what the customizer builds, from the
+   * snapshot the server stored when it was ordered — so an edited pizza opens
+   * in the customizer with its toppings, halves and omissions as they were.
+   */
+  const startEdit = (order: Record<string, unknown>) => {
+    const refusal = orderEditRefusal(order);
+    if (refusal) { setMessage({ tone: "bad", text: refusal }); setSheet(null); return; }
+    if (dirty && !editTarget && !window.confirm("Put the order you are ringing in aside and edit this one instead? The unfinished order will be discarded.")) return;
+    const toppingIds = new Map(dashboard.toppings.map((topping) => [topping.name, topping.id]));
+    const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
+    const missing: string[] = [];
+    const built: BuiltItem[] = [];
+    for (const item of items) {
+      const product = dashboard.products.find((entry) => entry.id === item.productId);
+      const snapshot = (item.snapshot ?? {}) as Record<string, unknown>;
+      if (!product) { missing.push(String(item.productName ?? "An item")); continue; }
+      const toppings = Array.isArray(snapshot.toppings) ? (snapshot.toppings as Array<{ toppingId: string; placement: ToppingPlacement }>) : [];
+      const omissions = Array.isArray(snapshot.recipeOmissions) ? (snapshot.recipeOmissions as string[]) : [];
+      const modifiers = Array.isArray(snapshot.modifiers) ? (snapshot.modifiers as BuiltItem["modifiers"]) : [];
+      built.push({
+        key: crypto.randomUUID(),
+        productId: product.id,
+        name: String(item.productName ?? product.name),
+        categoryId: product.category_id,
+        variationId: typeof snapshot.variationId === "string" ? snapshot.variationId : undefined,
+        variationName: item.variationName ? String(item.variationName) : undefined,
+        quantity: Number(item.quantity ?? 1),
+        unitPriceCents: Number(item.unitPriceCents ?? product.base_price_cents),
+        taxable: Boolean(product.taxable),
+        toppings: toppings.length ? toppings.map((entry) => ({ toppingId: entry.toppingId, placement: entry.placement, name: toppingNames.get(entry.toppingId) ?? entry.toppingId })) : undefined,
+        omitToppings: omissions.length ? omissions.map((label) => toppingIds.get(label) ?? label) : undefined,
+        modifiers: modifiers?.length ? modifiers : undefined,
+        extraCheese: snapshot.extraCheese ? true : undefined,
+        specialInstructions: item.instructions ? String(item.instructions) : undefined,
+        freeDelivery: Boolean(product.configuration?.freeDelivery),
+      });
+    }
+    const address = (order.address ?? null) as Record<string, string> | null;
+    clearDraft();
+    setEditTarget({
+      id: String(order.id),
+      orderNumber: String(order.order_number ?? ""),
+      updatedAt: Number(order.updated_at ?? 0),
+      previousTotalCents: Number(order.total_cents ?? 0),
+      channel: String(order.channel ?? "phone"),
+      contactRedacted: Boolean(order.contactRedacted),
+    });
+    setChannel(order.channel === "walk_in" ? "walk_in" : "phone");
+    setFulfilment(order.fulfilment === "delivery" ? "delivery" : "pickup");
+    setName(String(order.customer_name ?? "") === "Counter" ? "" : String(order.customer_name ?? ""));
+    setPhone(order.customer_phone ? String(order.customer_phone) : "");
+    setEmail(order.customer_email ? String(order.customer_email) : "");
+    setLine1(address?.line1 ?? "");
+    setUnit(address?.unit ?? "");
+    setPostalCode(address?.postalCode ?? "");
+    setDeliveryInstructions(order.instructions ? String(order.instructions) : "");
+    setLines(built);
+    setDone(null); writeDone(null);
+    setSheet(null);
+    setMessage(missing.length
+      ? { tone: "bad", text: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} no longer on the menu and ${missing.length === 1 ? "was" : "were"} left off. Add a replacement before saving.` }
+      : { tone: "ok", text: `Editing ${String(order.order_number ?? "").replace("P62-", "#")}. Change what you need, then tap Save changes.${Number(order.discount_cents ?? 0) > 0 ? " It had a discount: if that came from a promo code, enter the code again under Promo code." : ""}` });
+  };
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = { startEdit };
+    return () => { apiRef.current = null; };
+  });
+
+  // What the printer app reported on its way back.
   const printResult = useSyncExternalStore(NEVER_CHANGES, capturePassPrntResult, NO_PRINT_RESULT);
   const printFailure = printResult && !printResult.ok ? printResult.message : null;
 
@@ -399,36 +540,130 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
     return callback.toString();
   };
 
-  const printPlacedOrder = (order: Record<string, unknown>, printedAt: number): boolean => {
+  /**
+   * Hands the ticket to PassPRNT. Must run inside the tap's own handler:
+   * Android allows the handoff only on a direct gesture. `openDrawer` kicks the
+   * drawer as the ticket prints — the payment tap asks for it, a reprint not.
+   */
+  const printTicket = (order: Record<string, unknown>, printedAt: number, openDrawer: boolean): boolean => {
     if (!shouldUsePassPrnt(window.navigator.userAgent)) return false;
-    // Counter entry does not distinguish cash from card, so automatic printing
-    // must never kick the drawer. Opening it is always a separate staff tap.
     handoff.current = true;
-    window.location.assign(buildPassPrntUri({
-      order,
-      toppingNames,
-      printedAt,
-      callbackUrl: passPrntCallback(),
-    }));
+    window.location.assign(buildPassPrntUri({ order, toppingNames, printedAt, callbackUrl: passPrntCallback(), openDrawer }));
     return true;
   };
 
-  // The till is where the cash actually changes hands, so the drawer belongs on
-  // this screen too rather than only on the Live orders board. Kept inside the
-  // click handler: Android allows the PassPRNT handoff only on a direct gesture.
+  // Kept for change, a swapped note or a drawer that did not open with the
+  // payment. Inside the click handler for the same Android reason as above.
   const openCashDrawer = () => {
-    if (!shouldUsePassPrnt(window.navigator.userAgent)) return;
+    if (!shouldUsePassPrnt(window.navigator.userAgent)) {
+      setMessage({ tone: "bad", text: "The cash drawer opens from the till tablet only." });
+      return;
+    }
     handoff.current = true;
     window.location.assign(buildPassPrntDrawerUri({ callbackUrl: passPrntCallback() }));
   };
 
-  const place = async (printRequestedAt: number) => {
-    if (submittingRef.current || !quote?.ok || quoteLoading || !lines.length || invalidTender) return;
+  // A birthday is filed against the customer's email or phone.
+  const birthdayChosen = Boolean(birthMonth && birthDay);
+  const birthdayReady = !editTarget && fulfilment === "pickup" && birthdayChosen && Boolean(email.trim() || phone.replace(/\D/g, "").length >= 10);
+
+  /**
+   * The money this tap moves.
+   *
+   * A new pickup: the amount due. An edit the customer already paid for: only
+   * the difference — more to collect, or some to give back. An edit not yet
+   * paid: the new total. A delivery moves no money at the counter; the driver
+   * collects the full amount at the door.
+   */
+  const differenceCents = editTarget ? totals.totalCents - editTarget.previousTotalCents : 0;
+  const collectCents = fulfilment === "delivery"
+    ? 0
+    : editTarget
+      ? (alreadyPaid ? Math.max(0, differenceCents) : totals.amountDueCents)
+      : totals.amountDueCents;
+  const refundCents = editTarget && fulfilment === "pickup" && alreadyPaid ? Math.max(0, -differenceCents) : 0;
+  const tenderUsed: Tender | null = collectCents > 0 ? tender : null;
+  const tenderedCents = parseCashTender(cashGiven);
+  const cashRounded = collectCents > 0 ? cashChange(collectCents, 0) : null;
+  const cash =
+    tenderUsed === "cash" && collectCents > 0 && cashGiven.trim() && tenderedCents !== null
+      ? cashChange(collectCents, tenderedCents)
+      : null;
+  const invalidTender = tenderUsed === "cash" && Boolean(cashGiven.trim() && (tenderedCents === null || (cash && cash.shortCents > 0)));
+  // Exact money and then the next few round notes above it: the common case
+  // needs no typing at all.
+  const quickTenders = cashRounded
+    ? [...new Set([cashRounded.roundedTotalCents, Math.ceil(cashRounded.roundedTotalCents / 500) * 500, 2000, 5000, 10_000])]
+        .filter((amount) => amount >= cashRounded.roundedTotalCents)
+        .sort((left, right) => left - right)
+        .slice(0, 4)
+    : [];
+  /** The drawer opens when money changes hands now, in or out. */
+  const drawerOpens = (tenderUsed === "cash" || tenderUsed === "card") || refundCents > 0;
+
+  const giveaway = dashboard.giveaway?.status === "open" ? dashboard.giveaway : null;
+  const giveawayShort = giveaway && lines.length && quote
+    ? centsToQualify(giveaway, { subtotalCents: totals.menuSubtotalCents, discountCents: totals.discountCents })
+    : null;
+
+  const finish = (result: PlacedOrder, edited: boolean, printRequestedAt: number, openDrawer: boolean) => {
+    const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
+    const canPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
+    // Android lets the page hand off to PassPRNT only for a few seconds after
+    // the tap. A slow placement (a delivery's address check) can outlast that
+    // window; then ask for one more tap instead of pretending.
+    const tapStillCounts = window.navigator.userActivation?.isActive ?? true;
+    const willPrint = canPrint && tapStillCounts;
+    const ref = String(result.orderNumber ?? "").replace("P62-", "#");
+    const entry = result.giveawayEntryNumber ? ` Giveaway entry #${formatEntryNumber(result.giveawayEntryNumber)} — tell the customer!` : "";
+    const birthdayNote = result.birthdaySaved ? " Birthday saved." : "";
+    const record: Done = {
+      at: Date.now(),
+      orderNumber: String(result.orderNumber ?? ""),
+      edited,
+      collectedCents: collectCents,
+      refundCents,
+      tender: tenderUsed,
+      changeCents: cash && cash.shortCents === 0 ? cash.changeCents : null,
+      changeBreakdown: cash && cash.shortCents === 0 && cash.breakdown.length ? cash.breakdown.map((part) => `${part.count} × ${part.label}`).join(" · ") : null,
+      note: `${edited ? `${ref} updated.` : `${ref} is in.`}${fulfilment === "delivery" ? ` The driver collects ${formatMoney(Number(result.amountDueCents ?? totals.amountDueCents))} at the door.` : ""}${entry}${birthdayNote}`,
+      printOrder: printable,
+      printPending: canPrint && !tapStillCounts,
+      drawerWithPrint: openDrawer,
+    };
+    setDone(record);
+    writeDone(record);
+    setMessage(null);
+    setSheet(null);
+    clearDraft();
+    onDraftChange?.(false);
+    // Launch before refreshing: an extra round trip can lose the tap.
+    if (printable && willPrint) printTicket(printable, printRequestedAt, openDrawer);
+    void onPlaced().catch(() => undefined);
+  };
+
+  const submit = async (printRequestedAt: number) => {
+    if (submittingRef.current || !quoteUsable || !quote || !lines.length || invalidTender) return;
+    const openDrawer = drawerOpens;
     submittingRef.current = true;
     setSubmitting(true);
     try {
       setMessage(null);
-      setPrintPending(false);
+      if (editTarget) {
+        const response = await fetch("/api/admin/orders", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body({ orderId: editTarget.id, expectedUpdatedAt: editTarget.updatedAt })),
+        });
+        const result = (await response.json()) as PlacedOrder;
+        if (!response.ok) {
+          setMessage({ tone: "bad", text: result.error ?? "That order could not be changed." });
+          retryQuote();
+          return;
+        }
+        finish(result, true, printRequestedAt, openDrawer);
+        return;
+      }
       const signature = JSON.stringify(body());
       if (submission.current?.signature !== signature) submission.current = { signature, key: `staff-${crypto.randomUUID()}-${crypto.randomUUID()}` };
       const response = await fetch("/api/admin/orders", {
@@ -437,8 +672,6 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
         body: JSON.stringify(body({
           idempotencyKey: submission.current.key,
           expectedAmountDueCents: quote.totals.amountDueCents,
-          // Only on a real placement, not the running quote: it changes nothing
-          // about the price, so it has no business triggering a re-quote.
           ...(birthdayReady ? { birthday: { month: Number(birthMonth), day: Number(birthDay) } } : {}),
         })),
       });
@@ -448,453 +681,456 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
         retryQuote();
         return;
       }
-      const printable = !result.duplicate && result.printOrder ? result.printOrder : null;
-      const canPrint = Boolean(printable && shouldUsePassPrnt(window.navigator.userAgent));
-      // Android lets the page hand off to PassPRNT only for a few seconds after
-      // the tap. A delivery waits on the address check against the delivery
-      // area, which can outlast that window, and the handoff then fails without a
-      // word while this screen claims the ticket is on its way. That is why phone
-      // deliveries were not printing. Once the tap has expired, ask for one more
-      // instead of pretending. Browsers without `userActivation` keep the old
-      // behaviour.
-      const tapStillCounts = window.navigator.userActivation?.isActive ?? true;
-      const willPrint = canPrint && tapStillCounts;
-      setPrintPending(canPrint && !tapStillCounts);
-      setLastPrintOrder(printable);
-      // Kept for the cash panel, from the server's committed total rather than
-      // the quote on screen — the money about to be counted has to be the money
-      // the order was actually created for.
-      setSettled({
-        orderNumber: result.orderNumber ?? "",
-        // **Amount due, not the order total.** A gift card has already paid its
-        // part, and change counted against the full bill would hand back money
-        // the customer never put on the counter.
-        dueCents: Number(result.amountDueCents ?? totals.amountDueCents),
-        giftCardCents: Number(result.giftCardAppliedCents ?? totals.giftCardAppliedCents),
-      });
-      // The entry number is said here as well as printed, because the person at
-      // the till is the one who tells a walk-in customer they are in.
-      const entry = result.giveawayEntryNumber ? ` Giveaway entry #${formatEntryNumber(result.giveawayEntryNumber)} — tell the customer!` : "";
-      const birthdayNote = result.birthdaySaved ? " Birthday saved." : "";
-      setMessage({
-        tone: "ok",
-        text: willPrint
-          ? `${result.orderNumber} is in. Sending its ticket to the printer…${entry}${birthdayNote}`
-          : canPrint
-            ? `${result.orderNumber} is in. Tap Print ticket below to print it.${entry}${birthdayNote}`
-            : `${result.orderNumber} is in. It is on the kitchen board now.${entry}${birthdayNote}`,
-      });
-      setLines([]);
-      setCouponInput("");
-      setCouponCode("");
-      setGiftCardInput("");
-      setGiftCardCode("");
-      setName("");
-      setPhone("");
-      setEmail("");
-      setBirthMonth("");
-      setBirthDay("");
-      setLine1("");
-      setUnit("");
-      setPostalCode("");
-      setDeliveryInstructions("");
-      submission.current = null;
-      onDraftChange?.(false);
-      // Launch before refreshing. Android permits the external-app handoff only
-      // while this still belongs to the staff member's placement tap; an extra
-      // dashboard round trip can lose it.
-      if (printable && willPrint) printPlacedOrder(printable, printRequestedAt);
-      await onPlaced().catch(() => setMessage({ tone: "ok", text: `${result.orderNumber} was saved. Refresh Live orders to see it.` }));
+      finish(result, false, printRequestedAt, openDrawer);
     } catch {
-      setMessage({ tone: "bad", text: "The request could not be confirmed. Retry this order; the same submission reference will prevent a duplicate." });
+      setMessage({ tone: "bad", text: editTarget
+        ? "The change could not be confirmed. Check the order on Live orders before trying again."
+        : "The request could not be confirmed. Retry this order; the same submission reference will prevent a duplicate." });
     } finally { submittingRef.current = false; setSubmitting(false); }
   };
 
-  /**
-   * The bill the cash is being counted against.
-   *
-   * The order just placed wins over the one being rung in, because that is the
-   * moment the money actually moves: the till has already cleared its lines and
-   * the customer is holding a twenty. Falls back to the live quote so change can
-   * be worked out before the order is sent, which is how a phone order taken and
-   * paid at the door is handled.
-   */
-  /**
-   * What the customer still owes in cash.
-   *
-   * The amount due, never the order total — and the nickel rounding below
-   * applies to *this*, because rounding is a property of handing over coins,
-   * not of the bill. A gift card pays to the cent; only what is left over can
-   * be rounded.
-   */
-  /**
-   * The giveaway, as the counter sees it: whether what is on the ticket earns
-   * an entry, and if not, how much more would. Worth saying out loud to a
-   * customer at $8.50 — it is the easiest add-on the counter will ever sell.
-   */
-  const giveaway = dashboard.giveaway?.status === "open" ? dashboard.giveaway : null;
-  const giveawayShort = giveaway && lines.length && quote
-    ? centsToQualify(giveaway, { subtotalCents: totals.menuSubtotalCents, discountCents: totals.discountCents })
-    : null;
-
-  // A birthday is filed against the customer's email or phone; with neither
-  // there is nobody to file it against.
-  const birthdayChosen = Boolean(birthMonth && birthDay);
-  const birthdayReady = fulfilment === "pickup" && birthdayChosen && Boolean(email.trim() || phone.replace(/\D/g, "").length >= 10);
-
-  const cashDueCents = settled ? settled.dueCents : totals.amountDueCents;
+  const itemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
   const quoteMoney = (cents: number) => lines.length && !quote ? "—" : formatMoney(cents);
-  const tenderedCents = parseCashTender(cashGiven);
-  const cash =
-    cashDueCents > 0 && cashGiven.trim() && tenderedCents !== null
-      ? cashChange(cashDueCents, tenderedCents)
-      : null;
-  // What the total settles to in coins that exist, shown whether or not an
-  // amount has been keyed in — it is the number to ask the customer for.
-  const cashRounded = cashDueCents > 0 ? cashChange(cashDueCents, 0) : null;
-  const invalidTender = Boolean(cashGiven.trim() && (tenderedCents === null || (cash && cash.shortCents > 0)));
-  /**
-   * The notes someone actually hands over, largest first.
-   *
-   * Exact money and then the next few round notes above the bill: four taps that
-   * cover most of what crosses a counter, so the common case needs no typing at
-   * all.
-   */
-  const quickTenders = cashRounded
-    ? [...new Set([cashRounded.roundedTotalCents, 2000, 5000, 10_000])]
-        .filter((amount) => amount >= cashRounded.roundedTotalCents)
-        .sort((left, right) => left - right)
-        .slice(0, 4)
-    : [];
+  const deliveryMissing = fulfilment === "delivery" && (!line1.trim() || !postalCode.trim() || (!phone.trim() && !editTarget?.contactRedacted));
+  const customerLabel = name.trim() || "Counter";
+  const ref = editTarget?.orderNumber.replace("P62-", "#");
+
+  /** The big button under the receipt. */
+  const chargeLabel = submitting
+    ? editTarget ? "Saving…" : "Sending to the kitchen…"
+    : lines.length && !quote
+      ? quoteFailed ? "Retry pricing" : "Pricing…"
+      : editTarget
+        ? `Save changes · ${formatMoney(totals.totalCents)}`
+        : fulfilment === "delivery"
+          ? `Send & print · ${formatMoney(totals.amountDueCents)}`
+          : totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
+            ? "Print · paid by gift card"
+            : `Charge ${formatMoney(totals.amountDueCents)}`;
+  const charge = () => {
+    if (lines.length && quoteFailed) { retryQuote(); return; }
+    if (deliveryMissing) { setSheet("customer"); return; }
+    setCashGiven("");
+    setTender(channel === "phone" && !editTarget ? "later" : "cash");
+    setSheet("payment");
+  };
+  // A delivery, or a bill a gift card settled outright, has no money to take
+  // at the counter, so it goes straight in from the receipt without the sheet.
+  const chargeGoesStraightIn = !editTarget && (fulfilment === "delivery" || (totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0));
+
+  const editableOrders = dashboard.orders.filter((order) => !orderEditRefusal(order));
+  const switchFulfilment = (next: "pickup" | "delivery") => {
+    setFulfilment(next);
+    if (next === "delivery" && (!line1.trim() || !postalCode.trim() || !phone.trim())) setSheet("customer");
+  };
 
   return (
-    <fieldset className="admin-stack admin-controls till-pos till-order-fields" disabled={submitting}>
-      <section className="staff-panel">
-        <div className="staff-panel-head">
-          <h2>Take an order</h2>{dirty ? <button type="button" className="staff-button" onClick={discard}>Discard draft</button> : null}
-          <div className="segmented-range" role="group" aria-label="Where the order came from">
-            <button className={channel === "walk_in" ? "active" : ""} aria-pressed={channel === "walk_in"} onClick={() => setChannel("walk_in")}>Walk-in</button>
-            <button className={channel === "phone" ? "active" : ""} aria-pressed={channel === "phone"} onClick={() => setChannel("phone")}>Phone</button>
-          </div>
-        </div>
-        <p className="editor-hint">Choose a category, tap an item, then send the ticket to the kitchen.</p>
-        <div className="segmented-range till-fulfilment" role="group" aria-label="Pickup or delivery">
-          <button className={fulfilment === "pickup" ? "active" : ""} aria-pressed={fulfilment === "pickup"} onClick={() => setFulfilment("pickup")}>Pickup</button>
-          <button className={fulfilment === "delivery" ? "active" : ""} aria-pressed={fulfilment === "delivery"} onClick={() => setFulfilment("delivery")}>Delivery</button>
-        </div>
-        <details className="till-customer" open={fulfilment === "delivery" || channel === "phone"}>
-        <summary>Customer details <small>{name || "Counter"}{phone ? ` · ${phone}` : ""}</small></summary>
-        <div className="settings-form">
-          <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" /></label>
-          <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
-          <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
-          {/* Pickup only, as the owner asked. Month and day, never a year. */}
-          {fulfilment === "pickup" ? (
-            <div className="till-birthday">
-              <span>Birthday · optional</span>
-              <div>
-                <select value={birthMonth} onChange={(event) => setBirthMonth(event.target.value)} aria-label="Birthday month">
-                  <option value="">Month</option>
-                  {BIRTHDAY_MONTHS.map((label, index) => <option key={label} value={String(index + 1)}>{label}</option>)}
-                </select>
-                <select value={birthDay} onChange={(event) => setBirthDay(event.target.value)} aria-label="Birthday day">
-                  <option value="">Day</option>
-                  {Array.from({ length: birthMonth ? DAYS_IN_MONTH[Number(birthMonth) - 1] : 31 }, (_, index) => <option key={index + 1} value={String(index + 1)}>{index + 1}</option>)}
-                </select>
-              </div>
-              <small>{birthdayChosen && !birthdayReady ? "Add their phone or email so we can find them on their birthday." : "No year — just so we can treat them on the day."}</small>
-            </div>
-          ) : null}
-        </div>
-        {/* The delivery fee, the radius check and the minimum all key off this,
-            and all three are enforced on the server — the same code path a
-            website delivery goes through. Nothing here is trusted. */}
-        {fulfilment === "delivery" ? (
-          <>
-            <div className="settings-form">
-              <label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} placeholder="123 King St E" autoComplete="off" /></label>
-              <label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="off" /></label>
-              <label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value.toUpperCase())} placeholder="L8N 1B2" autoComplete="off" spellCheck={false} /></label>
-              <label>Buzzer or directions · optional<input value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} autoComplete="off" /></label>
-            </div>
-            <p className="editor-hint">Hamilton, ON only — that is the whole delivery area, so the city is filled in for you. The address is checked against the delivery radius when the order is placed.</p>
-          </>
+    <fieldset className="pos" disabled={submitting}>
+      <header className="pos-bar">
+        {onExit ? (
+          <button type="button" className="pos-bar-exit" onClick={onExit}>
+            <span aria-hidden="true">←</span> Live orders{newOrderCount ? <b className="pos-badge">{newOrderCount}</b> : null}
+          </button>
         ) : null}
-        </details>
-      </section>
+        <div className="pos-seg" role="group" aria-label="Where the order came from">
+          <button type="button" aria-pressed={channel === "walk_in"} disabled={Boolean(editTarget)} onClick={() => setChannel("walk_in")}>Walk-in</button>
+          <button type="button" aria-pressed={channel === "phone"} disabled={Boolean(editTarget)} onClick={() => setChannel("phone")}>Phone</button>
+        </div>
+        <div className="pos-seg" role="group" aria-label="Pickup or delivery">
+          <button type="button" aria-pressed={fulfilment === "pickup"} onClick={() => switchFulfilment("pickup")}>Pickup</button>
+          <button type="button" aria-pressed={fulfilment === "delivery"} onClick={() => switchFulfilment("delivery")}>Delivery</button>
+        </div>
+        <button type="button" className={`pos-customer${deliveryMissing ? " pos-customer--needs" : ""}`} onClick={() => setSheet("customer")}>
+          <span aria-hidden="true" className="pos-customer-icon">👤</span>
+          <span><strong>{customerLabel}</strong><small>{deliveryMissing ? "Add address & phone" : phone ? phone : fulfilment === "delivery" ? `${line1}` : "Customer details"}</small></span>
+        </button>
+        <input className="pos-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search the menu" aria-label="Search the menu" />
+        <button type="button" className="pos-bar-button" onClick={() => { setOrderSearch(""); setSheet("orders"); }}>Edit an order</button>
+      </header>
 
-      <div className="staff-grid till-workspace">
-        <section className="staff-panel">
-          <div className="staff-panel-head"><h2>{search.trim() ? "Search results" : selectedCategory?.name ?? "Categories"}</h2>{selectedCategory || search.trim() ? <button className="staff-button" onClick={() => { setCategoryId(null); setSearch(""); }}>All categories</button> : <span className="live-chip">{sellable.length} items</span>}</div>
-          <input className="till-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search the menu" aria-label="Search the menu" />
-          {selectedCategory || search.trim() ? <nav className="till-category-tabs" aria-label="Menu categories">{categories.map((category) => <button key={category.id} aria-pressed={category.id === categoryId && !search.trim()} onClick={() => { setCategoryId(category.id); setSearch(""); }}>{category.name}</button>)}</nav> : <div className="till-categories">{categories.map((category, index) => <button className={`till-category till-category--${index % 5}`} key={category.id} onClick={() => setCategoryId(category.id)}><span className="till-category-icon" aria-hidden="true">{category.name.slice(0, 2).toUpperCase()}</span><strong>{category.name}</strong><small>{sellable.filter((product) => product.category_id === category.id).length} items <span aria-hidden="true">→</span></small></button>)}</div>}
-          <div className="till-grid">
-            {matching.map((product) => {
+      <div className="pos-body">
+        <nav className="pos-cats" aria-label="Menu categories">
+          {categories.map((category, index) => (
+            <button
+              type="button"
+              key={category.id}
+              className={`pos-cat pos-tone-${index % 6}`}
+              aria-pressed={!searching && category.id === shownCategoryId}
+              onClick={() => { setCategoryId(category.id); setSearch(""); }}
+            >
+              {category.name}
+            </button>
+          ))}
+        </nav>
+
+        <section className="pos-menu" aria-label={searching ? "Search results" : "Menu items"}>
+          {searching ? <p className="pos-menu-note">{matching.length} result{matching.length === 1 ? "" : "s"} for “{search.trim()}” <button type="button" onClick={() => setSearch("")}>Clear</button></p> : null}
+          <div className="pos-items">
+            {matching.flatMap((product) => {
+              const tone = `pos-tone-${(categoryIndex.get(product.category_id) ?? 0) % 6}`;
               const variations = dashboard.variations.filter((variation) => variation.product_id === product.id && variation.active);
-              // Anything with choices to make is one button that opens the
-              // customizer — including a pizza, whose sizes are choices made
-              // *inside* it. Listing a size per button would put the counter
-              // one tap from a pizza with no toppings on it.
+              // Anything with choices to make is one tile that opens the
+              // customizer — including a pizza, whose sizes are chosen inside it.
               if (needsCustomizing(product)) {
-                const from = variations.length
-                  ? Math.min(...variations.map((variation) => variation.base_price_cents))
-                  : product.base_price_cents;
-                return (
-                  <button className="till-button till-button--choices" key={product.id} onClick={() => { setBuilding(product); setEditing(undefined); }}>
+                const from = variations.length ? Math.min(...variations.map((variation) => variation.base_price_cents)) : product.base_price_cents;
+                return [(
+                  <button type="button" className={`pos-item ${tone}`} key={product.id} onClick={() => { setBuilding(product); setEditingLine(undefined); }}>
                     <strong>{product.name}</strong>
-                    <span>{product.configuration.staffOnly ? "Staff only · " : ""}Choose options</span>
-                    <b>{variations.length > 1 ? `from ${formatMoney(from)}` : formatMoney(from)}</b>
+                    <span className="pos-item-foot"><em>{product.configuration.staffOnly ? "Staff · " : ""}Options ›</em><b>{variations.length > 1 ? `from ${formatMoney(from)}` : formatMoney(from)}</b></span>
                   </button>
-                );
+                )];
               }
               if (variations.length) {
                 return variations.map((variation) => (
-                  <button className="till-button" key={variation.id} onClick={() => addPlain(product, variation)}>
+                  <button type="button" className={`pos-item ${tone}`} key={variation.id} onClick={() => addPlain(product, variation)}>
                     <strong>{product.name}</strong>
-                    <span>{variation.name}</span>
-                    <b>{formatMoney(variation.base_price_cents)}</b>
+                    <span className="pos-item-foot"><em>{variation.name}</em><b>{formatMoney(variation.base_price_cents)}</b></span>
                   </button>
                 ));
               }
-              return (
-                <button className="till-button" key={product.id} onClick={() => addPlain(product)}>
+              return [(
+                <button type="button" className={`pos-item ${tone}`} key={product.id} onClick={() => addPlain(product)}>
                   <strong>{product.name}</strong>
-                  {product.configuration.isNew ? <span>New</span> : product.configuration.staffOnly ? <span>Staff only</span> : null}
-                  <b>{formatMoney(product.base_price_cents)}</b>
+                  <span className="pos-item-foot"><em>{product.configuration.isNew ? "New" : product.configuration.staffOnly ? "Staff only" : ""}</em><b>{formatMoney(product.base_price_cents)}</b></span>
                 </button>
-              );
+              )];
             })}
-            {!matching.length && (selectedCategory || search.trim()) ? <div className="staff-empty">No items found. Try another search or category.</div> : null}
+            {!matching.length ? <div className="pos-empty">No items found. Try another search or category.</div> : null}
           </div>
         </section>
 
-        <aside className="staff-panel till-ticket">
-          <div className="staff-panel-head"><h2>This order</h2><span className="live-chip">{lines.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
-          <div className="till-lines">
-            {lines.map((line, index) => (
-              <div className="till-line" key={line.key}>
-                <div>
-                  <strong>{line.name}</strong>
-                  {/* Everything chosen, spelled out. Someone reading the order
-                      back over the phone reads this, and a "no onions" that only
-                      exists inside the payload is a "no onions" that gets made
-                      with onions. */}
-                  {describeChoices(line, toppingNames).map((choice, index) => <small key={`${index}-${choice}`}>{choice}</small>)}
-                  <em className="till-line-price">{quote?.lines.find((entry) => entry.index === index) ? formatMoney(quote.lines.find((entry) => entry.index === index)!.unitPriceCents) : "—"} each</em>
-                </div>
-                <div className="till-quantity">
-                  <button onClick={() => setQuantity(line.key, -1)} aria-label={`One fewer ${line.name}`}>−</button>
-                  <span>{line.quantity}</span>
-                  <button onClick={() => setQuantity(line.key, 1)} aria-label={`One more ${line.name}`}>+</button>
-                  <button onClick={() => editLine(line)}>Edit</button>
-                  <button className="till-remove" onClick={() => removeLine(line.key)} aria-label={`Remove ${line.name} from this order`}>Remove</button>
-                </div>
-              </div>
-            ))}
-            {!lines.length ? <div className="staff-empty">Tap the menu to start.</div> : null}
-          </div>
-
-          {/* The promo code, entered by whoever is on the phone. The thank-you
-              email tells customers to read their code out, so the counter needs
-              somewhere to put it — and the server decides what it is worth, the
-              same as it does online. */}
-          <div className="coupon-row">
-            <input
-              value={couponInput}
-              onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
-              placeholder="Promo code"
-              aria-label="Promo code"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            {couponCode ? (
-              <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
-            ) : (
-              <button type="button" disabled={!couponInput.trim()} onClick={() => setCouponCode(couponInput.trim())}>Apply</button>
-            )}
-          </div>
-          {quote?.coupon ? (
-            <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">
-              {quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}
-            </p>
-          ) : null}
-
-          {/* The gift card, in its own box. Someone on the phone reads a code
-              out and the counter has to be able to tell, before taking any
-              money, whether it covers the bill and what is left on it. */}
-          {quote?.giftCard?.accepted ? (
-            <div className="giftcard-applied" role="status">
-              <strong><span aria-hidden="true">✓</span> Gift card ending {quote.giftCard.suffix}</strong>
-              <div><span>Balance on the card</span><b>{formatMoney(quote.giftCard.balanceCents)}</b></div>
-              <div><span>Applied to this order</span><b>−{formatMoney(quote.giftCard.appliedCents)}</b></div>
-              <div><span>Left after this order</span><b>{formatMoney(quote.giftCard.remainingAfterCents)}</b></div>
-              <button type="button" className="text-button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>
-                Remove gift card
-              </button>
+        <aside className="pos-ticket" aria-label="This order">
+          <div className={`pos-ticket-head${editTarget ? " pos-ticket-head--edit" : ""}`}>
+            <div>
+              <h2>{editTarget ? `Editing ${ref}` : "Current order"}</h2>
+              <small>
+                {editTarget ? `Was ${formatMoney(editTarget.previousTotalCents)} · ` : ""}
+                {itemCount} item{itemCount === 1 ? "" : "s"} · {channel === "phone" ? "Phone" : "Walk-in"} · {fulfilment === "delivery" ? "Delivery" : "Pickup"}
+              </small>
             </div>
-          ) : (
-            <>
-              <div className="coupon-row">
-                <input
-                  value={giftCardInput}
-                  onChange={(event) => setGiftCardInput(event.target.value.toUpperCase())}
-                  placeholder="Gift card code"
-                  aria-label="Gift card code"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  spellCheck={false}
-                />
-                {giftCardCode ? (
-                  <button type="button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>Remove</button>
-                ) : (
-                  <button type="button" disabled={!giftCardInput.trim()} onClick={() => setGiftCardCode(giftCardInput.trim())}>Apply</button>
-                )}
-              </div>
-              {quote?.giftCard && !quote.giftCard.accepted ? (
-                <p className="coupon-bad" role="status">{quote.giftCard.message}</p>
-              ) : null}
-            </>
-          )}
-
-          <div className="checkout-totals">
-            <div><span>Subtotal</span><b>{quoteMoney(totals.menuSubtotalCents)}</b></div>
-            {totals.discountCents > 0 ? <div className="checkout-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
-            {totals.deliveryFeeCents > 0 ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}
-            <div><span>HST</span><b>{quoteMoney(totals.taxCents)}</b></div>
-            {/* The bill, then the tender. `Total` is what the HST was worked out
-                on and what prints on the ticket; it does not move when a card is
-                applied. `Amount due` is what changes hands. */}
-            <div className="checkout-grand-total"><span>Total</span><b>{quoteMoney(totals.totalCents)}</b></div>
-            {totals.giftCardAppliedCents > 0 ? (
-              <>
-                <div className="checkout-giftcard">
-                  <span>Gift card{quote?.giftCard ? ` ending ${quote.giftCard.suffix}` : ""}</span>
-                  <b>−{formatMoney(totals.giftCardAppliedCents)}</b>
-                </div>
-                <div className="checkout-grand-total checkout-amount-due">
-                  <span>Amount due</span><b>{formatMoney(totals.amountDueCents)}</b>
-                </div>
-              </>
-            ) : null}
+            {dirty ? <button type="button" className="pos-link" onClick={discard}>{editTarget ? "Cancel edit" : "Clear"}</button> : null}
           </div>
 
-          {giveawayShort !== null ? (
-            <p className={giveawayShort === 0 ? "giveaway-hint giveaway-hint--in" : "giveaway-hint"} role="status">
-              {giveawayShort === 0
-                ? "✓ This order enters the Thanksgiving Giveaway."
-                : `${formatMoney(giveawayShort)} more food (before tax) enters them in the Thanksgiving Giveaway.`}
-            </p>
-          ) : null}
-
-          {quote?.issues.map((issue, index) => (
-            <p className="cart-blocker" role="status" key={`${index}-${issue.message}`}>{issue.message}</p>
-          ))}
-
-          {quoteLoading ? <p role="status">Updating order prices…</p> : null}
-          {quoteFailed ? <p className="form-error" role="alert">{quoteError} <button type="button" onClick={retryQuote}>Retry pricing</button></p> : null}
-          {/*
-            Counting out the change.
-
-            Mental arithmetic under a queue is where a till loses money, in both
-            directions and without anybody noticing for a week. So the amount
-            handed over is keyed in and the change is worked out here — including
-            the nickel rounding, which is a rule about coins rather than about
-            the bill, and the breakdown, because "a toonie, a loonie and a
-            nickel" is something a hand can do and "C$3.05" is something a head
-            has to.
-
-            It stays on screen after the order is sent, keyed to that order's
-            committed total: the money moves *after* the ticket prints, and a
-            panel that cleared itself with the lines would vanish at exactly the
-            wrong moment.
-          */}
-          {cashRounded ? (
-            <div className="till-cash">
-              <div className="till-cash-head">
-                <h3>{settled ? "Last completed order" : "Payment for this order"}</h3>
-                <span>{settled ? `${settled.orderNumber || "Last order"} · ${formatMoney(cashDueCents)}` : `This order · ${formatMoney(cashDueCents)}`}</span>
-              </div>
-              {(settled ? settled.giftCardCents : totals.giftCardAppliedCents) > 0 ? (
-                <p className="till-cash-note">
-                  Gift card already paid {formatMoney(settled ? settled.giftCardCents : totals.giftCardAppliedCents)} of this order.
-                  Only the {formatMoney(cashDueCents)} below is collected.
-                </p>
-              ) : null}
-              {cashRounded.roundingCents !== 0 ? (
-                <p className="till-cash-note">
-                  Cash rounds to {formatMoney(cashRounded.roundedTotalCents)} — there is no penny.
-                  The bill stays {formatMoney(cashDueCents)} on card or online.
-                </p>
-              ) : null}
-              <div className="till-cash-change-total"><span>Amount due</span><b>{formatMoney(cashDueCents)}</b></div>
-              <div className="till-cash-quick">
-                {quickTenders.map((amount) => (
-                  <button type="button" key={amount} onClick={() => setCashGiven((amount / 100).toFixed(2))}>
-                    {amount === cashRounded.roundedTotalCents ? `Exact · ${formatMoney(amount)}` : formatMoney(amount)}
+          <div className="pos-lines">
+            {done && !lines.length ? (
+              <div className="pos-done" role="status">
+                <strong>✓ {done.note}</strong>
+                {done.collectedCents > 0 && done.tender !== "later" ? (
+                  <small className="pos-done-paid">Took {formatMoney(done.collectedCents)} by {done.tender === "card" ? "card" : "cash"}</small>
+                ) : null}
+                {done.changeCents !== null ? (
+                  done.changeCents > 0
+                    ? <p>Change {formatMoney(done.changeCents)}{done.changeBreakdown ? <small>{done.changeBreakdown}</small> : null}</p>
+                    : <p>No change to give</p>
+                ) : null}
+                {done.refundCents > 0 ? <p>Give back {formatMoney(done.refundCents)}</p> : null}
+                {done.printOrder ? (
+                  <button
+                    type="button"
+                    className={done.printPending ? "pos-primary" : "pos-secondary"}
+                    onClick={() => {
+                      const pending = done.printPending;
+                      const next = { ...done, printPending: false };
+                      setDone(next); writeDone(next);
+                      printTicket(done.printOrder!, Date.now(), pending && done.drawerWithPrint);
+                    }}
+                  >
+                    {done.printPending ? "Print ticket now" : "Print ticket again"}
                   </button>
-                ))}
+                ) : null}
               </div>
-              <label className="till-cash-input">
-                Cash received · C$
-                <input
-                  inputMode="decimal"
-                  value={cashGiven}
-                  onChange={(event) => setCashGiven(event.target.value)}
-                  placeholder="0.00"
-                  aria-label="Cash received"
-                />
-              </label>
-              {cashGiven.trim() && tenderedCents === null ? <p className="form-error" role="alert">Enter a valid cash amount, such as 20 or 20.00.</p> : null}
-              {cash ? (
-                cash.shortCents > 0 ? (
-                  <p className="till-cash-short" role="status">
-                    {formatMoney(cash.shortCents)} still to come.
-                  </p>
-                ) : (
-                  <div className="till-cash-change" role="status">
-                    <div className="till-cash-change-total"><span>Change to give</span><b>{formatMoney(cash.changeCents)}</b></div>
-                    {cash.breakdown.length ? (
-                      <p className="till-cash-breakdown">
-                        {cash.breakdown.map((part) => `${part.count} × ${part.label}`).join(" · ")}
-                      </p>
+            ) : null}
+            {lines.map((line, index) => {
+              const priced = quote?.lines.find((entry) => entry.index === index);
+              const selected = selectedLine === line.key;
+              return (
+                <div className={`pos-line${selected ? " pos-line--selected" : ""}`} key={line.key}>
+                  <button type="button" className="pos-line-main" onClick={() => setSelectedLine(selected ? null : line.key)} aria-expanded={selected}>
+                    <span className="pos-line-qty">{line.quantity}×</span>
+                    <span className="pos-line-name">
+                      <strong>{line.name}</strong>
+                      {/* Everything chosen, spelled out: a "no onions" that only
+                          exists inside the payload gets made with onions. */}
+                      {describeChoices(line, toppingNames).map((choice, choiceIndex) => <small key={`${choiceIndex}-${choice}`}>{choice}</small>)}
+                    </span>
+                    <b>{priced ? formatMoney(priced.lineTotalCents) : "—"}</b>
+                  </button>
+                  {selected ? (
+                    <div className="pos-line-tools">
+                      <div className="pos-qty">
+                        <button type="button" onClick={() => setQuantity(line.key, -1)} aria-label={`One fewer ${line.name}`}>−</button>
+                        <span>{line.quantity}</span>
+                        <button type="button" onClick={() => setQuantity(line.key, 1)} aria-label={`One more ${line.name}`}>+</button>
+                      </div>
+                      <button type="button" onClick={() => editLine(line)}>Change options</button>
+                      <button type="button" className="pos-danger" onClick={() => removeLine(line.key)}>Remove</button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+            {!lines.length && !done ? <div className="pos-empty">Tap an item to start the order.</div> : null}
+          </div>
+
+          <div className="pos-ticket-foot">
+            {message ? <p className={message.tone === "bad" ? "pos-msg pos-msg--bad" : "pos-msg"} role="status">{message.text}</p> : null}
+            {printFailure ? <p className="pos-msg pos-msg--bad" role="alert">{printFailure} The order is safe — print it from <b>Live orders</b>.</p> : null}
+
+            {lines.length ? (
+              <>
+                <button type="button" className="pos-link pos-codes-toggle" onClick={() => setShowCodes((value) => !value)} aria-expanded={showCodes}>
+                  {showCodes ? "Hide promo & gift card" : couponCode || giftCardCode ? "Promo / gift card applied ›" : "Promo code or gift card ›"}
+                </button>
+                {showCodes ? (
+                  <div className="pos-codes">
+                    <div className="pos-code-row">
+                      <input value={couponInput} onChange={(event) => setCouponInput(event.target.value.toUpperCase())} placeholder="Promo code" aria-label="Promo code" autoComplete="off" spellCheck={false} />
+                      {couponCode
+                        ? <button type="button" onClick={() => { setCouponCode(""); setCouponInput(""); }}>Remove</button>
+                        : <button type="button" disabled={!couponInput.trim()} onClick={() => setCouponCode(couponInput.trim())}>Apply</button>}
+                    </div>
+                    {quote?.coupon ? <p className={quote.coupon.accepted ? "coupon-ok" : "coupon-bad"} role="status">{quote.coupon.accepted ? `${quote.coupon.code} applied.` : quote.coupon.message}</p> : null}
+                    {editTarget ? null : quote?.giftCard?.accepted ? (
+                      <div className="giftcard-applied" role="status">
+                        <strong><span aria-hidden="true">✓</span> Gift card ending {quote.giftCard.suffix}</strong>
+                        <div><span>Balance on the card</span><b>{formatMoney(quote.giftCard.balanceCents)}</b></div>
+                        <div><span>Applied to this order</span><b>−{formatMoney(quote.giftCard.appliedCents)}</b></div>
+                        <div><span>Left after this order</span><b>{formatMoney(quote.giftCard.remainingAfterCents)}</b></div>
+                        <button type="button" className="text-button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>Remove gift card</button>
+                      </div>
                     ) : (
-                      <p className="till-cash-breakdown">Nothing to hand back.</p>
+                      <>
+                        <div className="pos-code-row">
+                          <input value={giftCardInput} onChange={(event) => setGiftCardInput(event.target.value.toUpperCase())} placeholder="Gift card code" aria-label="Gift card code" autoComplete="off" autoCapitalize="characters" spellCheck={false} />
+                          {giftCardCode
+                            ? <button type="button" onClick={() => { setGiftCardCode(""); setGiftCardInput(""); }}>Remove</button>
+                            : <button type="button" disabled={!giftCardInput.trim()} onClick={() => setGiftCardCode(giftCardInput.trim())}>Apply</button>}
+                        </div>
+                        {quote?.giftCard && !quote.giftCard.accepted ? <p className="coupon-bad" role="status">{quote.giftCard.message}</p> : null}
+                      </>
                     )}
                   </div>
-                )
-              ) : null}
-              <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
-            </div>
-          ) : (
-            <button className="staff-button" onClick={openCashDrawer}>Open cash drawer</button>
-          )}
-          <button className="primary-button" disabled={!lines.length || submitting || quoteLoading || !quote?.ok || invalidTender} onClick={() => void place(Date.now())}>
-            {submitting
-              ? "Sending to the kitchen…"
-              : lines.length && !quote
-                ? quoteFailed ? "Retry pricing before payment" : "Waiting for current prices…"
-              : totals.giftCardAppliedCents > 0 && totals.amountDueCents === 0
-                ? `${fulfilment === "delivery" ? "Send & print" : "Print"} · paid by gift card`
-                : `${fulfilment === "delivery" ? "Send & print" : "Take payment & print"} · ${formatMoney(totals.amountDueCents)}`}
-          </button>
-          <small className="secure-note">{fulfilment === "delivery" ? "Marked as payment on delivery. The driver takes cash or the card machine at the door." : "Marked paid at the store. Ring it through the card machine or take cash as usual."}</small>
-          {printFailure ? <p className="form-error" role="alert">{printFailure} The order is safe on the kitchen board — print it from <b>Live orders</b>.</p> : null}
-          {message ? <p className={message.tone === "bad" ? "form-error" : "admin-message"} role="status">{message.text}</p> : null}
-          {lastPrintOrder ? (
+                ) : null}
+
+                <div className="pos-totals">
+                  <div><span>Subtotal</span><b>{quoteMoney(totals.menuSubtotalCents)}</b></div>
+                  {totals.discountCents > 0 ? <div className="pos-discount"><span>Discount</span><b>−{formatMoney(totals.discountCents)}</b></div> : null}
+                  {totals.deliveryFeeCents > 0 ? <div><span>Delivery</span><b>{formatMoney(totals.deliveryFeeCents)}</b></div> : null}
+                  {Number(totals.tipCents ?? 0) > 0 ? <div><span>Tip</span><b>{formatMoney(Number(totals.tipCents))}</b></div> : null}
+                  <div><span>HST</span><b>{quoteMoney(totals.taxCents)}</b></div>
+                  {totals.giftCardAppliedCents > 0 ? <div><span>Gift card</span><b>−{formatMoney(totals.giftCardAppliedCents)}</b></div> : null}
+                </div>
+                {giveawayShort !== null ? (
+                  <p className={giveawayShort === 0 ? "giveaway-hint giveaway-hint--in" : "giveaway-hint"} role="status">
+                    {giveawayShort === 0 ? "✓ This order enters the Thanksgiving Giveaway." : `${formatMoney(giveawayShort)} more food (before tax) enters the Thanksgiving Giveaway.`}
+                  </p>
+                ) : null}
+                {blockingIssues.map((issue, index) => <p className="cart-blocker" role="status" key={`${index}-${issue.message}`}>{issue.message}</p>)}
+                {quoteFailed ? <p className="pos-msg pos-msg--bad" role="alert">{quoteError}</p> : null}
+              </>
+            ) : null}
+
             <button
-              className={printPending ? "primary-button" : "staff-button"}
+              type="button"
+              className="pos-charge"
+              disabled={!lines.length || submitting || (!quoteFailed && !quoteUsable)}
               onClick={() => {
-                setPrintPending(false);
-                printPlacedOrder(lastPrintOrder, Date.now());
+                if (chargeGoesStraightIn && !deliveryMissing && !(lines.length && quoteFailed)) { void submit(Date.now()); return; }
+                charge();
               }}
             >
-              {printPending ? "Print ticket" : "Print last ticket again"}
+              <span>{chargeLabel}</span>
+              {lines.length && !chargeGoesStraightIn && !editTarget && totals.giftCardAppliedCents > 0 ? <small>Total {quoteMoney(totals.totalCents)} · gift card −{formatMoney(totals.giftCardAppliedCents)}</small> : null}
             </button>
-          ) : null}
-
-
+            <div className="pos-foot-tools">
+              <button type="button" onClick={openCashDrawer}>Open cash drawer</button>
+              {done?.printOrder && lines.length ? (
+                <button type="button" onClick={() => printTicket(done.printOrder!, Date.now(), false)}>Reprint {done.orderNumber.replace("P62-", "#")}</button>
+              ) : null}
+            </div>
+          </div>
         </aside>
       </div>
+
+      {sheet === "customer" ? (
+        <div className="pos-sheet-backdrop" role="presentation" onMouseDown={() => setSheet(null)}>
+          <section className="pos-sheet" role="dialog" aria-modal="true" aria-labelledby="pos-customer-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="pos-sheet-head">
+              <h2 id="pos-customer-title">Customer</h2>
+              <button type="button" className="pos-sheet-close" onClick={() => setSheet(null)} aria-label="Close">×</button>
+            </div>
+            <div className="pos-form">
+              <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" autoFocus /></label>
+              {editTarget?.contactRedacted ? (
+                <p className="pos-hint">Phone and email are hidden for your account; they stay as they were.</p>
+              ) : (
+                <>
+                  <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
+                  <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
+                </>
+              )}
+              {fulfilment === "pickup" && !editTarget ? (
+                <div className="till-birthday">
+                  <span>Birthday · optional</span>
+                  <div>
+                    <select value={birthMonth} onChange={(event) => setBirthMonth(event.target.value)} aria-label="Birthday month">
+                      <option value="">Month</option>
+                      {BIRTHDAY_MONTHS.map((label, index) => <option key={label} value={String(index + 1)}>{label}</option>)}
+                    </select>
+                    <select value={birthDay} onChange={(event) => setBirthDay(event.target.value)} aria-label="Birthday day">
+                      <option value="">Day</option>
+                      {Array.from({ length: birthMonth ? DAYS_IN_MONTH[Number(birthMonth) - 1] : 31 }, (_, index) => <option key={index + 1} value={String(index + 1)}>{index + 1}</option>)}
+                    </select>
+                  </div>
+                  <small>{birthdayChosen && !birthdayReady ? "Add their phone or email so we can find them on their birthday." : "No year — just so we can treat them on the day."}</small>
+                </div>
+              ) : null}
+              {/* The delivery fee, the radius check and the minimum all key off
+                  this, and all three are enforced on the server. */}
+              {fulfilment === "delivery" ? (
+                <>
+                  <label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} placeholder="123 King St E" autoComplete="off" /></label>
+                  <label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="off" /></label>
+                  <label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value.toUpperCase())} placeholder="L8N 1B2" autoComplete="off" spellCheck={false} /></label>
+                  <label>Buzzer or directions · optional<input value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} autoComplete="off" /></label>
+                  <p className="pos-hint">Hamilton, ON only. The address is checked against the delivery radius when the order is sent.</p>
+                </>
+              ) : null}
+            </div>
+            <button type="button" className="pos-primary" onClick={() => setSheet(null)}>Done</button>
+          </section>
+        </div>
+      ) : null}
+
+      {sheet === "orders" ? (
+        <div className="pos-sheet-backdrop" role="presentation" onMouseDown={() => setSheet(null)}>
+          <section className="pos-sheet pos-sheet--wide" role="dialog" aria-modal="true" aria-labelledby="pos-orders-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="pos-sheet-head">
+              <h2 id="pos-orders-title">Edit an order</h2>
+              <button type="button" className="pos-sheet-close" onClick={() => setSheet(null)} aria-label="Close">×</button>
+            </div>
+            <p className="pos-hint">Orders still owed at the store can be changed until they are completed. Card-paid and gift-card orders are changed from History.</p>
+            <input className="pos-order-search" type="search" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} placeholder="Order number, name or phone" aria-label="Find an order" autoFocus />
+            <div className="pos-order-list">
+              {dashboard.orders.filter((order) => {
+                const query = orderSearch.trim().toLowerCase().replace(/^#/, "");
+                if (!query) return true;
+                return `${String(order.order_number).replace("P62-", "")} ${String(order.customer_name ?? "")} ${String(order.customer_phone ?? "")}`.toLowerCase().includes(query);
+              }).map((order) => {
+                const refusal = orderEditRefusal(order);
+                return (
+                  <button type="button" key={String(order.id)} className="pos-order-row" disabled={Boolean(refusal)} title={refusal ?? undefined} onClick={() => startEdit(order)}>
+                    <b>{String(order.order_number).replace("P62-", "#")}</b>
+                    <span>
+                      <strong>{String(order.customer_name)}</strong>
+                      <small>
+                        {String(order.fulfilment) === "delivery" ? "Delivery" : "Pickup"} · {new Date(Number(order.created_at)).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })}
+                        {" · "}{((order.items as unknown[]) ?? []).length} item{((order.items as unknown[]) ?? []).length === 1 ? "" : "s"}
+                        {refusal ? (String(order.payment_method) === "online" ? " · paid online" : " · can't edit") : ""}
+                      </small>
+                    </span>
+                    <em>{formatMoney(Number(order.total_cents))}</em>
+                  </button>
+                );
+              })}
+              {!dashboard.orders.length ? <div className="pos-empty">No active orders right now.</div> : null}
+              {dashboard.orders.length && !editableOrders.length ? <div className="pos-empty">None of the active orders can be edited here.</div> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {sheet === "payment" ? (
+        <div className="pos-sheet-backdrop" role="presentation" onMouseDown={() => { if (!submitting) setSheet(null); }}>
+          <section className="pos-sheet pos-sheet--pay" role="dialog" aria-modal="true" aria-labelledby="pos-pay-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="pos-sheet-head">
+              <h2 id="pos-pay-title">{editTarget ? `Save changes to ${ref}` : "Payment"}</h2>
+              <button type="button" className="pos-sheet-close" onClick={() => setSheet(null)} aria-label="Close" disabled={submitting}>×</button>
+            </div>
+
+            {editTarget ? (
+              <div className="pos-pay-diff">
+                <div><span>Was</span><b>{formatMoney(editTarget.previousTotalCents)}</b></div>
+                <div><span>Now</span><b>{formatMoney(totals.totalCents)}</b></div>
+                <div className={differenceCents > 0 ? "pos-up" : differenceCents < 0 ? "pos-down" : ""}><span>Difference</span><b>{differenceCents > 0 ? "+" : differenceCents < 0 ? "−" : ""}{formatMoney(Math.abs(differenceCents))}</b></div>
+              </div>
+            ) : null}
+
+            {editTarget && fulfilment === "pickup" ? (
+              <div className="pos-tabs" role="group" aria-label="Has the customer paid already?">
+                <button type="button" aria-pressed={alreadyPaid} onClick={() => { setAlreadyPaid(true); setCashGiven(""); }}>Already paid {formatMoney(editTarget.previousTotalCents)}</button>
+                <button type="button" aria-pressed={!alreadyPaid} onClick={() => { setAlreadyPaid(false); setCashGiven(""); }}>Not paid yet</button>
+              </div>
+            ) : null}
+
+            {fulfilment === "delivery" ? (
+              <p className="pos-pay-note">Delivery: the driver collects {formatMoney(totals.amountDueCents)} at the door. Nothing is taken at the counter.</p>
+            ) : refundCents > 0 ? (
+              <div className="pos-pay-due pos-pay-due--refund"><span>Give back</span><b>{formatMoney(refundCents)}</b></div>
+            ) : collectCents === 0 ? (
+              <p className="pos-pay-note">Nothing more to collect.</p>
+            ) : (
+              <>
+                <div className="pos-pay-due"><span>{editTarget && alreadyPaid ? "Collect the difference" : "Amount due"}</span><b>{formatMoney(collectCents)}</b></div>
+                <div className="pos-tabs" role="group" aria-label="How they are paying">
+                  <button type="button" aria-pressed={tender === "cash"} onClick={() => setTender("cash")}>Cash</button>
+                  <button type="button" aria-pressed={tender === "card"} onClick={() => { setTender("card"); setCashGiven(""); }}>Card</button>
+                  {channel === "phone" || (editTarget && !alreadyPaid) ? <button type="button" aria-pressed={tender === "later"} onClick={() => { setTender("later"); setCashGiven(""); }}>Pay at pickup</button> : null}
+                </div>
+                {tender === "cash" && cashRounded ? (
+                  <div className="pos-cash">
+                    {cashRounded.roundingCents !== 0 ? <p className="pos-hint">Cash rounds to {formatMoney(cashRounded.roundedTotalCents)} — there is no penny.</p> : null}
+                    <div className="pos-quick">
+                      {quickTenders.map((amount) => (
+                        <button type="button" key={amount} aria-pressed={tenderedCents === amount} onClick={() => setCashGiven((amount / 100).toFixed(2))}>
+                          {amount === cashRounded.roundedTotalCents ? <><small>Exact</small>{formatMoney(amount)}</> : formatMoney(amount)}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="pos-cash-input">Cash received · C$
+                      <input inputMode="decimal" value={cashGiven} onChange={(event) => setCashGiven(event.target.value)} placeholder="0.00" aria-label="Cash received" />
+                    </label>
+                    {cashGiven.trim() && tenderedCents === null ? <p className="pos-msg pos-msg--bad" role="alert">Enter a valid cash amount, such as 20 or 20.00.</p> : null}
+                    {cash ? (
+                      cash.shortCents > 0
+                        ? <p className="pos-msg pos-msg--bad" role="status">{formatMoney(cash.shortCents)} still to come.</p>
+                        : (
+                          <div className="pos-change" role="status">
+                            <div><span>Change to give</span><b>{formatMoney(cash.changeCents)}</b></div>
+                            <p>{cash.breakdown.length ? cash.breakdown.map((part) => `${part.count} × ${part.label}`).join(" · ") : "Nothing to hand back."}</p>
+                          </div>
+                        )
+                    ) : null}
+                  </div>
+                ) : tender === "card" ? (
+                  <p className="pos-pay-note">Run {formatMoney(collectCents)} on the card machine, then tap below.</p>
+                ) : (
+                  <p className="pos-pay-note">The customer pays {formatMoney(collectCents)} when they pick up. The drawer stays shut.</p>
+                )}
+              </>
+            )}
+
+            {message?.tone === "bad" ? <p className="pos-msg pos-msg--bad" role="alert">{message.text}</p> : null}
+            <button
+              type="button"
+              className="pos-primary pos-pay-go"
+              disabled={submitting || !quoteUsable || invalidTender}
+              onClick={() => { void submit(Date.now()); }}
+            >
+              {submitting
+                ? editTarget ? "Saving…" : "Sending…"
+                : editTarget
+                  ? drawerOpens ? "Save changes & print · opens drawer" : "Save changes & print"
+                  : tenderUsed === "later"
+                    ? "Send & print · pay at pickup"
+                    : "Take payment & print"}
+            </button>
+            <small className="pos-pay-foot">
+              {drawerOpens ? "Opens the cash drawer and prints the ticket." : "Prints the ticket. The drawer stays shut."}
+            </small>
+          </section>
+        </div>
+      ) : null}
 
       {/* The same customizer the website mounts, over the till. `key` is the
           product id so switching straight from one product to another starts a
@@ -902,24 +1138,24 @@ export function StaffOrderEntry({ dashboard, onPlaced, active = true, onDraftCha
       {building && active ? (
         building.product_type === "pizza" ? (
           <PizzaCustomizer
-            key={editing?.key ?? building.id}
+            key={editingLine?.key ?? building.id}
             product={building}
             variations={buildingVariations}
             toppings={activeToppings}
             halfToppingUnitsBps={halfToppingUnitsBps}
-            initialItem={editing}
-            onSave={editing ? saveLine : undefined}
+            initialItem={editingLine}
+            onSave={editingLine ? saveLine : undefined}
             onClose={closeBuilder}
             onAdd={add}
           />
         ) : (
           <GenericCustomizer
-            key={editing?.key ?? building.id}
+            key={editingLine?.key ?? building.id}
             product={building}
             toppings={activeToppings}
             halfToppingUnitsBps={halfToppingUnitsBps}
-            initialItem={editing}
-            onSave={editing ? saveLine : undefined}
+            initialItem={editingLine}
+            onSave={editingLine ? saveLine : undefined}
             onClose={closeBuilder}
             onAdd={add}
           />

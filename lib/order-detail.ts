@@ -35,7 +35,7 @@ async function toppingNameMap(): Promise<Map<string, string>> {
 async function loadOrderItems(orderId: string, toppingNames: Map<string, string>) {
   const items = await getD1()
     .prepare(
-      `SELECT id, product_name, variation_name, quantity, unit_price_cents,
+      `SELECT id, product_id, product_name, variation_name, quantity, unit_price_cents,
               line_total_cents, snapshot_json, instructions
        FROM order_items WHERE order_id = ? ORDER BY created_at`,
     )
@@ -45,6 +45,7 @@ async function loadOrderItems(orderId: string, toppingNames: Map<string, string>
     const snapshot = safeJson(String(item.snapshot_json ?? "{}"), {}) as ItemSnapshot;
     return {
       id: item.id,
+      productId: item.product_id,
       productName: item.product_name,
       variationName: item.variation_name,
       quantity: item.quantity,

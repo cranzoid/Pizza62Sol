@@ -18,10 +18,10 @@
  * owner runs the business on.
  */
 import { AuthError, authErrorResponse, requireStaff } from "@/lib/auth";
-import { ensureDatabase, writeAudit } from "@/db/runtime";
+import { ensureDatabase, getD1, writeAudit } from "@/db/runtime";
 import { hasPermission } from "@/lib/domain";
 import { logFailure } from "@/lib/log";
-import { createOrder, OrderValidationError, quoteOrder, type OrderRequest } from "@/lib/order-service";
+import { createOrder, editOrder, OrderValidationError, quoteOrder, type EditOrderRequest, type OrderRequest } from "@/lib/order-service";
 import { staffOrderContext } from "@/lib/order-policy";
 import { loadOrderCore, loadOrderDetail, redactOrderContact } from "@/lib/order-detail";
 import { saveBirthday } from "@/lib/customer-contacts";
@@ -140,5 +140,65 @@ export async function POST(request: Request) {
     if (error instanceof AuthError) return authErrorResponse(error);
     const reference = logFailure("orders.staff_entry", error);
     return Response.json({ error: "That order could not be created.", reference }, { status: 500 });
+  }
+}
+
+/**
+ * Changing an order that has already been placed. See `editOrder` for what can
+ * be edited and why the order keeps its number.
+ *
+ * Same permission as ringing one in: whoever may take an order on a customer's
+ * behalf may change it on their behalf.
+ *
+ * Someone without `view_customer_contact` was shown the order with its phone
+ * and email hidden, so whatever their till sends back for those two fields is
+ * not an edit — it is the blank they were shown. The stored values are kept.
+ */
+export async function PUT(request: Request) {
+  try {
+    await ensureDatabase();
+    const user = await requireStaff(request, "view_orders");
+    if (user.role !== "owner" && !hasPermission(user.role, user.permissions, "manual_order_override")) {
+      throw new AuthError(403, "You do not have permission to change orders on behalf of a customer.");
+    }
+    const body = (await request.json()) as EditOrderRequest & { orderId?: string };
+    const orderId = typeof body.orderId === "string" ? body.orderId : "";
+    if (!orderId) return Response.json({ error: "Choose the order to change." }, { status: 400 });
+    const canViewContact = user.role === "owner" || user.permissions.includes("view_customer_contact");
+    if (!canViewContact) {
+      const stored = await getD1()
+        .prepare("SELECT customer_phone, customer_email FROM orders WHERE id = ?")
+        .bind(orderId)
+        .first<{ customer_phone: string | null; customer_email: string | null }>();
+      body.customer = {
+        ...body.customer,
+        phone: stored?.customer_phone ?? "",
+        email: stored?.customer_email ?? "",
+      };
+    }
+    const result = await editOrder(orderId, body, { staffUserId: user.id });
+    await writeAudit({
+      actorId: user.id,
+      action: "order.staff_edit",
+      targetType: "order",
+      targetId: orderId,
+      previous: { totalCents: result.previousTotalCents },
+      next: { orderNumber: result.orderNumber, totalCents: result.totalCents },
+    });
+    const printOrder = await loadPrintOrder(orderId).catch((error) => {
+      logFailure("orders.staff_edit_ticket", error);
+      return null;
+    });
+    return Response.json({
+      ...result,
+      printOrder: printOrder ? { ...printOrder, edited_at: Date.now() } : null,
+    });
+  } catch (error) {
+    if (error instanceof OrderValidationError) {
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+    if (error instanceof AuthError) return authErrorResponse(error);
+    const reference = logFailure("orders.staff_edit", error);
+    return Response.json({ error: "That order could not be changed.", reference }, { status: 500 });
   }
 }
