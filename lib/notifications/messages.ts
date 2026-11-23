@@ -41,6 +41,7 @@ import {
 } from "@/lib/giveaway";
 import { loadGiveaway, recordGiveawayEntrySafely } from "@/lib/giveaway-store";
 import { publicBaseUrl } from "@/lib/notifications/config";
+import { MONDAY_WINGS_OFFER } from "@/lib/promo-campaigns";
 import { orderChannelTicketLabel } from "@/lib/order-channels";
 import type { FeedbackReward } from "@/lib/rewards";
 import {
@@ -508,6 +509,62 @@ export async function renderGiveawayNudge(input: {
     // A commercial message under CASL like the email, so it names the sender
     // and says how to stop — STOP is handled by /api/notifications/sms/inbound.
     smsBody: `${input.test ? "[TEST] " : ""}Pizza 62 turns one! Every ${minimum}+ order before tax is an entry to win ${giveaway.prize}. Entries close ${closes}.${base ? ` ${base.replace(/^https?:\/\//, "")}/giveaway` : ""} Reply STOP to opt out.`,
+  };
+}
+
+/**
+ * The Monday Wings announcement, by email and text.
+ *
+ * A commercial message under CASL like the giveaway nudge: names the sender
+ * and says how to stop. The text is plain ASCII on purpose — one non-GSM
+ * character (a curly quote, a middle dot) turns a 160-character message into
+ * a 70-character-per-segment one and triples the cost.
+ */
+export async function renderMondayWingsPromo(input: {
+  name: string;
+  unsubscribeHref: string;
+  test?: boolean;
+}): Promise<RenderedMessage> {
+  const base = await publicBaseUrl();
+  const offer = MONDAY_WINGS_OFFER;
+  const greeting = input.name.trim() ? `Hi ${firstName(input.name)}` : "Hi there";
+  const link = base ? `${base}/?utm_source=email&utm_medium=promo&utm_campaign=monday_wings` : null;
+  const sections: Section[] = [
+    {
+      type: "paragraph",
+      text: `${greeting}, it's Monday, and Monday means wings at Pizza 62: ${offer.priceLabel}, up to ${offer.cap} of them.`,
+    },
+    {
+      type: "facts",
+      rows: [
+        { label: "The deal", value: `Wings ${offer.priceLabel}` },
+        { label: "How many", value: `Up to ${offer.cap} wings per order` },
+        { label: "Your way", value: `${capitalise(offer.style)}, with your choice of sauce` },
+        { label: "When", value: "Every Monday" },
+        { label: "How", value: `${offer.how} - order online or call us` },
+      ],
+    },
+  ];
+  if (link) sections.push({ type: "button", label: "Order Monday Wings", href: link });
+  const { emailHtml, emailText } = build({
+    eyebrow: "Monday Wings",
+    heading: `Wings are ${offer.priceLabel} today.`,
+    tone: "feedback",
+    preheader: `Up to ${offer.cap} wings, classic or breaded, any sauce. Pickup only.`,
+    signoff: "See you at the counter. - Everyone at Pizza 62",
+    baseUrl: base,
+    sections,
+    unsubscribe: {
+      reason: "You're receiving this because you've ordered from Pizza 62.",
+      href: input.unsubscribeHref,
+    },
+  });
+  const host = base ? base.replace(/^https?:\/\//, "") : "pizza62.ca";
+  return {
+    emailSubject: `${input.test ? "[TEST] " : ""}Monday Wings are ${offer.priceLabel} today at Pizza 62`,
+    emailText,
+    emailHtml,
+    smsBody: `${input.test ? "[TEST] " : ""}Pizza 62: Monday Wings are ${offer.priceLabel} today! Up to ${offer.cap}, any sauce, ${offer.how.toLowerCase()}. Order: ${host}/?utm_source=sms&utm_campaign=monday_wings Reply STOP to opt out.`,
   };
 }
 

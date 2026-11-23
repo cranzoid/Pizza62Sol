@@ -98,6 +98,8 @@ export type QueueResult = { sendId: string; queued: number; skipped: number; not
 export async function queueNudge(input: {
   campaign: string; nudge: NudgeKind; perDay: number; actorId: string; channel?: NudgeChannel;
   source?: AudienceSource; mode?: SendMode; intervalMinutes?: number; requestKey?: string; now?: number;
+  /** Nothing is scheduled at or after this. Defaults to the giveaway's close; promo campaigns pass the end of their day. */
+  endsAt?: number;
 }): Promise<QueueResult> {
   const channel = input.channel ?? "email";
   const blocker = await nudgeChannelBlocker(channel);
@@ -129,7 +131,7 @@ export async function queueNudge(input: {
       FROM notification_outbox WHERE kind = $1 AND (status IN ('pending', 'retrying', 'sending', 'pending_provider_setup')
         OR (status = 'sent' AND sent_at >= $2))`, [kind, now - 86_400_000]);
     const schedule = planOutreachSchedule({ count: audience.recipients.length, perDay, intervalMinutes, now,
-      endsAt: giveaway?.endsAt ?? now + 30 * 86_400_000, reserved: reserved.rows.map((row) => Number(row.at)) });
+      endsAt: input.endsAt ?? giveaway?.endsAt ?? now + 30 * 86_400_000, reserved: reserved.rows.map((row) => Number(row.at)) });
     const recipients = audience.recipients.slice(0, schedule.length);
     const sendId = crypto.randomUUID();
     const skipped = audience.total - audience.recipients.length;

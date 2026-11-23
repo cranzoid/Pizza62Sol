@@ -49,12 +49,14 @@ import {
   renderGiftCardReceipt,
   renderGiveawayEntry,
   renderGiveawayNudge,
+  renderMondayWingsPromo,
   renderLowRatingAlert,
   renderRestaurantNewOrder,
   type OrderSnapshot,
 } from "@/lib/notifications/messages";
 import { activeFeedbackReward } from "@/lib/rewards";
 import { giveawayStatus, isNudgeKind } from "@/lib/giveaway";
+import { isMondayWingsCampaign, mondayWingsIsOn } from "@/lib/promo-campaigns";
 import { entriesForEmail, loadGiveaway } from "@/lib/giveaway-store";
 import { isOptedOut, isSmsOptedOut, unsubscribeQuery } from "@/lib/marketing-consent";
 
@@ -590,6 +592,28 @@ async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
     case "giveaway_nudge": {
       const to = row.recipient ?? "";
       if (!to) throw new PermanentFailure("nudge has no recipient");
+      if (isMondayWingsCampaign(payload.campaign)) {
+        if (!payload.test && !mondayWingsIsOn(payload.campaign, Date.now())) throw new SkipDelivery("the Monday Wings offer is not on today");
+        if (!payload.test && (await isOptedOut(to))) throw new SkipDelivery("recipient unsubscribed");
+        const promoBase = await publicBaseUrl();
+        if (!promoBase) throw new ParkForSetup("a promotion needs PUBLIC_BASE_URL for its unsubscribe link");
+        const promoQuery = await unsubscribeQuery(to);
+        const promo = await renderMondayWingsPromo({
+          name: typeof payload.name === "string" ? payload.name : "",
+          unsubscribeHref: `${promoBase}/unsubscribe?${promoQuery}`,
+          test: Boolean(payload.test),
+        });
+        return await sendEmail({
+          to,
+          subject: promo.emailSubject,
+          text: promo.emailText,
+          html: promo.emailHtml,
+          headers: {
+            "List-Unsubscribe": `<${promoBase}/api/marketing/unsubscribe?${promoQuery}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          },
+        });
+      }
       const variant = payload.variant ?? payload.nudge;
       if (!isNudgeKind(variant)) throw new PermanentFailure(`unknown nudge "${String(variant)}"`);
       const giveaway = await loadGiveaway();
@@ -634,6 +658,16 @@ async function deliver(row: OutboxRow): Promise<DeliveryReceipt | void> {
     case "giveaway_nudge_sms": {
       const to = row.recipient ?? "";
       if (!to) throw new PermanentFailure("text nudge has no recipient");
+      if (isMondayWingsCampaign(payload.campaign)) {
+        if (!payload.test && !mondayWingsIsOn(payload.campaign, Date.now())) throw new SkipDelivery("the Monday Wings offer is not on today");
+        if (!payload.test && (await isSmsOptedOut(to))) throw new SkipDelivery("recipient replied STOP");
+        if (!(await marketingSmsEnabled())) throw new ParkForSetup("marketing texts are switched off");
+        const promo = await renderMondayWingsPromo({ name: "", unsubscribeHref: "", test: Boolean(payload.test) });
+        const promoBase = await publicBaseUrl();
+        return await sendSms({ to, body: promo.smsBody,
+          ...(promoBase ? { statusCallback: `${promoBase}/api/notifications/sms/status?id=${encodeURIComponent(row.id)}` } : {}),
+        });
+      }
       const variant = payload.variant ?? payload.nudge;
       if (!isNudgeKind(variant)) throw new PermanentFailure(`unknown nudge "${String(variant)}"`);
       const giveaway = await loadGiveaway();
