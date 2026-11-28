@@ -13,7 +13,7 @@ import { useDialogBehavior } from "@/app/useDialogBehavior";
 import {
   GenericCustomizer,
   PizzaCustomizer,
-  placementSuffix,
+  toppingText,
   toOrderItems,
   type BuiltItem,
 } from "@/app/menu/ItemCustomizer";
@@ -1198,13 +1198,13 @@ function lineOptions(line: CartLine, toppingNames: Map<string, string>): string[
   if (line.extraCheese) options.push("Extra cheese");
   // A recipe topping left off is listed once, as "No …", not also as a topping.
   for (const topping of line.toppings ?? []) {
-    if (!line.omitToppings?.includes(topping.toppingId)) options.push(`${topping.name}${placementSuffix(topping.placement)}`);
+    if (!line.omitToppings?.includes(topping.toppingId)) options.push(toppingText(topping));
   }
   const drinks = drinkSummary(line.modifiers ?? [], line.modifierSections ?? []);
   const drinkIds = new Set(drinks.flatMap((entry) => [...entry.ids]));
   for (const modifier of line.modifiers ?? []) {
     if (drinkIds.has(modifier.id)) continue;
-    options.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
+    options.push(`${modifier.label}: ${modifier.values.map((value) => toppingText(value)).join(", ")}`);
   }
   for (const omitted of line.omitToppings ?? []) {
     const name = toppingNames.get(omitted);

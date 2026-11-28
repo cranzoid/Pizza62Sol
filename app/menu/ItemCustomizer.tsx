@@ -25,14 +25,18 @@
 import { useMemo, useState } from "react";
 import { changeDrinkQuantity, includedDrinkPools } from "@/lib/drink-slots";
 import { useDialogBehavior } from "@/app/useDialogBehavior";
+import { portionLabel } from "@/lib/order-presentation";
 import {
   BAKE_SAUCE_OPTIONS,
+  CHEESE_CHOICES,
   CHEESE_OPTIONS,
   CRUST_OPTIONS,
   DEFAULT_CHEESE_OPTION,
   DEFAULT_CRUST_OPTION,
   DRINK_OPTIONS,
   EXTRA_CHEESE_OPTION,
+  EXTRA_CHEESE_TOPPING_ID,
+  EXTRA_CHEESE_TOPPING_NAME,
   NEW_OPTIONS,
   PIZZA_EXTRA_OPTIONS,
   SAUCE_OPTIONS,
@@ -93,10 +97,11 @@ export type CustomizerTopping = {
 export type ModifierSelection = {
   id: string;
   label: string;
-  values: Array<{ value: string; label: string; placement?: ToppingPlacement }>;
+  values: Array<{ value: string; label: string; placement?: ToppingPlacement; double?: boolean }>;
 };
 
-export type SelectedTopping = { toppingId: string; placement: ToppingPlacement; name: string };
+/** `double` is "double pepperoni": twice the topping, counted as two. */
+export type SelectedTopping = { toppingId: string; placement: ToppingPlacement; name: string; double?: boolean };
 
 /**
  * One finished item, priced and described.
@@ -146,11 +151,11 @@ export function toOrderItems(items: BuiltItem[]) {
     productId: line.productId,
     variationId: line.variationId,
     quantity: line.quantity,
-    toppings: line.toppings?.map(({ toppingId, placement }) => ({ toppingId, placement })),
+    toppings: line.toppings?.map(({ toppingId, placement, double }) => ({ toppingId, placement, ...(double ? { double: true } : {}) })),
     omitToppings: line.omitToppings,
     modifiers: line.modifiers?.map((modifier) => ({
       id: modifier.id,
-      values: modifier.values.map((value) => (value.placement ? { value: value.value, placement: value.placement } : value.value)),
+      values: modifier.values.map((value) => (value.placement ? { value: value.value, placement: value.placement, ...(value.double ? { double: true } : {}) } : value.value)),
     })),
     extraCheese: line.extraCheese,
     specialInstructions: line.specialInstructions,
@@ -173,6 +178,15 @@ function ArrowIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
 }
 
+/**
+ * The extra-cheese chip at the front of "Veggies & cheese". Not a row in the
+ * toppings table: a standalone pizza records it as its `extraCheese` flag and a
+ * deal's pizza as `EXTRA_CHEESE_TOPPING_ID` in its toppings section, and both
+ * count it as one topping. It sits here, beside the toppings, because that is
+ * how customers order it: "pepperoni, mushroom, and extra cheese".
+ */
+export type ExtraCheeseChip = { active: boolean; onToggle: () => void; note?: string };
+
 export function ToppingPicker({
   toppings,
   selected,
@@ -180,6 +194,8 @@ export function ToppingPicker({
   wholeOnly,
   onToggle,
   onPlacement,
+  onDouble,
+  extraCheese,
 }: {
   toppings: CustomizerTopping[];
   selected: SelectedTopping[];
@@ -188,21 +204,38 @@ export function ToppingPicker({
   wholeOnly?: ReadonlySet<string>;
   onToggle: (topping: CustomizerTopping) => void;
   onPlacement: (toppingId: string, placement: ToppingPlacement) => void;
+  /** Offered on every chosen topping when present: "double pepperoni". */
+  onDouble?: (toppingId: string, double: boolean) => void;
+  extraCheese?: ExtraCheeseChip;
 }) {
-  return <div className="topping-groups">{[false, true].map((meat) => <div key={String(meat)}><h4>{meat ? "Meat & fish" : "Veggies & cheese"}</h4><div className="topping-grid">{toppings.filter((topping) => Boolean(topping.is_meat || topping.id === "anchovies") === meat).map((topping) => {
+  return <div className="topping-groups">{[false, true].map((meat) => <div key={String(meat)}><h4>{meat ? "Meat & fish" : "Veggies & cheese"}</h4><div className="topping-grid">
+    {!meat && extraCheese ? <div className={`topping-chip ${extraCheese.active ? "topping-chip--active" : ""}`}>
+      <button className={extraCheese.active ? "active" : ""} type="button" aria-pressed={extraCheese.active} onClick={extraCheese.onToggle}>
+        <span>{extraCheese.active ? "✓" : "+"}</span>{EXTRA_CHEESE_TOPPING_NAME}<small>{extraCheese.note ?? "Counts as a topping"}</small>
+      </button>
+    </div> : null}
+    {toppings.filter((topping) => Boolean(topping.is_meat || topping.id === "anchovies") === meat).map((topping) => {
     const entry = selected.find((item) => item.toppingId === topping.id);
+    const placeable = allowPlacement && !wholeOnly?.has(topping.id);
     return <div className={`topping-chip ${entry ? "topping-chip--active" : ""}`} key={topping.id}>
       <button className={entry ? "active" : ""} type="button" aria-pressed={Boolean(entry)} onClick={() => onToggle(topping)}>
-        <span>{entry ? "✓" : "+"}</span>{topping.name}{toppingWeight(topping.id) === 2 ? <small>Counts as 2 toppings</small> : null}
+        <span>{entry ? "✓" : "+"}</span>{topping.name}{entry?.double ? <b className="double-badge">x2</b> : null}{toppingWeight(topping.id) === 2 ? <small>Counts as 2 toppings</small> : null}
       </button>
-      {entry && allowPlacement && !wholeOnly?.has(topping.id) ? <div className="placement-switch" role="group" aria-label={`${topping.name} placement`}>
-        {PLACEMENTS.map(([placement, symbol, label]) => <button
+      {entry && (placeable || onDouble) ? <div className={`placement-switch${placeable && onDouble ? " placement-switch--double" : ""}${!placeable ? " placement-switch--single" : ""}`} role="group" aria-label={`${topping.name} options`}>
+        {placeable ? PLACEMENTS.map(([placement, symbol, label]) => <button
           key={placement}
           type="button"
           className={entry.placement === placement ? "active" : ""}
           aria-pressed={entry.placement === placement}
           onClick={() => onPlacement(topping.id, placement)}
-        ><i aria-hidden="true">{symbol}</i>{label}</button>)}
+        ><i aria-hidden="true">{symbol}</i>{label}</button>) : null}
+        {onDouble ? <button
+          type="button"
+          className={`double-toggle${entry.double ? " active" : ""}`}
+          aria-pressed={Boolean(entry.double)}
+          aria-label={`Double ${topping.name}`}
+          onClick={() => onDouble(topping.id, !entry.double)}
+        ><i aria-hidden="true">x2</i>Double</button> : null}
       </div> : null}
     </div>;
   })}</div></div>)}</div>;
@@ -216,6 +249,11 @@ const PLACEMENTS: Array<[ToppingPlacement, string, string]> = [
 
 export function placementSuffix(placement: ToppingPlacement) {
   return placement === "left" ? " · left half" : placement === "right" ? " · right half" : "";
+}
+
+/** One chosen topping as the receipt and the cart say it: "Pepperoni x2 · left half". */
+export function toppingText(entry: { name?: string; label?: string; placement?: ToppingPlacement; double?: boolean }): string {
+  return `${portionLabel(entry.name ?? entry.label ?? "", entry.double)}${placementSuffix(entry.placement ?? "whole")}`;
 }
 
 /** What the chosen sauce or extras add to the price, by the section's own rule. */
@@ -297,9 +335,10 @@ export function PizzaCustomizer({
     : [];
   const [variationId, setVariationId] = useState(initialItem?.variationId ?? variations[0]?.id ?? "");
   const [selected, setSelected] = useState<SelectedTopping[]>(() =>
-    normalizeToppings([...(initialItem?.toppings ?? []), ...recipeToppingIds.map((toppingId) => ({ toppingId, placement: "whole" as const }))]).map(({ toppingId, placement }) => ({
+    normalizeToppings([...(initialItem?.toppings ?? []), ...recipeToppingIds.map((toppingId) => ({ toppingId, placement: "whole" as const }))]).map(({ toppingId, placement, double }) => ({
       toppingId,
       placement,
+      ...(double ? { double: true } : {}),
       name: toppings.find((topping) => topping.id === toppingId)?.name ?? toppingId,
     })),
   );
@@ -320,8 +359,12 @@ export function PizzaCustomizer({
   const legacyBaseOptions = !crustOptions.length && !bakeSauceOptions.length ? stringList(configuration.pizzaBaseOptions) : [];
   const initialValues = (id: string) => initialItem?.modifiers?.find((modifier) => modifier.id === id)?.values.map((entry) => entry.value);
   const initialNote = initialItem?.specialInstructions ?? "";
+  // Items built before extra cheese moved into the toppings carry it as a
+  // leading "Extra Cheese · " in the note as well as the flag; it is read back
+  // as the flag and dropped from the note.
   const noteCheese = CHEESE_OPTIONS.find((option) => initialNote === option || initialNote.startsWith(`${option} · `));
-  const [cheese, setCheese] = useState(initialItem ? (initialItem.extraCheese ? EXTRA_CHEESE_OPTION : noteCheese ?? DEFAULT_CHEESE_OPTION) : configuration.presetExtraCheese ? EXTRA_CHEESE_OPTION : DEFAULT_CHEESE_OPTION);
+  const [cheese, setCheese] = useState<string>(noteCheese && noteCheese !== EXTRA_CHEESE_OPTION ? noteCheese : DEFAULT_CHEESE_OPTION);
+  const [extraCheeseChosen, setExtraCheeseChosen] = useState(initialItem ? Boolean(initialItem.extraCheese) || noteCheese === EXTRA_CHEESE_OPTION : Boolean(configuration.presetExtraCheese));
   const [crust, setCrust] = useState(() => initialValues("pizza-crust")?.[0] ?? (crustOptions.includes(DEFAULT_CRUST_OPTION) ? DEFAULT_CRUST_OPTION : crustOptions[0] ?? ""));
   const [bakeSauce, setBakeSauce] = useState<string[]>(initialValues("pizza-bake-sauce") ?? []);
   const [legacyBase, setLegacyBase] = useState<string[]>(initialValues("pizza-base") ?? []);
@@ -335,7 +378,7 @@ export function PizzaCustomizer({
   const [instructions, setInstructions] = useState(noteCheese ? initialNote.slice(noteCheese.length).replace(/^ · /, "") : initialNote);
   const [quantity, setQuantity] = useState(initialItem?.quantity ?? 1);
   const variation = variations.find((entry) => entry.id === variationId) ?? variations[0];
-  const extraCheese = cheeseEnabled && cheese === EXTRA_CHEESE_OPTION;
+  const extraCheese = cheeseEnabled && extraCheeseChosen;
   const price = variation
     ? pricePizza({
         basePriceCents: variation.base_price_cents,
@@ -350,13 +393,15 @@ export function PizzaCustomizer({
     : null;
   const includedCount = (variation?.included_topping_units_bps ?? 0) / 10_000 + (fixedRecipe ? recipeToppingIds.reduce((sum, id) => sum + toppingWeight(id) - 1, 0) : 0);
   const selectedUnits = (price?.toppingUnitsBps ?? 0) / 10_000;
+  // Extra cheese is one of the toppings here, as the server counts it: on a
+  // three-topping special, pepperoni, mushroom and extra cheese is three.
   const selectedToppingUnits = modifierUnitsBps(
-    selected.map((entry) => ({ value: entry.toppingId, placement: entry.placement })),
+    selected.map((entry) => ({ value: entry.toppingId, placement: entry.placement, ...(entry.double ? { double: true } : {}) })),
     halfToppingUnitsBps,
-  ) / 10_000;
+  ) / 10_000 + (extraCheese ? 1 : 0);
   const requiredToppingUnits = configuration.requireIncludedToppings ? includedCount : includedCount > 0 ? 1 : 0;
   const selectionValid = Boolean(
-    variation && (configuration.fixedRecipe || (configuration.requireIncludedToppings ? selectedToppingUnits >= requiredToppingUnits : includedCount <= 0 || selected.length > 0)),
+    variation && (configuration.fixedRecipe || (configuration.requireIncludedToppings ? selectedToppingUnits >= requiredToppingUnits : includedCount <= 0 || selected.length > 0 || extraCheese)),
   );
   const recipeIds: ReadonlySet<string> = new Set(fixedRecipe ? recipeToppingIds : []);
   // What the customer sees ticked: the build, less anything they asked us to leave off.
@@ -372,6 +417,22 @@ export function PizzaCustomizer({
   };
   const setPlacement = (toppingId: string, placement: ToppingPlacement) =>
     setSelected((current) => current.map((entry) => entry.toppingId === toppingId ? { ...entry, placement } : entry));
+  const setDouble = (toppingId: string, double: boolean) =>
+    setSelected((current) => current.map((entry) => {
+      if (entry.toppingId !== toppingId) return entry;
+      return double ? { ...entry, double: true } : { toppingId: entry.toppingId, placement: entry.placement, name: entry.name };
+    }));
+  // Extra cheese is more of the regular cheese, so it cannot sit with none or
+  // a light one: choosing either takes extra cheese off, and ticking extra
+  // cheese puts the cheese back to regular.
+  const chooseCheese = (option: string) => {
+    setCheese(option);
+    if (option !== DEFAULT_CHEESE_OPTION) setExtraCheeseChosen(false);
+  };
+  const toggleExtraCheese = () => {
+    if (!extraCheeseChosen) setCheese(DEFAULT_CHEESE_OPTION);
+    setExtraCheeseChosen(!extraCheeseChosen);
+  };
   // The customer is always asked in the same order: what it is made of, how it is
   // baked, then what goes on it, and last what comes in the box with it. Steps
   // that are switched off are skipped and the numbering closes up behind them.
@@ -386,7 +447,7 @@ export function PizzaCustomizer({
   const stepNumber = (name: string) => String(steps.indexOf(name) + 1);
   const sizePanel = <><fieldset><legend><span>{stepNumber("size")}</span> {String(configuration.variationLabel ?? "Choose your size")}</legend><div className="size-options">{variations.map((item) => <label key={item.id} className={item.id === variationId ? "selected" : ""}><input type="radio" name="size" value={item.id} checked={item.id === variationId} onChange={() => setVariationId(item.id)} /><span><b>{item.name}</b><small>{formatMoney(item.base_price_cents)}</small></span></label>)}</div></fieldset></>;
   const cheesePanel = <>{cheeseEnabled ? <fieldset><legend><span>{stepNumber("cheese")}</span> Cheese</legend>
-            {cheeseEnabled ? <div className="size-options cheese-options">{CHEESE_OPTIONS.map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => setCheese(option)} /><span><b>{option.replace(" Cheese", "")}</b><small>{option === EXTRA_CHEESE_OPTION ? `Counts as one topping${variation ? ` · ${formatMoney(variation.extra_topping_price_cents)}` : ""}` : "No extra charge"}</small></span></label>)}</div> : null}
+            {cheeseEnabled ? <div className="size-options cheese-options">{CHEESE_CHOICES.map((option) => <label key={option} className={cheese === option ? "selected" : ""}><input type="radio" name="cheese" checked={cheese === option} onChange={() => chooseCheese(option)} /><span><b>{option.replace(" Cheese", "")}</b><small>{option === DEFAULT_CHEESE_OPTION ? "Extra cheese is with the toppings" : "No extra charge"}</small></span></label>)}</div> : null}
           </fieldset> : null}</>;
   const crustPanel = <>{crustOptions.length ? <fieldset><legend><span>{stepNumber("crust")}</span> Crust</legend><div className="topping-grid">{crustOptions.map((option) => <button className={crust === option ? "active" : ""} type="button" key={option} aria-pressed={crust === option} onClick={() => setCrust(option)}><span>{crust === option ? "✓" : "+"}</span>{option}</button>)}</div></fieldset> : null}</>;
   const saucePanel = <>{sauceSection ? <fieldset><legend><span>{stepNumber("sauce")}</span> Sauce <em className="new-badge">New sauces</em></legend><FinishChoices section={sauceSection} values={sauce} includedSauce={includedSauce} onToggle={(option) => setSauce((current) => nextFinishValues(sauceSection, current, option))} /></fieldset> : null}</>;
@@ -397,7 +458,15 @@ export function PizzaCustomizer({
             {fixedRecipe
               ? <div className="setup-alert"><strong>Made to our recipe</strong><p>Its toppings are already ticked. Untick any you&apos;d like left off — the price stays the same and their recipe units stay reserved. Anything else you add is {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "charged at the extra-topping rate"}.</p></div>
               : <div className="setup-alert"><strong>{configuration.requireIncludedToppings ? `Choose at least ${includedCount} topping${includedCount === 1 ? "" : "s"}` : includedCount === 1 ? "Your first topping is included" : `Choose up to ${includedCount} included toppings`}</strong><p>Additional toppings are {variation ? `${formatMoney(variation.extra_topping_price_cents)} each` : "priced by size"}. Put a topping on half the pizza and it counts as {halfToppingUnitsBps === 10_000 ? "a full topping" : `${halfToppingUnitsBps / 10_000} of a topping`}.</p></div>}
-            <ToppingPicker toppings={toppings} selected={shownSelected} wholeOnly={recipeIds} onToggle={toggleTopping} onPlacement={setPlacement} />
+            <ToppingPicker
+              toppings={toppings}
+              selected={shownSelected}
+              wholeOnly={recipeIds}
+              onToggle={toggleTopping}
+              onPlacement={setPlacement}
+              onDouble={setDouble}
+              extraCheese={cheeseEnabled ? { active: extraCheese, onToggle: toggleExtraCheese, note: fixedRecipe && configuration.presetExtraCheese ? "Part of the recipe" : undefined } : undefined}
+            />
             <div className="allowance-meter"><span>{formatUnits(selectedUnits)} units selected · {includedCount} included</span><b>{price?.extraToppingTotalCents ? `${formatMoney(price.extraToppingTotalCents)} in extras` : selectedToppingUnits >= requiredToppingUnits ? "Included in the price" : `Choose at least ${formatUnits(requiredToppingUnits)}`}</b></div>
           </fieldset></>;
   const modifiers: ModifierSelection[] = [];
@@ -467,6 +536,19 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
           ? normalizeModifierValues(values).map((entry) => ({ ...entry, label: values.find((value) => value.value === entry.value)?.label ?? entry.value }))
           : values;
       }
+      // A deal built before extra cheese moved into the toppings has it as its
+      // cheese choice. It opens with regular cheese and extra cheese ticked
+      // among that pizza's toppings, which is what it would be built as now.
+      for (const section of sections) {
+        if (section.source !== "cheese" || !initial[section.id]?.some((entry) => entry.value === EXTRA_CHEESE_OPTION)) continue;
+        const toppingsSection = sections.find((candidate) => candidate.source === "toppings" && candidate.group === section.group);
+        if (!toppingsSection) continue;
+        initial[section.id] = [{ value: DEFAULT_CHEESE_OPTION, label: DEFAULT_CHEESE_OPTION }];
+        const current = initial[toppingsSection.id] ?? [];
+        if (!current.some((entry) => entry.value === EXTRA_CHEESE_TOPPING_ID)) {
+          initial[toppingsSection.id] = [...current, { value: EXTRA_CHEESE_TOPPING_ID, label: EXTRA_CHEESE_TOPPING_NAME, placement: "whole" }];
+        }
+      }
     }
     return initial;
   });
@@ -483,7 +565,7 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
       section.source === "wing_flavours" ? [...WING_FLAVOURS]
         : section.source === "drinks" ? [...DRINK_OPTIONS]
           : section.source === "two_litre_drinks" ? [...TWO_LITRE_DRINK_OPTIONS]
-            : section.source === "cheese" ? [...CHEESE_OPTIONS]
+            : section.source === "cheese" ? [...CHEESE_CHOICES]
               : section.source === "crust" ? [...CRUST_OPTIONS]
                 : section.source === "bake_sauce" ? [...BAKE_SAUCE_OPTIONS]
                   : LEGACY_BASE_FALLBACK
@@ -491,10 +573,24 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
     return configured.map((entry) => ({ value: entry, label: entry }));
   };
   const valuesOf = (sectionId: string) => selected[sectionId] ?? [];
-  const toggle = (section: ModifierSection, option: { value: string; label: string }) => setSelected((current) => {
+  /** The same pizza's other section of a kind: its cheese for its toppings, and back. */
+  const partner = (section: ModifierSection, source: ModifierSection["source"]) =>
+    sections.find((candidate) => candidate.source === source && candidate.group === section.group);
+  const toggle = (section: ModifierSection, option: { value: string; label: string }) => setSelected((previous) => {
+    let current = previous;
     const values = current[section.id] ?? [];
     // One sauce per pizza, and always one: tapping the chosen sauce keeps it.
     if (section.source === "sauce") return { ...current, [section.id]: [{ value: option.value, label: option.label }] };
+    // No cheese or light cheese takes extra cheese off that pizza; ticking
+    // extra cheese puts its cheese back to regular. See PizzaCustomizer.
+    if (section.source === "cheese" && option.value !== DEFAULT_CHEESE_OPTION) {
+      const toppingsSection = partner(section, "toppings");
+      if (toppingsSection) current = { ...current, [toppingsSection.id]: (current[toppingsSection.id] ?? []).filter((entry) => entry.value !== EXTRA_CHEESE_TOPPING_ID) };
+    }
+    if (section.source === "toppings" && option.value === EXTRA_CHEESE_TOPPING_ID && !values.some((entry) => entry.value === option.value)) {
+      const cheeseSection = partner(section, "cheese");
+      if (cheeseSection && values.length < section.max) current = { ...current, [cheeseSection.id]: [{ value: DEFAULT_CHEESE_OPTION, label: DEFAULT_CHEESE_OPTION }] };
+    }
     if (values.some((entry) => entry.value === option.value)) {
       return { ...current, [section.id]: values.filter((entry) => entry.value !== option.value) };
     }
@@ -507,8 +603,15 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
     ...current,
     [sectionId]: (current[sectionId] ?? []).map((entry) => entry.value === value ? { ...entry, placement } : entry),
   }));
+  const setDouble = (sectionId: string, value: string, double: boolean) => setSelected((current) => ({
+    ...current,
+    [sectionId]: (current[sectionId] ?? []).map((entry) => {
+      if (entry.value !== value) return entry;
+      return double ? { ...entry, double: true } : { value: entry.value, label: entry.label, placement: entry.placement };
+    }),
+  }));
   const unitsFor = (section: ModifierSection) =>
-    modifierUnitsBps(normalizeModifierValues(valuesOf(section.id).map((entry) => ({ value: entry.value, placement: entry.placement }))), halfToppingUnitsBps);
+    modifierUnitsBps(normalizeModifierValues(valuesOf(section.id).map((entry) => ({ value: entry.value, placement: entry.placement, double: entry.double }))), halfToppingUnitsBps);
   const valid = sections.every((section) => valuesOf(section.id).length >= section.min && valuesOf(section.id).length <= section.max);
   const pricing = priceModifierSelections(sections, sections.map((section) => ({ id: section.id, values: valuesOf(section.id) })), halfToppingUnitsBps);
   const extras = pricing.extraCents;
@@ -562,10 +665,15 @@ export function GenericCustomizer({ product, toppings, halfToppingUnitsBps, onCl
                   : isToppings
                   ? <ToppingPicker
                       toppings={toppings}
-                      selected={values.map((entry) => ({ toppingId: entry.value, placement: entry.placement ?? "whole", name: entry.label }))}
+                      selected={values.map((entry) => ({ toppingId: entry.value, placement: entry.placement ?? "whole", name: entry.label, ...(entry.double ? { double: true } : {}) }))}
                       allowPlacement={section.max > 1}
                       onToggle={(topping) => toggle(section, { value: topping.id, label: topping.name })}
                       onPlacement={(toppingId, placement) => setPlacement(section.id, toppingId, placement)}
+                      onDouble={(toppingId, double) => setDouble(section.id, toppingId, double)}
+                      extraCheese={partner(section, "cheese") ? {
+                        active: values.some((entry) => entry.value === EXTRA_CHEESE_TOPPING_ID),
+                        onToggle: () => toggle(section, { value: EXTRA_CHEESE_TOPPING_ID, label: EXTRA_CHEESE_TOPPING_NAME }),
+                      } : undefined}
                     />
                   : <div className="topping-grid">{optionsFor(section).map((option) => { const active = values.some((entry) => entry.value === option.value); const price = section.optionPrices?.[option.value]; return <button className={active ? "active" : ""} type="button" key={option.value} aria-pressed={active} onClick={() => toggle(section, option)}><span>{active ? "✓" : "+"}</span>{option.label}{price ? <small>+{formatMoney(price)}</small> : null}</button>; })}</div>}
                 <div className="allowance-meter"><span>{isToppings ? `${formatUnits(displayedUnits)} units selected · ${included} included${pool ? " across this deal" : ""}` : `${values.length} selected`}</span><b>{sectionExtras ? `${formatMoney(sectionExtras)} in extras` : isFinish ? (section.source === "sauce" ? "No charge" : "Optional") : section.min && values.length < section.min ? `Choose at least ${section.min}` : included ? `${included} included` : `Up to ${section.max}`}</b></div>

@@ -53,12 +53,21 @@ import {
   GenericCustomizer,
   PizzaCustomizer,
   needsCustomizing,
-  placementSuffix,
   toOrderItems,
+  toppingText,
   type BuiltItem,
   type CustomizerProduct,
 } from "@/app/menu/ItemCustomizer";
 import type { Dashboard } from "@/app/staff/StaffPortal";
+import {
+  AddressSuggestionRow,
+  CustomerHistorySheet,
+  CustomerSuggestionRow,
+  SuggestField,
+  formatPhone,
+  type AddressSuggestion,
+} from "@/app/staff/TillLookup";
+import type { CustomerHistory, CustomerSuggestion, PastOrder, SavedAddress } from "@/lib/customer-lookup";
 
 /**
  * Two identical items are one line with a quantity of two; two pizzas built
@@ -70,9 +79,9 @@ function buildSignature(item: BuiltItem): string {
   return JSON.stringify([
     item.productId,
     item.variationId ?? "",
-    [...(item.toppings ?? [])].map((entry) => `${entry.toppingId}:${entry.placement}`).sort(),
+    [...(item.toppings ?? [])].map((entry) => `${entry.toppingId}:${entry.placement}${entry.double ? ":x2" : ""}`).sort(),
     [...(item.modifiers ?? [])]
-      .map((modifier) => `${modifier.id}=${[...modifier.values].map((value) => `${value.value}:${value.placement ?? "whole"}`).sort().join("|")}`)
+      .map((modifier) => `${modifier.id}=${[...modifier.values].map((value) => `${value.value}:${value.placement ?? "whole"}${value.double ? ":x2" : ""}`).sort().join("|")}`)
       .sort(),
     [...(item.omitToppings ?? [])].sort(),
     Boolean(item.extraCheese),
@@ -92,14 +101,14 @@ function describeChoices(item: BuiltItem, toppingNames: Map<string, string>): st
   if (item.variationName) parts.push(item.variationName);
   if (item.extraCheese) parts.push("Extra cheese");
   for (const topping of item.toppings ?? []) {
-    if (!item.omitToppings?.includes(topping.toppingId)) parts.push(`${topping.name}${placementSuffix(topping.placement)}`);
+    if (!item.omitToppings?.includes(topping.toppingId)) parts.push(toppingText(topping));
   }
   for (const toppingId of item.omitToppings ?? []) parts.push(`No ${toppingNames.get(toppingId) ?? toppingId}`);
   const drinks = drinkSummary(item.modifiers ?? [], item.modifierSections ?? []);
   const drinkIds = new Set(drinks.flatMap((entry) => [...entry.ids]));
   for (const modifier of item.modifiers ?? []) {
     if (drinkIds.has(modifier.id)) continue;
-    parts.push(`${modifier.label}: ${modifier.values.map((value) => `${value.label}${placementSuffix(value.placement ?? "whole")}`).join(", ")}`);
+    parts.push(`${modifier.label}: ${modifier.values.map((value) => toppingText(value)).join(", ")}`);
   }
   if (item.specialInstructions) parts.push(item.specialInstructions);
   parts.push(...drinks.filter((entry) => entry.text).map((entry) => `Included drinks: ${entry.text}`));
@@ -464,19 +473,29 @@ export function StaffOrderEntry({
    * snapshot the server stored when it was ordered — so an edited pizza opens
    * in the customizer with its toppings, halves and omissions as they were.
    */
-  const startEdit = (order: Record<string, unknown>) => {
-    const refusal = orderEditRefusal(order);
-    if (refusal) { setMessage({ tone: "bad", text: refusal }); setSheet(null); return; }
-    if (dirty && !editTarget && !window.confirm("Put the order you are ringing in aside and edit this one instead? The unfinished order will be discarded.")) return;
+  /**
+   * Turns a placed order's items back into what the customizer builds, from
+   * the snapshots the server stored — so a pizza opens with its toppings,
+   * doubles, halves and omissions as they were. Used to edit an order and to
+   * order one again.
+   *
+   * `orderable` additionally drops what cannot be sold right now (sold out, a
+   * size no longer offered, not available for this kind of order): editing
+   * keeps an item the customer already has, ordering again cannot.
+   */
+  const rebuildLines = (items: Array<Record<string, unknown>>, orderable: boolean) => {
     const toppingIds = new Map(dashboard.toppings.map((topping) => [topping.name, topping.id]));
-    const items = (order.items as Array<Record<string, unknown>> | undefined) ?? [];
     const missing: string[] = [];
     const built: BuiltItem[] = [];
     for (const item of items) {
-      const product = dashboard.products.find((entry) => entry.id === item.productId);
+      const product = (orderable ? sellable : dashboard.products).find((entry) => entry.id === item.productId);
       const snapshot = (item.snapshot ?? {}) as Record<string, unknown>;
-      if (!product) { missing.push(String(item.productName ?? "An item")); continue; }
-      const toppings = Array.isArray(snapshot.toppings) ? (snapshot.toppings as Array<{ toppingId: string; placement: ToppingPlacement }>) : [];
+      const variationId = typeof snapshot.variationId === "string" ? snapshot.variationId : undefined;
+      if (!product || (orderable && variationId && !dashboard.variations.some((variation) => variation.id === variationId && variation.active))) {
+        missing.push(String(item.productName ?? "An item"));
+        continue;
+      }
+      const toppings = Array.isArray(snapshot.toppings) ? (snapshot.toppings as Array<{ toppingId: string; placement: ToppingPlacement; double?: boolean }>) : [];
       const omissions = Array.isArray(snapshot.recipeOmissions) ? (snapshot.recipeOmissions as string[]) : [];
       const modifiers = Array.isArray(snapshot.modifiers) ? (snapshot.modifiers as BuiltItem["modifiers"]) : [];
       built.push({
@@ -484,12 +503,12 @@ export function StaffOrderEntry({
         productId: product.id,
         name: String(item.productName ?? product.name),
         categoryId: product.category_id,
-        variationId: typeof snapshot.variationId === "string" ? snapshot.variationId : undefined,
+        variationId,
         variationName: item.variationName ? String(item.variationName) : undefined,
         quantity: Number(item.quantity ?? 1),
         unitPriceCents: Number(item.unitPriceCents ?? product.base_price_cents),
         taxable: Boolean(product.taxable),
-        toppings: toppings.length ? toppings.map((entry) => ({ toppingId: entry.toppingId, placement: entry.placement, name: toppingNames.get(entry.toppingId) ?? entry.toppingId })) : undefined,
+        toppings: toppings.length ? toppings.map((entry) => ({ toppingId: entry.toppingId, placement: entry.placement, name: toppingNames.get(entry.toppingId) ?? entry.toppingId, ...(entry.double ? { double: true } : {}) })) : undefined,
         omitToppings: omissions.length ? omissions.map((label) => toppingIds.get(label) ?? label) : undefined,
         modifiers: modifiers?.length ? modifiers : undefined,
         extraCheese: snapshot.extraCheese ? true : undefined,
@@ -497,6 +516,14 @@ export function StaffOrderEntry({
         freeDelivery: Boolean(product.configuration?.freeDelivery),
       });
     }
+    return { built, missing };
+  };
+
+  const startEdit = (order: Record<string, unknown>) => {
+    const refusal = orderEditRefusal(order);
+    if (refusal) { setMessage({ tone: "bad", text: refusal }); setSheet(null); return; }
+    if (dirty && !editTarget && !window.confirm("Put the order you are ringing in aside and edit this one instead? The unfinished order will be discarded.")) return;
+    const { built, missing } = rebuildLines((order.items as Array<Record<string, unknown>> | undefined) ?? [], false);
     const address = (order.address ?? null) as Record<string, string> | null;
     clearDraft();
     setEditTarget({
@@ -528,6 +555,71 @@ export function StaffOrderEntry({
     apiRef.current = { startEdit };
     return () => { apiRef.current = null; };
   });
+
+  // --- A returning customer ------------------------------------------------
+  // Typing a number offers the customers it matches; picking one opens their
+  // history over the till. See app/staff/TillLookup.tsx.
+  const canLookUpCustomers = dashboard.user.role === "owner" || dashboard.user.permissions.includes("view_customer_contact");
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const fillAddress = (address: { line1: string; unit?: string; postalCode: string; instructions?: string }) => {
+    setLine1(address.line1);
+    setUnit(address.unit ?? "");
+    setPostalCode(address.postalCode);
+    if (address.instructions !== undefined) setDeliveryInstructions(address.instructions);
+  };
+  const fillCustomer = (customer: CustomerHistory) => {
+    if (customer.name) setName(customer.name);
+    setPhone(formatPhone(customer.phone));
+    if (customer.email) setEmail(customer.email);
+  };
+  const applyCustomerDetails = (customer: CustomerHistory) => {
+    fillCustomer(customer);
+    if (customer.addresses[0]) fillAddress(customer.addresses[0]);
+    setHistoryFor(null);
+    setSheet("customer");
+  };
+  const applyCustomerAddress = (customer: CustomerHistory, address: SavedAddress) => {
+    fillCustomer(customer);
+    fillAddress(address);
+    setFulfilment("delivery");
+    setHistoryFor(null);
+    setSheet("customer");
+  };
+  /**
+   * "Same as last time": that order's items onto the receipt, and the
+   * customer's details and address into the form. The order type the till is
+   * set to is left alone — whoever is on the phone chose it — but the address
+   * is filled either way, so switching to delivery needs nothing typed.
+   */
+  const reorder = (customer: CustomerHistory, order: PastOrder) => {
+    const { built, missing } = rebuildLines(order.items, true);
+    fillCustomer(customer);
+    const address = order.fulfilment === "delivery" && order.address?.line1
+      ? { line1: order.address.line1, unit: order.address.unit ?? "", postalCode: order.address.postalCode ?? "", instructions: order.instructions ?? "" }
+      : customer.addresses[0];
+    if (address) fillAddress(address);
+    if (done && !lines.length) { setDone(null); writeDone(null); }
+    setLines((current) => {
+      const merged = [...current];
+      for (const item of built) {
+        const existing = merged.findIndex((line) => buildSignature(line) === buildSignature(item));
+        if (existing >= 0) merged[existing] = { ...merged[existing], quantity: Math.min(99, merged[existing].quantity + item.quantity) };
+        else merged.push(item);
+      }
+      return merged;
+    });
+    setHistoryFor(null);
+    const ref = order.order_number.replace("P62-", "#");
+    const notes = [
+      built.length ? `Added ${built.reduce((sum, line) => sum + line.quantity, 0)} item${built.length === 1 && built[0].quantity === 1 ? "" : "s"} from ${ref}.` : `Nothing from ${ref} can be ordered right now.`,
+      missing.length ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not available now and ${missing.length === 1 ? "was" : "were"} left off.` : "",
+      order.fulfilment === "delivery" && fulfilment === "pickup" ? "That order was a delivery: tap Delivery if it is going to them." : "",
+      "Prices are today's.",
+    ].filter(Boolean);
+    setMessage({ tone: missing.length || !built.length ? "bad" : "ok", text: notes.join(" ") });
+    if (fulfilment === "delivery" && (!address?.line1 || !address.postalCode)) setSheet("customer");
+    else setSheet(null);
+  };
 
   // What the printer app reported on its way back.
   const printResult = useSyncExternalStore(NEVER_CHANGES, capturePassPrntResult, NO_PRINT_RESULT);
@@ -960,14 +1052,32 @@ export function StaffOrderEntry({
               <button type="button" className="pos-sheet-close" onClick={() => setSheet(null)} aria-label="Close">×</button>
             </div>
             <div className="pos-form">
-              <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" autoFocus /></label>
+              {/* The number comes first: on the phone it is the quickest way to
+                  find someone who has ordered before, and picking them fills
+                  in the rest. */}
               {editTarget?.contactRedacted ? (
                 <p className="pos-hint">Phone and email are hidden for your account; they stay as they were.</p>
+              ) : canLookUpCustomers && !editTarget ? (
+                <SuggestField<CustomerSuggestion>
+                  label={fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}
+                  value={phone}
+                  onChange={setPhone}
+                  url={phone.replace(/\D/g, "").length >= 3 ? `/api/admin/customer-lookup?phone=${encodeURIComponent(phone.replace(/\D/g, ""))}` : null}
+                  onPick={(item) => {
+                    setPhone(formatPhone(item.phone));
+                    if (item.name && !name.trim()) setName(item.name);
+                    setHistoryFor(item.phone);
+                  }}
+                  itemKey={(item) => item.phone}
+                  renderItem={(item) => <CustomerSuggestionRow item={item} />}
+                  inputProps={{ inputMode: "tel", autoComplete: "off", autoFocus: true, placeholder: "Start typing their number" }}
+                />
               ) : (
-                <>
-                  <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" /></label>
-                  <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
-                </>
+                <label>{fulfilment === "delivery" ? "Phone · for the driver" : "Phone · optional"}<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" autoFocus /></label>
+              )}
+              <label>Name for the order<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Counter" /></label>
+              {editTarget?.contactRedacted ? null : (
+                <label>Email · optional<input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" /></label>
               )}
               {fulfilment === "pickup" && !editTarget ? (
                 <div className="till-birthday">
@@ -989,17 +1099,43 @@ export function StaffOrderEntry({
                   this, and all three are enforced on the server. */}
               {fulfilment === "delivery" ? (
                 <>
-                  <label>Street address<input value={line1} onChange={(event) => setLine1(event.target.value)} placeholder="123 King St E" autoComplete="off" /></label>
+                  <SuggestField<AddressSuggestion>
+                    label="Street address"
+                    value={line1}
+                    onChange={setLine1}
+                    url={/[a-z]/i.test(line1) && line1.trim().length >= 3 ? `/api/admin/address-suggest?q=${encodeURIComponent(line1.trim())}` : null}
+                    onPick={(item) => {
+                      setLine1(item.line1);
+                      if (item.unit) setUnit(item.unit);
+                      // A partial code from Maps is left for the person to
+                      // finish rather than written in half-done.
+                      if (item.postalCode) setPostalCode(item.postalCode);
+                    }}
+                    itemKey={(item) => `${item.source}|${item.line1}|${item.unit}|${item.postalCode}`}
+                    renderItem={(item) => <AddressSuggestionRow item={item} />}
+                    inputProps={{ placeholder: "Start typing: 31 King", autoComplete: "off", spellCheck: false }}
+                  />
                   <label>Unit · optional<input value={unit} onChange={(event) => setUnit(event.target.value)} autoComplete="off" /></label>
                   <label>Postal code<input value={postalCode} onChange={(event) => setPostalCode(event.target.value.toUpperCase())} placeholder="L8N 1B2" autoComplete="off" spellCheck={false} /></label>
                   <label>Buzzer or directions · optional<input value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} autoComplete="off" /></label>
-                  <p className="pos-hint">Hamilton, ON only. The address is checked against the delivery radius when the order is sent.</p>
+                  <p className="pos-hint">Hamilton, ON only. Pick a suggestion or type the address out; either way it is checked against the delivery radius when the order is sent.</p>
                 </>
               ) : null}
             </div>
             <button type="button" className="pos-primary" onClick={() => setSheet(null)}>Done</button>
           </section>
         </div>
+      ) : null}
+
+      {historyFor ? (
+        <CustomerHistorySheet
+          phone={historyFor}
+          toppingNames={toppingNames}
+          onClose={() => setHistoryFor(null)}
+          onUseDetails={applyCustomerDetails}
+          onUseAddress={applyCustomerAddress}
+          onReorder={reorder}
+        />
       ) : null}
 
       {sheet === "orders" ? (

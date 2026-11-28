@@ -2259,6 +2259,14 @@ fieldset.clover-card-fields {
 .topping-groups .topping-chip > button { flex-wrap: wrap; }
 .topping-groups .topping-chip > button small { flex-basis: 100%; margin-left: 33px; font-size: 12px; }
 .topping-groups .placement-switch button { min-height: 44px; padding: 6px 2px; font-size: 12px; }
+/* "Double pepperoni": a fourth button beside the halves, or alone when the
+   topping cannot go on a half (a recipe topping, a one-topping deal slot). */
+.placement-switch--double { grid-template-columns: repeat(4, 1fr); }
+.placement-switch--single { grid-template-columns: 1fr; }
+.placement-switch .double-toggle i { font-weight: 900; font-size: 13px; }
+.placement-switch--single .double-toggle { grid-auto-flow: column; gap: 8px; }
+.placement-switch .double-toggle.active { background: var(--yellow); color: var(--ink); }
+.double-badge { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--yellow); color: var(--ink); font-size: 12px; font-weight: 900; }
 .drink-quantity { display: grid; grid-template-columns: 1fr 48px 32px 48px; align-items: center; gap: 10px; margin: 8px 0; }
 .drink-quantity button { min-height: 44px; font-size: 22px; border: 1px solid var(--line); background: white; cursor: pointer; }
 .drink-quantity output { text-align: center; font-weight: 700; }
@@ -2475,4 +2483,43 @@ fieldset.clover-card-fields {
   .pos-quick button { min-height: 54px; }
   .pos-tabs button { min-height: 44px; }
   .pos-pay-go { min-height: 58px; }
+}
+
+/* --- Till suggestions and customer history ---------------------------------
+   A list under the phone and address boxes. It sits in the form's flow rather
+   than floating over it: the customer sheet scrolls, and a floating list near
+   its bottom (the address) would be cut off by it. */
+.till-suggest { position: relative; }
+.till-suggest-list { margin: 4px 0 0; padding: 4px; list-style: none; background: white; border: 1px solid var(--pos-line); border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,.18); max-height: min(360px, 50dvh); overflow-y: auto; }
+.till-suggest-list li { display: grid; gap: 2px; padding: 10px 12px; min-height: 52px; border-radius: 8px; cursor: pointer; color: var(--pos-ink); font-weight: 400; }
+.till-suggest-list li.active { background: var(--pos-green-soft); }
+.till-suggest-list li strong { font-size: 17px; }
+.till-suggest-list li span { font-size: 15px; }
+.till-suggest-list li small { font-size: 13px; color: var(--pos-muted); }
+.till-suggest-foot { cursor: default !important; min-height: 0 !important; font-size: 12px; color: var(--pos-muted); }
+.till-history { gap: 14px; }
+.till-history h3 { margin: 4px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--pos-muted); }
+.till-history-summary { margin: -6px 0 0; font-size: 15px; color: var(--pos-muted); }
+.till-history-addresses { display: grid; gap: 8px; }
+.till-history-addresses button { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 60px; padding: 8px 14px; text-align: left; border-radius: 12px; border: 1px solid var(--pos-line); background: white; color: var(--pos-ink); }
+.till-history-addresses button:hover { border-color: var(--pos-green); background: var(--pos-green-soft); }
+.till-history-addresses span { display: grid; gap: 2px; min-width: 0; }
+.till-history-addresses strong { font-size: 16px; }
+.till-history-addresses small { font-size: 13px; color: var(--pos-muted); }
+.till-history-addresses em { font-style: normal; font-weight: 800; color: var(--pos-green); white-space: nowrap; }
+.till-history-orders { display: grid; gap: 10px; }
+.till-history-order { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--pos-line); }
+.till-history-order--cancelled { opacity: .7; }
+.till-history-order header { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: baseline; }
+.till-history-order header b { font-size: 17px; color: var(--pos-green); }
+.till-history-order header span { font-size: 14px; color: var(--pos-muted); }
+.till-history-order header em { font-style: normal; font-weight: 800; font-size: 16px; }
+.till-history-order ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.till-history-order li { display: grid; gap: 1px; }
+.till-history-order li strong { font-size: 15px; }
+.till-history-order li small { font-size: 13px; color: var(--pos-muted); line-height: 1.4; }
+.till-history-reorder { min-height: 52px; font-size: 16px !important; }
+@media (max-width: 640px) {
+  .till-history-order header { grid-template-columns: auto 1fr; }
+  .till-history-order header em { grid-column: 1 / -1; }
 }

@@ -38,13 +38,21 @@ export type ItemSnapshot = {
   productConfiguration?: { sections?: ModifierSection[] };
 };
 
-type SnapshotTopping = { toppingId?: string; placement?: string };
+type SnapshotTopping = { toppingId?: string; placement?: string; double?: unknown };
 type SnapshotModifier = {
   id?: string;
   label?: string;
   group?: string;
-  values?: Array<{ value?: string; label?: string; placement?: string }>;
+  values?: Array<{ value?: string; label?: string; placement?: string; double?: unknown }>;
 };
+
+/**
+ * "Pepperoni x2" for a double portion. Plain ASCII on purpose: the thermal
+ * printer's code page has no multiplication sign, and the owner asked for x2.
+ */
+export function portionLabel(name: string, double: unknown): string {
+  return double === true ? `${name} x2` : name;
+}
 
 /** One order line, with every choice on it resolved to display text. */
 export type OrderItemDetail = {
@@ -78,7 +86,7 @@ const PLACEMENT_LABEL: Record<SnapshotPlacement, string> = {
  * case is not made noisier to serve the rare one.
  */
 export function toppingDetails(
-  toppings: Array<{ toppingId?: string; placement?: string }>,
+  toppings: Array<{ toppingId?: string; placement?: string; double?: unknown }>,
   toppingNames: Map<string, string>,
 ): Array<{ label: string; value: string }> {
   const grouped = new Map<SnapshotPlacement, string[]>();
@@ -87,7 +95,7 @@ export function toppingDetails(
     if (!id) continue;
     const placement = normalizePlacement(topping.placement);
     const list = grouped.get(placement) ?? [];
-    list.push(toppingNames.get(id) ?? id);
+    list.push(portionLabel(toppingNames.get(id) ?? id, topping.double));
     grouped.set(placement, list);
   }
   // Whole first: it is the base the halves are added to.
@@ -116,7 +124,7 @@ export function modifierDetails(modifiers: SnapshotModifier[], sections: Modifie
       label: modifier.group ? `${modifier.group} · ${modifier.label ?? ""}` : String(modifier.label ?? "Options"),
       value: (modifier.values ?? [])
         .map((entry) => {
-          const label = String(entry.label ?? entry.value ?? "");
+          const label = portionLabel(String(entry.label ?? entry.value ?? ""), entry.double);
           const placement = normalizePlacement(entry.placement);
           return placement === "whole" ? label : `${label} (${placement === "left" ? "left half" : "right half"})`;
         })

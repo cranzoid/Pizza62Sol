@@ -3,6 +3,8 @@ import {
   BAKE_SAUCE_OPTIONS,
   CHEESE_OPTIONS,
   CRUST_OPTIONS,
+  EXTRA_CHEESE_TOPPING_ID,
+  EXTRA_CHEESE_TOPPING_NAME,
   explainPromotionMiss,
   formatMoney,
   generateOpaqueToken,
@@ -26,6 +28,7 @@ import {
   type CartLinePrice,
   type Fulfilment,
   type PromotionRule,
+  type RawModifierValue,
   type ToppingPlacement,
   type ToppingSelection,
   type WeeklyAvailability,
@@ -82,7 +85,7 @@ export type OrderRequest = {
     /** H-03: recipe toppings the customer asked to leave off. Must be a subset. */
     omitToppings?: string[];
     extraCheese?: boolean;
-    modifiers?: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }>;
+    modifiers?: Array<{ id?: string; values?: RawModifierValue[] }>;
     specialInstructions?: string;
     merchandising?: {
       source?: string;
@@ -540,7 +543,8 @@ function modifierOptions(
   section: ModifierSectionSeed,
   toppingNames: Map<string, string>,
 ): Map<string, string> {
-  if (section.source === "toppings") return toppingNames;
+  // Extra cheese is offered beside the toppings and counts as one of them.
+  if (section.source === "toppings") return new Map([...toppingNames, [EXTRA_CHEESE_TOPPING_ID, EXTRA_CHEESE_TOPPING_NAME]]);
   const options = section.options ?? (
     section.source === "wing_flavours" ? [...WING_FLAVOURS]
       : section.source === "drinks" ? [...DRINK_OPTIONS]
@@ -560,11 +564,11 @@ type ModifierSnapshot = {
   id: string;
   label: string;
   group?: string;
-  values: Array<{ value: string; label: string; placement?: ToppingPlacement }>;
+  values: Array<{ value: string; label: string; placement?: ToppingPlacement; double?: boolean }>;
 };
 
 function validateModifiers(
-  input: Array<{ id?: string; values?: Array<string | { value?: string; placement?: string }> }> | undefined,
+  input: Array<{ id?: string; values?: RawModifierValue[] }> | undefined,
   sections: ModifierSectionSeed[],
   toppingNames: Map<string, string>,
   halfToppingUnitsBps: number,
@@ -609,6 +613,7 @@ function validateModifiers(
             value: entry.value,
             label: allowed.get(entry.value) ?? entry.value,
             placement: entry.placement,
+            ...(entry.double ? { double: true } : {}),
           })),
         });
       }
@@ -887,10 +892,12 @@ async function validateItems(
         recipeExtraCheese: Boolean(productConfiguration.fixedRecipe && productConfiguration.presetExtraCheese),
       });
       if (productConfiguration.requireIncludedToppings) {
+        // Extra cheese is one of the toppings on a three-topping special, and a
+        // double counts twice: "double pepperoni and mushroom" is three.
         const selectedToppingUnitsBps = modifierUnitsBps(
-          pizza.normalizedToppings.map((entry) => ({ value: entry.toppingId, placement: entry.placement })),
+          pizza.normalizedToppings.map((entry) => ({ value: entry.toppingId, placement: entry.placement, ...(entry.double ? { double: true } : {}) })),
           operations.halfToppingUnitsBps,
-        );
+        ) + (input.extraCheese ? 10_000 : 0);
         if (selectedToppingUnitsBps < variation.included_topping_units_bps) {
           const required = variation.included_topping_units_bps / 10_000;
           throw new OrderValidationError(
