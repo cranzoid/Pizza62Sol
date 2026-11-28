@@ -9,6 +9,13 @@ export type ToppingPlacement = "whole" | "left" | "right";
 export type ToppingSelection = {
   toppingId: string;
   placement: ToppingPlacement;
+  /**
+   * Twice the usual amount: "double pepperoni". Counts as two toppings against
+   * the allowance and prints as "Pepperoni x2". Absent (never `false`) on a
+   * single portion, so every snapshot written before doubles existed still
+   * reads exactly as it did.
+   */
+  double?: boolean;
 };
 
 export type PizzaPricingInput = {
@@ -237,28 +244,44 @@ export function formatMoney(cents: number): string {
   return CAD.format(cents / 100);
 }
 
+/**
+ * Collapses duplicates and merges a left+right pair of the same topping into a
+ * whole.
+ *
+ * A double survives the collapse: the same topping sent twice, once doubled,
+ * is a double (the larger portion wins, so a duplicate can never shrink one).
+ * A left half and a right half merge into a whole only when they are the same
+ * portion; "double pepperoni on the left, single on the right" is a real
+ * request and stays as two halves rather than being rounded either way.
+ */
 export function normalizeToppings(
   selections: ToppingSelection[],
 ): ToppingSelection[] {
-  const placements = new Map<string, Set<ToppingPlacement>>();
+  const placements = new Map<string, Map<ToppingPlacement, boolean>>();
   for (const selection of selections) {
     if (!selection.toppingId) throw new Error("A topping identifier is required");
     if (!["whole", "left", "right"].includes(selection.placement)) {
       throw new Error("Invalid topping placement");
     }
-    const current = placements.get(selection.toppingId) ?? new Set();
-    current.add(selection.placement);
+    const current = placements.get(selection.toppingId) ?? new Map<ToppingPlacement, boolean>();
+    current.set(selection.placement, Boolean(current.get(selection.placement)) || selection.double === true);
     placements.set(selection.toppingId, current);
   }
 
+  const portion = (toppingId: string, placement: ToppingPlacement, double: boolean): ToppingSelection =>
+    double ? { toppingId, placement, double: true } : { toppingId, placement };
   const normalized: ToppingSelection[] = [];
   for (const [toppingId, values] of placements) {
-    if (values.has("whole") || (values.has("left") && values.has("right"))) {
-      normalized.push({ toppingId, placement: "whole" });
+    if (values.has("whole")) {
+      normalized.push(portion(toppingId, "whole", [...values.values()].some(Boolean)));
       continue;
     }
-    if (values.has("left")) normalized.push({ toppingId, placement: "left" });
-    if (values.has("right")) normalized.push({ toppingId, placement: "right" });
+    if (values.has("left") && values.has("right") && values.get("left") === values.get("right")) {
+      normalized.push(portion(toppingId, "whole", Boolean(values.get("left"))));
+      continue;
+    }
+    if (values.has("left")) normalized.push(portion(toppingId, "left", Boolean(values.get("left"))));
+    if (values.has("right")) normalized.push(portion(toppingId, "right", Boolean(values.get("right"))));
   }
   return normalized.sort((a, b) =>
     `${a.toppingId}:${a.placement}`.localeCompare(`${b.toppingId}:${b.placement}`),
@@ -274,7 +297,7 @@ export function toppingUnitsBps(
   }
   return normalizeToppings(selections).reduce(
     (sum, selection) =>
-      sum + (selection.placement === "whole" ? 10_000 : halfToppingUnitsBps) * toppingWeight(selection.toppingId),
+      sum + (selection.placement === "whole" ? 10_000 : halfToppingUnitsBps) * toppingWeight(selection.toppingId) * (selection.double ? 2 : 1),
     0,
   );
 }
@@ -288,6 +311,24 @@ export function toppingWeight(toppingId: string): number {
 export const CHEESE_OPTIONS = ["No Cheese", "Light Cheese", "Regular Cheese", "Extra Cheese"] as const;
 export const DEFAULT_CHEESE_OPTION = "Regular Cheese";
 export const EXTRA_CHEESE_OPTION = "Extra Cheese";
+/**
+ * The cheese choice as it is offered now: how much of the base cheese.
+ *
+ * Extra cheese moved out of this choice and into the toppings (owner,
+ * 2026-11-28): on a three-topping pizza a customer will say "pepperoni,
+ * mushroom, and extra cheese for the third", and it was being rung in as a
+ * fourth, paid topping because it sat up here instead of beside the others.
+ * `CHEESE_OPTIONS` keeps "Extra Cheese" so carts, deals and the phone agent
+ * that still send it go through; nothing offers it from this list any more.
+ */
+export const CHEESE_CHOICES = ["No Cheese", "Light Cheese", "Regular Cheese"] as const;
+/**
+ * Extra cheese as a value in a deal's toppings section, where it counts as one
+ * of the pizza's toppings. A standalone pizza records the same thing as its
+ * `extraCheese` flag, which already counted as a topping.
+ */
+export const EXTRA_CHEESE_TOPPING_ID = "extra-cheese";
+export const EXTRA_CHEESE_TOPPING_NAME = "Extra Cheese";
 export const CRUST_OPTIONS = ["Regular Crust", "Thin Crust", "Thick Crust"] as const;
 export const DEFAULT_CRUST_OPTION = "Regular Crust";
 export const BAKE_SAUCE_OPTIONS = ["Lightly Done", "Well Done", "Easy on the Sauce", "Extra Sauce"] as const;
@@ -481,7 +522,9 @@ export type ModifierSection = {
   sharedIncluded?: number;
 };
 
-export type ModifierValue = { value: string; placement: ToppingPlacement };
+export type ModifierValue = { value: string; placement: ToppingPlacement; double?: boolean };
+/** What a client may send for one chosen option: a bare value, or a topping with its placement. */
+export type RawModifierValue = string | { value?: string; placement?: string; double?: boolean };
 
 /**
  * Option groups that are no longer offered but may still sit in a stored product
@@ -542,22 +585,23 @@ export function orderModifierSections<T extends ModifierSection>(
 
 /** Collapses duplicates and merges a left+right pair of the same option into a whole. */
 export function normalizeModifierValues(
-  values: Array<string | { value?: string; placement?: string }>,
+  values: RawModifierValue[],
 ): ModifierValue[] {
-  const selections = values.map((entry) =>
+  const selections = values.map((entry): ToppingSelection =>
     typeof entry === "string"
-      ? { toppingId: entry, placement: "whole" as ToppingPlacement }
-      : { toppingId: entry.value ?? "", placement: (entry.placement ?? "whole") as ToppingPlacement },
+      ? { toppingId: entry, placement: "whole" }
+      : { toppingId: entry.value ?? "", placement: (entry.placement ?? "whole") as ToppingPlacement, ...(entry.double === true ? { double: true } : {}) },
   );
   return normalizeToppings(selections).map((entry) => ({
     value: entry.toppingId,
     placement: entry.placement,
+    ...(entry.double ? { double: true } : {}),
   }));
 }
 
 export function modifierUnitsBps(values: ModifierValue[], halfToppingUnitsBps = 5_000): number {
   return toppingUnitsBps(
-    values.map((entry) => ({ toppingId: entry.value, placement: entry.placement })),
+    values.map((entry) => ({ toppingId: entry.value, placement: entry.placement, ...(entry.double ? { double: true } : {}) })),
     halfToppingUnitsBps,
   );
 }
@@ -605,7 +649,7 @@ export function pricePizza(input: PizzaPricingInput): PizzaPricingResult {
 /** One calculator for browser builds and validated server modifier snapshots. */
 export function priceModifierSelections(
   sections: ModifierSection[],
-  selections: Array<{ id: string; values: Array<string | { value?: string; placement?: string }> }>,
+  selections: Array<{ id: string; values: RawModifierValue[] }>,
   halfToppingUnitsBps = 5_000,
 ) {
   const selected = new Map(selections.map((selection) => [selection.id, selection.values]));

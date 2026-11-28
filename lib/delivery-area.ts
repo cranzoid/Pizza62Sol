@@ -165,3 +165,120 @@ export async function resolveDeliveryPoint(address: DeliveryAddress): Promise<Ge
   }
   return resolveFsaCentroid(address.postalCode);
 }
+
+// --- Address suggestions for the till ----------------------------------------
+//
+// Whoever takes a delivery over the phone types the address while the customer
+// spells it. Suggestions come from the same Azure Maps account the radius check
+// uses, in typeahead mode, biased to the store, so "31 king" offers "31 King
+// Street East" with its postal code instead of a guess at the spelling.
+//
+// A suggestion only fills the fields. The person can always ignore it and type
+// the address out, and whatever is sent still goes through the full geocode
+// and radius check above — so a suggestion can never make an address
+// deliverable that would not have been.
+
+export type AddressSuggestion = {
+  /** "31 King Street East", or a street name alone when Maps had no number. */
+  line1: string;
+  /** "L8N 1A1" when Maps knows the full code, otherwise empty. */
+  postalCode: string;
+  /** The first three characters when only those are known, for the hint. */
+  postalPrefix: string;
+  /** "Hamilton" or the neighbourhood Maps names, for telling two Main Streets apart. */
+  area: string;
+};
+
+type AzureMapsTypeaheadResult = {
+  type?: string;
+  address?: {
+    streetNumber?: string;
+    streetName?: string;
+    municipality?: string;
+    municipalitySubdivision?: string;
+    countrySubdivisionCode?: string;
+    postalCode?: string;
+    extendedPostalCode?: string;
+  };
+};
+
+const FULL_POSTAL = /^([A-Z]\d[A-Z])\s?(\d[A-Z]\d)$/;
+const SUGGEST_TIMEOUT_MS = 2000;
+const SUGGEST_CACHE_TTL_MS = 30 * 60_000;
+const SUGGEST_CACHE_MAX = 300;
+// The same few streets are typed all day; a cached answer costs nothing.
+const suggestCache = new Map<string, { at: number; results: AddressSuggestion[] }>();
+
+/** Pure: Azure Maps' answer, reduced to what the till's fields need. Exported for tests. */
+export function toAddressSuggestions(results: AzureMapsTypeaheadResult[]): AddressSuggestion[] {
+  const seen = new Set<string>();
+  const suggestions: AddressSuggestion[] = [];
+  for (const result of results) {
+    const address = result.address;
+    if (!address?.streetName) continue;
+    if (result.type !== "Point Address" && result.type !== "Street") continue;
+    if (address.countrySubdivisionCode && address.countrySubdivisionCode !== "ON") continue;
+    const line1 = [result.type === "Point Address" ? address.streetNumber : "", address.streetName].filter(Boolean).join(" ");
+    const candidates = [address.extendedPostalCode, address.postalCode].map((code) => (code ?? "").toUpperCase().trim());
+    const full = candidates.map((code) => FULL_POSTAL.exec(code)).find(Boolean);
+    const postalCode = full ? `${full[1]} ${full[2]}` : "";
+    const postalPrefix = postalCode.slice(0, 3) || (candidates.find((code) => /^[A-Z]\d[A-Z]/.test(code)) ?? "").slice(0, 3);
+    const key = `${line1.toLowerCase()}|${postalCode || postalPrefix}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    suggestions.push({ line1, postalCode, postalPrefix, area: address.municipalitySubdivision || address.municipality || "" });
+  }
+  return suggestions;
+}
+
+/**
+ * Typeahead suggestions near the store. Empty when Maps is not configured or
+ * does not answer in time: the till then works exactly as it did before, with
+ * the address typed out in full.
+ */
+export async function suggestDeliveryAddresses(
+  query: string,
+  near: { latitude: number; longitude: number; radiusKm: number } | null,
+): Promise<AddressSuggestion[]> {
+  const text = query.trim().replace(/\s+/g, " ").slice(0, 120);
+  if (text.length < 3 || !mapsConfigured()) return [];
+  const cacheKey = text.toLowerCase();
+  const cached = suggestCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < SUGGEST_CACHE_TTL_MS) return cached.results;
+
+  let headers: Record<string, string> | null;
+  try {
+    headers = await mapsAuthHeaders();
+  } catch {
+    return [];
+  }
+  if (!headers) return [];
+  const url = new URL("https://atlas.microsoft.com/search/address/json");
+  url.searchParams.set("api-version", "1.0");
+  // "Hamilton, ON" keeps a bare street name from matching one in another city.
+  url.searchParams.set("query", `${text}, Hamilton, ON`);
+  url.searchParams.set("typeahead", "true");
+  url.searchParams.set("countrySet", "CA");
+  url.searchParams.set("limit", "8");
+  if (near && Number.isFinite(near.latitude) && Number.isFinite(near.longitude)) {
+    url.searchParams.set("lat", String(near.latitude));
+    url.searchParams.set("lon", String(near.longitude));
+    // A little past the delivery radius, so an address just outside it is
+    // still offered and then refused by the real check with a clear message.
+    url.searchParams.set("radius", String(Math.round(Math.max(near.radiusKm * 1.5, 15) * 1000)));
+  }
+  try {
+    const response = await fetch(url, {
+      headers: { ...headers, accept: "application/json" },
+      signal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
+    });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { results?: AzureMapsTypeaheadResult[] };
+    const results = toAddressSuggestions(payload.results ?? []).slice(0, 6);
+    if (suggestCache.size >= SUGGEST_CACHE_MAX) suggestCache.delete(suggestCache.keys().next().value!);
+    suggestCache.set(cacheKey, { at: Date.now(), results });
+    return results;
+  } catch {
+    return [];
+  }
+}
