@@ -194,6 +194,14 @@ test("Azure Maps suggestions become street, postal code and area", () => {
   ], "duplicates collapse, a partial code is only a hint, and other provinces and bare towns are dropped");
 });
 
+test("a street-only match keeps the typed house number and offers no full postal code", () => {
+  const street = [{ type: "Street", address: { streetName: "Upper James Street", municipality: "Hamilton", countrySubdivisionCode: "ON", extendedPostalCode: "L9C 2X7" } }];
+  assert.deepEqual(toAddressSuggestions(street, "12 upper james"), [
+    { line1: "12 Upper James Street", postalCode: "", postalPrefix: "L9C", area: "Hamilton" },
+  ]);
+  assert.equal(toAddressSuggestions(street, "upper james")[0].line1, "Upper James Street");
+});
+
 test("saved addresses are distinct and most recent first", () => {
   const row = (line1: string, unit: string, at: number, instructions: string | null = null) => ({
     address_json: JSON.stringify({ line1, unit, city: "Hamilton", province: "ON", postalCode: "L8H 1A1" }),

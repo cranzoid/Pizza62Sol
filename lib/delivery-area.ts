@@ -179,9 +179,12 @@ export async function resolveDeliveryPoint(address: DeliveryAddress): Promise<Ge
 // deliverable that would not have been.
 
 export type AddressSuggestion = {
-  /** "31 King Street East", or a street name alone when Maps had no number. */
+  /**
+   * "31 King Street East". When Maps only knows the street, the number that
+   * was typed is kept in front of it; with no number typed, the street alone.
+   */
   line1: string;
-  /** "L8N 1A1" when Maps knows the full code, otherwise empty. */
+  /** "L8N 1A1" when Maps knows this address's code, otherwise empty. */
   postalCode: string;
   /** The first three characters when only those are known, for the hint. */
   postalPrefix: string;
@@ -209,8 +212,17 @@ const SUGGEST_CACHE_MAX = 300;
 // The same few streets are typed all day; a cached answer costs nothing.
 const suggestCache = new Map<string, { at: number; results: AddressSuggestion[] }>();
 
-/** Pure: Azure Maps' answer, reduced to what the till's fields need. Exported for tests. */
-export function toAddressSuggestions(results: AzureMapsTypeaheadResult[]): AddressSuggestion[] {
+/**
+ * Pure: Azure Maps' answer, reduced to what the till's fields need. Exported
+ * for tests.
+ *
+ * `typed` is what the person has in the box. A "Street" match has no house
+ * number of its own, and picking one must never erase theirs; its postal code
+ * belongs to some stretch of the street rather than to that house, so it is
+ * only ever a hint.
+ */
+export function toAddressSuggestions(results: AzureMapsTypeaheadResult[], typed = ""): AddressSuggestion[] {
+  const typedNumber = /^(\d+[A-Za-z]?)\s+\S/.exec(typed.trim())?.[1] ?? "";
   const seen = new Set<string>();
   const suggestions: AddressSuggestion[] = [];
   for (const result of results) {
@@ -218,11 +230,12 @@ export function toAddressSuggestions(results: AzureMapsTypeaheadResult[]): Addre
     if (!address?.streetName) continue;
     if (result.type !== "Point Address" && result.type !== "Street") continue;
     if (address.countrySubdivisionCode && address.countrySubdivisionCode !== "ON") continue;
-    const line1 = [result.type === "Point Address" ? address.streetNumber : "", address.streetName].filter(Boolean).join(" ");
+    const exact = result.type === "Point Address" && Boolean(address.streetNumber);
+    const line1 = [exact ? address.streetNumber : typedNumber, address.streetName].filter(Boolean).join(" ");
     const candidates = [address.extendedPostalCode, address.postalCode].map((code) => (code ?? "").toUpperCase().trim());
     const full = candidates.map((code) => FULL_POSTAL.exec(code)).find(Boolean);
-    const postalCode = full ? `${full[1]} ${full[2]}` : "";
-    const postalPrefix = postalCode.slice(0, 3) || (candidates.find((code) => /^[A-Z]\d[A-Z]/.test(code)) ?? "").slice(0, 3);
+    const postalCode = exact && full ? `${full[1]} ${full[2]}` : "";
+    const postalPrefix = (full?.[1] ?? candidates.find((code) => /^[A-Z]\d[A-Z]/.test(code)) ?? "").slice(0, 3);
     const key = `${line1.toLowerCase()}|${postalCode || postalPrefix}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -274,7 +287,7 @@ export async function suggestDeliveryAddresses(
     });
     if (!response.ok) return [];
     const payload = (await response.json()) as { results?: AzureMapsTypeaheadResult[] };
-    const results = toAddressSuggestions(payload.results ?? []).slice(0, 6);
+    const results = toAddressSuggestions(payload.results ?? [], text).slice(0, 6);
     if (suggestCache.size >= SUGGEST_CACHE_MAX) suggestCache.delete(suggestCache.keys().next().value!);
     suggestCache.set(cacheKey, { at: Date.now(), results });
     return results;
