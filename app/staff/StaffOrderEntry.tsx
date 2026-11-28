@@ -1108,8 +1108,10 @@ export function StaffOrderEntry({
                       setLine1(item.line1);
                       if (item.unit) setUnit(item.unit);
                       // A partial code from Maps is left for the person to
-                      // finish rather than written in half-done.
-                      if (item.postalCode) setPostalCode(item.postalCode);
+                      // finish rather than written in half-done. A code left
+                      // over from a different part of town is cleared, so it
+                      // cannot ride along with the new street.
+                      setPostalCode((current) => item.postalCode || (item.postalPrefix && current.startsWith(item.postalPrefix) ? current : ""));
                     }}
                     itemKey={(item) => `${item.source}|${item.line1}|${item.unit}|${item.postalCode}`}
                     renderItem={(item) => <AddressSuggestionRow item={item} />}
